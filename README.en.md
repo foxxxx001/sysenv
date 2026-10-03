@@ -1,6 +1,6 @@
 # sysenv
 **English** | [简体中文](./README.md)
-A cross-platform (**Windows / Ubuntu**) **system PATH & environment variable manager** in a single binary with subcommand-based features:
+A cross-platform (Windows / Ubuntu) system Http client & AI model lookup & PATH & environment manager in a single binary 
 
 - **PATH management**: add / remove / list / check system PATH entries, persisted automatically and applied to the current environment
 - **Registry import / export**: dump PATH to a Windows Registry (`.reg`), JSON or text file; import back by merge or full replace

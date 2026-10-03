@@ -1,6 +1,6 @@
 # sysenv
 [English](./README.en.md) | **简体中文**
-跨平台（Windows / Ubuntu）**系统 PATH 与环境变量管理工具**，单一二进制、子命令划分功能。内置六大能力：
+跨平台（Windows / Ubuntu）Http接口客户端工具、AI模型查询工具、系统 PATH 与环境变量管理工具**，单一二进制、子命令划分功能。内置六大能力：
 
 
 
