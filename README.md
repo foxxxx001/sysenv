@@ -47,7 +47,7 @@ Commands:
 | PATH 增删查改 | `path`               | 持久化 + 当前会话即时生效；自动转绝对路径与去重；前置插入；user/machine 双作用域；`--temporary` 临时模式                    |
 | 注册表导入导出   | `path export/import` | `.reg` / JSON / TXT 三种格式；合并或 `--replace` 整体替换；跨机迁移备份                                   |
 | 链接到 PATH  | `link`               | 硬链接 → 符号链接 → 拷贝三级自动回退；Windows `.cmd` 垫片；自定义命令名；系统目录或托管目录                               |
-| 环境变量      | `env`                | get /set/unset /list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                         |
+| 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
 | AI 模型查询   | `ai`                 | 226 个 Provider、8000+ 模型；24h 本地缓存；canonical 优选；`--search / --list / --json / --refresh` |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式                   |
 | 快捷垫片      | `short`              | 一键安装五种短命令；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
@@ -69,9 +69,12 @@ cargo build --release
 
 ### 发布产物
 
+
+
 * 发布产物统一 **UPX 压缩** 后放入 `dist/` 目录
 
 * 文件名包含平台 + 架构 + 版本号：`sysenv-<平台>-<架构>_v<版本>`
+
 
   * Windows：`sysenv-windows-x86_64_v0.2.1.exe`
 
@@ -79,9 +82,13 @@ cargo build --release
 
 * 压缩命令（示例，Windows）：
 
-  ```
-  upx --best -o dist/sysenv-windows-x86_64_v0.2.1.exe target/release/sysenv.exe
-  ```
+
+
+```
+upx --best -o dist/sysenv-windows-x86_64_v0.2.1.exe target/release/sysenv.exe
+```
+
+
 
 * 版本号变更与新增 / 修复内容记录在 `patch.md`
 
@@ -237,7 +244,7 @@ sysenv env list
 
 * `--list`：分页浏览全部模型 / Provider
 
-* `-o/--output-format json|csv`：机器可读输出——`json` 输出 **JSON 数组**（与 `--json` 等价，单命中也是数组）；`csv` 输出带表头的 CSV 表格（model 24 列、provider 6 列，RFC-4180 转义），适用于详情、搜索、列表与多匹配全部场景
+* `-o/--output-format json|csv`：机器可读输出 ——`json` 输出 **JSON 数组**（与 `--json` 等价，单命中也是数组）；`csv` 输出带表头的 CSV 表格（model 24 列、provider 6 列，RFC-4180 转义），适用于详情、搜索、列表与多匹配全部场景
 
 * 模型详情字段：`id / name / provider / family / description / modalities / context / output limit / cost（每 1M tokens 的 input/output/cache_read 折算美元）/ reasoning / tool call / structured output / temperature / attachment / open weights / release date / last updated / knowledge cutoff / reasoning options` 等
 
@@ -317,11 +324,9 @@ echo '{"a":1}' | sysenv http POST pie.dev/post  # stdin 作为原始体
 sysenv http --verify no https://self-signed.example  # 跳过证书校验
 ```
 
-> PowerShell 注意：PS 5.1 会剥掉传给原生程序参数中的内嵌双引号，含引号的 JSON / 原始体请用 
->
+> PowerShell 注意：PS 5.1 会剥掉传给原生程序参数中的内嵌双引号，含引号的 JSON / 原始体请用
 > `\"`
->
->  转义、单引号包裹或在 cmd/bash 下执行。
+> 转义、单引号包裹或在 cmd/bash 下执行。
 
 ### 请求项语法
 
@@ -348,14 +353,10 @@ sysenv http --verify no https://self-signed.example  # 跳过证书校验
 
 `--check-status` `--offline` `--verify` `-I/--ignore-stdin` `--default-scheme`
 
-> 说明：http 子命令中 
->
+> 说明：http 子命令中
 > `-h`
->
->  是 httpie 语义的 "只打印响应头"，因此帮助请用 
->
+> 是 httpie 语义的 "只打印响应头"，因此帮助请用
 > `sysenv help http`
->
 > 。
 
 ## 7. 快捷命令垫片（`short`）

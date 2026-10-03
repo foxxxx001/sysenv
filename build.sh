@@ -14,15 +14,29 @@ if [ -f "$HOME/.cargo/config" ]; then mv "$HOME/.cargo/config" "$HOME/.cargo/con
 export CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 
 VER=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml)
-UPX_BIN="${UPX:-upx}"
 OUT="dist/sysenv-linux-x86_64_v${VER}"
+
+# Locate UPX; download a static build when the system has none
+if [ -n "${UPX:-}" ]; then
+  UPX_BIN="$UPX"
+elif command -v upx >/dev/null 2>&1; then
+  UPX_BIN=$(command -v upx)
+else
+  UPX_BIN=/tmp/upx-5.2.1-amd64_linux/upx
+  if [ ! -x "$UPX_BIN" ]; then
+    cd /tmp || exit 1
+    curl -sL -o upx.tar.xz https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-amd64_linux.tar.xz
+    tar -xf upx.tar.xz
+    cd - >/dev/null || exit 1
+  fi
+fi
 
 echo "== cargo build --release (v$VER) =="
 cargo build --release
 
 echo "== UPX compress -> $OUT =="
 mkdir -p dist
-"$UPX_BIN" --best -o "$OUT" target/release/sysenv
+"$UPX_BIN" --best --force -o "$OUT" target/release/sysenv
 
 echo "== smoke test =="
 "./$OUT" --version
