@@ -80,12 +80,20 @@ cargo build --release
 
   * Ubuntu：`sysenv-linux-x86_64_v0.2.1`
 
-* 压缩命令（示例，Windows）：
+* 一键发布脚本（推荐）：**每次编译成功后自动清除临时编译产物**（`target/`），仅保留 `dist/` 发布产物
+
+  * Windows：`powershell -File build.ps1`（构建 → UPX 压缩 → 冒烟 → 自动清理）
+
+  * Ubuntu：`./build.sh`（同流程；系统无 UPX 时自动下载静态版本）
+
+* 手动流程（示例，Windows）：
 
 
 
 ```
+cargo build --release
 upx --best -o dist/sysenv-windows-x86_64_v0.2.1.exe target/release/sysenv.exe
+cargo clean
 ```
 
 

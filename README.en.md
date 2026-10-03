@@ -55,9 +55,14 @@ cargo build --release
 - File names carry platform + architecture + version: `sysenv-<platform>-<arch>_v<version>`
   - Windows: `sysenv-windows-x86_64_v0.2.1.exe`
   - Ubuntu: `sysenv-linux-x86_64_v0.2.1`
-- Compression example (Windows):
+- One-shot release scripts (recommended): **temp build artifacts (`target/`) are cleaned automatically after every successful build**, only the `dist/` deliverables remain
+  - Windows: `powershell -File build.ps1` (build → UPX → smoke → auto cleanup)
+  - Ubuntu: `./build.sh` (same flow; downloads a static UPX when the system has none)
+- Manual flow (Windows example):
   ```
+  cargo build --release
   upx --best -o dist/sysenv-windows-x86_64_v0.2.1.exe target/release/sysenv.exe
+  cargo clean
   ```
 - Every version bump with its added / fixed features is recorded in `patch.md`
 
