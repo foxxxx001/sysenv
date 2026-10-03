@@ -4,6 +4,21 @@
 
 ---
 
+## v0.2.3（2026-10-03）
+
+### 新增
+- `-V` / `--version` 版本信息增加署名：`sysenv 0.2.3 (Made by Gary-china)`（版本号自动跟随 Cargo.toml）
+
+---
+
+## v0.2.2（2026-10-03）
+
+### 修复
+- `sysenv ai model` 详情输出（单命中 / canonical 优选）缺少标题：现在顶部增加标题行 `== <模型标题> ==`，取自 models.dev 页面上的模型标题（即模型 `name` 字段，缺失时回退为 `id`），例如 `sai model deepseek-chat` 首行输出 `== DeepSeek V3/Deepseek Chat ==`
+- 多匹配列表 / 搜索 / 列表模式不受影响（每行已含标题列 `name`）
+
+---
+
 ## v0.2.1（2026-10-03）
 
 ### 新增

@@ -460,8 +460,10 @@ pub fn cmd_model(
     Ok(())
 }
 
-/// Print a model object as aligned `label: value` lines. Known fields get
-/// friendly formatting; unknown fields are appended verbatim.
+/// Print a model object as aligned `label: value` lines. A title line (the
+/// model name — the title models.dev shows on its model pages) is printed on
+/// top; known fields get friendly formatting, unknown fields are appended
+/// verbatim.
 fn print_model(m: &Value) {
     let obj = match m.as_object() {
         Some(o) => o,
@@ -476,6 +478,11 @@ fn print_model(m: &Value) {
             .and_then(|v| v.as_bool())
             .map(|x| if x { "yes" } else { "no" })
     };
+
+    // Title: the model name shown on the models.dev page (fallback: id).
+    if let Some(title) = s("name").or_else(|| s("id")) {
+        println!("== {title} ==");
+    }
 
     let mut rows: Vec<(String, String)> = Vec::new();
     push(&mut rows, "id", s("id"));

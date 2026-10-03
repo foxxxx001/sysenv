@@ -13,7 +13,7 @@ use std::process::ExitCode;
 #[derive(Parser)]
 #[command(
     name = "sysenv",
-    version,
+    version = concat!(env!("CARGO_PKG_VERSION"), " (Made by Gary-china)"),
     about = "System PATH & environment manager + httpie-compatible HTTP client (Windows / Ubuntu)",
     long_about = "sysenv manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the models.dev database of AI models/providers, installs command shims (spath/senv/slink/shttp/sai), and ships an httpie-compatible HTTP client.
 

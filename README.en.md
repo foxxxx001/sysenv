@@ -1,5 +1,5 @@
 # sysenv
-
+**English** | [简体中文](./readme.md)
 A cross-platform (**Windows / Ubuntu**) **system PATH & environment variable manager** in a single binary with subcommand-based features:
 
 - **PATH management**: add / remove / list / check system PATH entries, persisted automatically and applied to the current environment
@@ -11,7 +11,7 @@ A cross-platform (**Windows / Ubuntu**) **system PATH & environment variable man
 - **Shortcut shims**: install `spath / senv / slink / shttp / sai` short commands with one command
 
 ```
-sysenv 0.2.1
+sysenv 0.2.3 (Made by Gary-china)
 
 Usage: sysenv <COMMAND>
 
@@ -53,15 +53,15 @@ cargo build --release
 
 - Release binaries are **UPX-compressed** and placed in `dist/`
 - File names carry platform + architecture + version: `sysenv-<platform>-<arch>_v<version>`
-  - Windows: `sysenv-windows-x86_64_v0.2.1.exe`
-  - Ubuntu: `sysenv-linux-x86_64_v0.2.1`
+  - Windows: `sysenv-windows-x86_64_v0.2.3.exe`
+  - Ubuntu: `sysenv-linux-x86_64_v0.2.3`
 - One-shot release scripts (recommended): **temp build artifacts (`target/`) are cleaned automatically after every successful build**, only the `dist/` deliverables remain
   - Windows: `powershell -File build.ps1` (build → UPX → smoke → auto cleanup)
   - Ubuntu: `./build.sh` (same flow; downloads a static UPX when the system has none)
 - Manual flow (Windows example):
   ```
   cargo build --release
-  upx --best -o dist/sysenv-windows-x86_64_v0.2.1.exe target/release/sysenv.exe
+  upx --best -o dist/sysenv-windows-x86_64_v0.2.3.exe target/release/sysenv.exe
   cargo clean
   ```
 - Every version bump with its added / fixed features is recorded in `patch.md`

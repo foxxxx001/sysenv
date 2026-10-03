@@ -1,5 +1,5 @@
 # sysenv
-
+[English](./README.en.md) | **简体中文**
 跨平台（Windows / Ubuntu）**系统 PATH 与环境变量管理工具**，单一二进制、子命令划分功能。内置六大能力：
 
 
@@ -21,7 +21,7 @@
 
 
 ```
-sysenv 0.2.1
+sysenv 0.2.3 (Made by Gary-china)
 
 Usage: sysenv <COMMAND>
 
@@ -76,9 +76,9 @@ cargo build --release
 * 文件名包含平台 + 架构 + 版本号：`sysenv-<平台>-<架构>_v<版本>`
 
 
-  * Windows：`sysenv-windows-x86_64_v0.2.1.exe`
+  * Windows：`sysenv-windows-x86_64_v0.2.3.exe`
 
-  * Ubuntu：`sysenv-linux-x86_64_v0.2.1`
+  * Ubuntu：`sysenv-linux-x86_64_v0.2.3`
 
 * 一键发布脚本（推荐）：**每次编译成功后自动清除临时编译产物**（`target/`），仅保留 `dist/` 发布产物
 
@@ -92,7 +92,7 @@ cargo build --release
 
 ```
 cargo build --release
-upx --best -o dist/sysenv-windows-x86_64_v0.2.1.exe target/release/sysenv.exe
+upx --best -o dist/sysenv-windows-x86_64_v0.2.3.exe target/release/sysenv.exe
 cargo clean
 ```
 
