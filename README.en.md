@@ -1,5 +1,5 @@
 # sysenv
-**English** | [简体中文](./readme.md)
+**English** | [简体中文](./README.md)
 A cross-platform (**Windows / Ubuntu**) **system PATH & environment variable manager** in a single binary with subcommand-based features:
 
 - **PATH management**: add / remove / list / check system PATH entries, persisted automatically and applied to the current environment
