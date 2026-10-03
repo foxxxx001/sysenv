@@ -1,0 +1,22 @@
+[package]
+name = "sysenv"
+version = "0.2.1"
+edition = "2021"
+description = "Cross-platform (Windows/Ubuntu) system PATH & environment manager with an httpie-compatible HTTP client"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "multipart", "gzip"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+[profile.release]
+lto = "thin"
+strip = true
