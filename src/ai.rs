@@ -178,6 +178,67 @@ fn search_providers(data: &Value, query: &str) -> Vec<(String, Value)> {
     providers
 }
 
+/// Validate a `YYYY-MM-DD` date string and return it unchanged.
+fn parse_date(s: &str) -> Result<String> {
+    let b = s.as_bytes();
+    let valid = b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[..4].iter().all(|c| c.is_ascii_digit())
+        && b[5..7].iter().all(|c| c.is_ascii_digit())
+        && b[8..10].iter().all(|c| c.is_ascii_digit());
+    if !valid {
+        bail!("invalid date `{s}` (expected YYYY-MM-DD)");
+    }
+    let month: u8 = s[5..7].parse().unwrap_or(0);
+    let day: u8 = s[8..10].parse().unwrap_or(0);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        bail!("invalid date `{s}` (month/day out of range)");
+    }
+    Ok(s.to_string())
+}
+
+/// True when the model's `last_updated` (ISO date, possibly with a time
+/// suffix) is strictly after `date`. Models without `last_updated` never match.
+fn model_updated_after(m: &Value, date: &str) -> bool {
+    match m.get("last_updated").and_then(|v| v.as_str()) {
+        Some(s) => {
+            let d = if s.len() >= 10 { &s[..10] } else { s };
+            d > date
+        }
+        None => false,
+    }
+}
+
+/// Keep only models whose `last_updated` is strictly after `date`.
+fn filter_by_date(models: Vec<ModelHit>, date: &str) -> Vec<ModelHit> {
+    models
+        .into_iter()
+        .filter(|(_, m)| model_updated_after(m, date))
+        .collect()
+}
+
+/// Keep only models whose `open_weights` is true.
+fn filter_open(models: Vec<ModelHit>) -> Vec<ModelHit> {
+    models
+        .into_iter()
+        .filter(|(_, m)| m.get("open_weights").and_then(|v| v.as_bool()).unwrap_or(false))
+        .collect()
+}
+
+/// Apply the `--date` and `--open` filters in order (date first, then open).
+fn apply_filters(models: Vec<ModelHit>, date: Option<&str>, open: bool) -> Vec<ModelHit> {
+    let models = match date {
+        Some(d) => filter_by_date(models, d),
+        None => models,
+    };
+    if open {
+        filter_open(models)
+    } else {
+        models
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Machine-readable output (JSON arrays / CSV tables)
 // ---------------------------------------------------------------------------
@@ -205,6 +266,45 @@ fn csv_row(fields: &[&str]) -> String {
 
 fn csv_get(v: &Value, k: &str) -> String {
     v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
+}
+
+/// Character length of a string field (used for column widths).
+fn field_len(m: &Value, key: &str) -> usize {
+    m.get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.chars().count())
+        .unwrap_or(0)
+}
+
+/// Print a list of models as an aligned table with a header row
+/// (`id`, `name`, `family`, `last_updated`).
+fn print_model_rows(hits: &[ModelHit]) {
+    let w_id = hits.iter().map(|(_, m)| field_len(m, "id")).max().unwrap_or(0).max(2);
+    let w_name = hits.iter().map(|(_, m)| field_len(m, "name")).max().unwrap_or(0).max(4);
+    let w_family = hits
+        .iter()
+        .map(|(_, m)| field_len(m, "family"))
+        .max()
+        .unwrap_or(0)
+        .max(6);
+    let w_updated = hits
+        .iter()
+        .map(|(_, m)| field_len(m, "last_updated"))
+        .max()
+        .unwrap_or(0)
+        .max(12);
+
+    println!(
+        "{:<w_id$}  {:<w_name$}  {:<w_family$}  {:<w_updated$}",
+        "ID", "NAME", "FAMILY", "LAST UPDATED"
+    );
+    for (_, m) in hits {
+        let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+        let nm = m.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let fam = m.get("family").and_then(|v| v.as_str()).unwrap_or("");
+        let lu = m.get("last_updated").and_then(|v| v.as_str()).unwrap_or("");
+        println!("{:<w_id$}  {:<w_name$}  {:<w_family$}  {:<w_updated$}", id, nm, fam, lu);
+    }
 }
 
 fn csv_bool(v: &Value, k: &str) -> String {
@@ -310,55 +410,26 @@ pub fn cmd_model(
     name: Option<&str>,
     search: Option<&str>,
     list: bool,
-    limit: usize,
+    limit: Option<usize>,
     json: bool,
     out: Option<OutFormat>,
     refresh: bool,
+    updated_after: Option<&str>,
+    open: bool,
 ) -> Result<()> {
     let data = fetch_data(refresh)?;
     let fmt = out.or(if json { Some(OutFormat::Json) } else { None });
 
-    if list {
+    // `sai model` with no arguments defaults to listing every model.
+    let bare = name.is_none() && search.is_none() && !list;
+    let default_limit = if bare { usize::MAX } else { 20 };
+    let date = updated_after.map(parse_date).transpose()?;
+
+    if list || bare {
         let all = all_models(&data);
-        let total = all.len();
-        let take = limit.max(1);
-        match fmt {
-            Some(OutFormat::Json) => {
-                let arr: Vec<Value> = all.into_iter().take(take).map(|(_, m)| m).collect();
-                println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
-            }
-            Some(OutFormat::Csv) => {
-                println!("{MODEL_CSV_HEADER}");
-                for (pid, m) in all.iter().take(take) {
-                    println!("{}", model_csv_row(&model_with_provider(pid, m)));
-                }
-            }
-            None => {
-                for (pid, m) in all.iter().take(take) {
-                    let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                    let nm = m.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    println!("{id}\t{nm}\t{pid}");
-                }
-                println!("--- {take} of {total} models (use --limit to show more)");
-            }
-        }
-        return Ok(());
-    }
-
-    let query = match (name, search) {
-        (Some(n), _) => n,
-        (None, Some(s)) => s,
-        (None, None) => bail!("provide a MODEL name, or use --search QUERY / --list"),
-    };
-
-    let hits = search_models(&data, query);
-    if hits.is_empty() {
-        bail!("no model matches `{query}` (source: {DATA_URL})");
-    }
-
-    // --search: always list the matching entries (grep-style).
-    if search.is_some() {
-        let take = limit.max(1);
+        let hits = apply_filters(all, date.as_deref(), open);
+        let total_hits = hits.len();
+        let take = limit.unwrap_or(default_limit).max(1);
         match fmt {
             Some(OutFormat::Json) => {
                 let arr: Vec<Value> = hits.into_iter().take(take).map(|(_, m)| m).collect();
@@ -371,11 +442,59 @@ pub fn cmd_model(
                 }
             }
             None => {
-                for (pid, m) in hits.iter().take(take) {
-                    let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                    let nm = m.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    println!("{id}\t{nm}\t{pid}");
+                let shown = total_hits.min(take);
+                print_model_rows(&hits[..shown]);
+                let mut footer = format!("--- {shown} of {total_hits} models");
+                if let Some(d) = &date {
+                    footer.push_str(&format!(" updated after {d}"));
                 }
+                if open {
+                    footer.push_str(" with open weights");
+                }
+                if total_hits > shown {
+                    footer.push_str(" (use --limit to show more)");
+                }
+                println!("{footer}");
+            }
+        }
+        return Ok(());
+    }
+
+    let query = match (name, search) {
+        (Some(n), _) => n,
+        (None, Some(s)) => s,
+        (None, None) => unreachable!("bare invocation was handled above"),
+    };
+
+    let hits = apply_filters(search_models(&data, query), date.as_deref(), open);
+    if hits.is_empty() {
+        let mut msg = format!("no model matches `{query}`");
+        if let Some(d) = &date {
+            msg.push_str(&format!(" updated after {d}"));
+        }
+        if open {
+            msg.push_str(" with open weights");
+        }
+        bail!("{msg} (source: {DATA_URL})");
+    }
+
+    // --search: always list the matching entries (grep-style).
+    if search.is_some() {
+        let take = limit.unwrap_or(20).max(1);
+        match fmt {
+            Some(OutFormat::Json) => {
+                let arr: Vec<Value> = hits.into_iter().take(take).map(|(_, m)| m).collect();
+                println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
+            }
+            Some(OutFormat::Csv) => {
+                println!("{MODEL_CSV_HEADER}");
+                for (pid, m) in hits.iter().take(take) {
+                    println!("{}", model_csv_row(&model_with_provider(pid, m)));
+                }
+            }
+            None => {
+                let shown = hits.len().min(take);
+                print_model_rows(&hits[..shown]);
                 if hits.len() > take {
                     println!("--- {} of {} matches (use --limit to show more)", take, hits.len());
                 }
@@ -434,11 +553,7 @@ pub fn cmd_model(
             }
             None => {
                 println!("Multiple models match `{query}`:");
-                for (pid, m) in &hits {
-                    let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                    let nm = m.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    println!("  {id}\t{nm}\t{pid}");
-                }
+                print_model_rows(&hits);
                 println!("Use a full model id (e.g. `provider/model`), --search, -o json or -o csv for details.");
             }
         }
@@ -875,5 +990,91 @@ mod tests {
         assert_eq!(cols[5], "2");                // models_count
         assert_eq!(cols.len(), 6);
         assert!(PROVIDER_CSV_HEADER.split(',').count() == 6);
+    }
+
+    #[test]
+    fn parse_date_valid_and_invalid() {
+        assert_eq!(parse_date("2026-10-01").unwrap(), "2026-10-01");
+        assert!(parse_date("2026-10-1").is_err());   // day not zero-padded
+        assert!(parse_date("26-10-01").is_err());    // short year
+        assert!(parse_date("2026/10/01").is_err());  // wrong separator
+        assert!(parse_date("2026-13-01").is_err());  // month out of range
+        assert!(parse_date("2026-10-32").is_err());  // day out of range
+    }
+
+    #[test]
+    fn model_updated_after_compares_dates() {
+        let m = |lu: Option<&str>| -> Value {
+            let mut o = serde_json::json!({"id": "m"});
+            if let Some(lu) = lu {
+                o["last_updated"] = Value::String(lu.to_string());
+            }
+            o
+        };
+        assert!(model_updated_after(&m(Some("2026-10-02")), "2026-10-01"));
+        assert!(!model_updated_after(&m(Some("2026-10-01")), "2026-10-01")); // strictly after
+        assert!(!model_updated_after(&m(Some("2026-09-30")), "2026-10-01"));
+        assert!(!model_updated_after(&m(None), "2026-10-01"));               // no field
+        // a full timestamp is compared on its date part only
+        assert!(model_updated_after(&m(Some("2026-10-02T12:00:00Z")), "2026-10-01"));
+        assert!(!model_updated_after(&m(Some("2026-10-01T12:00:00Z")), "2026-10-02"));
+    }
+
+    #[test]
+    fn filter_by_date_keeps_only_recent_models() {
+        let data = serde_json::json!({
+            "p": {
+                "models": {
+                    "old": {"id": "old", "last_updated": "2026-09-30"},
+                    "today": {"id": "today", "last_updated": "2026-10-01"},
+                    "fresh": {"id": "fresh", "last_updated": "2026-10-04"},
+                    "none": {"id": "none"}
+                }
+            }
+        });
+        let hits = filter_by_date(all_models(&data), "2026-10-01");
+        let ids: Vec<&str> = hits.iter().map(|(_, m)| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["fresh"]);
+        assert_eq!(filter_by_date(all_models(&data), "2026-01-01").len(), 3);
+    }
+
+    #[test]
+    fn filter_open_keeps_only_open_weights_models() {
+        let data = serde_json::json!({
+            "p": {
+                "models": {
+                    "open": {"id": "open", "open_weights": true},
+                    "closed": {"id": "closed", "open_weights": false},
+                    "missing": {"id": "missing"}
+                }
+            }
+        });
+        let hits = filter_open(all_models(&data));
+        let ids: Vec<&str> = hits.iter().map(|(_, m)| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["open"]);
+    }
+
+    #[test]
+    fn apply_filters_combines_date_and_open() {
+        let data = serde_json::json!({
+            "p": {
+                "models": {
+                    "old_open": {"id": "old_open", "open_weights": true, "last_updated": "2025-01-01"},
+                    "new_closed": {"id": "new_closed", "open_weights": false, "last_updated": "2026-10-02"},
+                    "new_open": {"id": "new_open", "open_weights": true, "last_updated": "2026-10-02"}
+                }
+            }
+        });
+        let hits = apply_filters(all_models(&data), Some("2026-10-01"), true);
+        let ids: Vec<&str> = hits.iter().map(|(_, m)| m["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["new_open"]);
+        // only the date filter
+        let hits = apply_filters(all_models(&data), Some("2026-10-01"), false);
+        assert_eq!(hits.len(), 2);
+        // only the open filter
+        let hits = apply_filters(all_models(&data), None, true);
+        assert_eq!(hits.len(), 2);
+        // no filters keeps everything
+        assert_eq!(apply_filters(all_models(&data), None, false).len(), 3);
     }
 }

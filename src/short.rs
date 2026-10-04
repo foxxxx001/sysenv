@@ -16,6 +16,7 @@ pub const SHIMS: &[(&str, &str)] = &[
     ("slink", "link"),
     ("shttp", "http"),
     ("sai", "ai"),
+    ("stask", "task"),
 ];
 
 fn shim_filename(name: &str) -> String {
@@ -113,11 +114,11 @@ mod tests {
 
     #[test]
     fn shim_names_and_targets() {
-        assert_eq!(SHIMS.len(), 5);
+        assert_eq!(SHIMS.len(), 6);
         let subs: Vec<&str> = SHIMS.iter().map(|(_, s)| *s).collect();
-        assert_eq!(subs, vec!["path", "env", "link", "http", "ai"]);
+        assert_eq!(subs, vec!["path", "env", "link", "http", "ai", "task"]);
         let names: Vec<&str> = SHIMS.iter().map(|(n, _)| *n).collect();
-        assert_eq!(names, vec!["spath", "senv", "slink", "shttp", "sai"]);
+        assert_eq!(names, vec!["spath", "senv", "slink", "shttp", "sai", "stask"]);
     }
 
     #[cfg(windows)]

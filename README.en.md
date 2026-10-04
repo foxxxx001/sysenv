@@ -11,7 +11,7 @@ A cross-platform (Windows / Ubuntu) system Http client & AI model lookup & PATH 
 - **Shortcut shims**: install `spath / senv / slink / shttp / sai` short commands with one command
 
 ```
-sysenv 0.2.3 (Made by Gary-china)
+sysenv 0.2.8 (Made by Gary-china)
 
 Usage: sysenv <COMMAND>
 
@@ -21,7 +21,8 @@ Commands:
   link   Link a file into a PATH directory so it runs from anywhere
   http   httpie-compatible HTTP client: http [flags] [METHOD] URL [ITEM...]
   ai     Query the models.dev database of AI models & providers
-  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai)
+  task   Query and kill processes (list PID/name/path; kill by PID or name)
+  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask)
 ```
 
 ---
@@ -34,9 +35,10 @@ Commands:
 | Registry import/export | `path export/import` | `.reg` / JSON / TXT formats; merge or `--replace` full replace; machine migration & backup |
 | Link into PATH | `link` | hard link → symlink → copy fallback chain; Windows `.cmd` shim; custom command name; system or managed directory |
 | Environment variables | `env` | get / set / unset / list; persisted by default; `--temporary` for the current shell only; `machine` scope |
-| AI model lookup | `ai` | 226 providers, 8000+ models; 24 h local cache; canonical-entry preference; `--search / --list / --json / --refresh` |
+| AI model lookup | `ai` | 226 providers, 8000+ models; 24 h local cache; canonical-entry preference; no args lists all; `--date DATE` filters by last updated; `--open` filters open-weights models; `--search / --list / --json / --refresh` |
+| Process management | `task` | no args lists all processes; list (PID / name / path, fuzzy name match); `-o` shows the process using a port; kill by PID or name; `-f` force |
 | HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline |
-| Shortcut shims | `short` | installs five short commands at once; Windows `.cmd` / Linux sh scripts; auto PATH registration |
+| Shortcut shims | `short` | installs six short commands at once; Windows `.cmd` / Linux sh scripts; auto PATH registration |
 
 ---
 
@@ -53,15 +55,15 @@ cargo build --release
 
 - Release binaries are **UPX-compressed** and placed in `dist/`
 - File names carry platform + architecture + version: `sysenv-<platform>-<arch>_v<version>`
-  - Windows: `sysenv-windows-x86_64_v0.2.3.exe`
-  - Ubuntu: `sysenv-linux-x86_64_v0.2.3`
+  - Windows: `sysenv-windows-x86_64_v0.2.8.exe`
+  - Ubuntu: `sysenv-linux-x86_64_v0.2.8`
 - One-shot release scripts (recommended): **temp build artifacts (`target/`) are cleaned automatically after every successful build**, only the `dist/` deliverables remain
   - Windows: `powershell -File build.ps1` (build → UPX → smoke → auto cleanup)
   - Ubuntu: `./build.sh` (same flow; downloads a static UPX when the system has none)
 - Manual flow (Windows example):
   ```
   cargo build --release
-  upx --best -o dist/sysenv-windows-x86_64_v0.2.3.exe target/release/sysenv.exe
+  upx --best -o dist/sysenv-windows-x86_64_v0.2.8.exe target/release/sysenv.exe
   cargo clean
   ```
 - Every version bump with its added / fixed features is recorded in `patch.md`
@@ -168,14 +170,23 @@ sysenv env list
 - **24 h local cache**: Windows `%LOCALAPPDATA%\sysenv\`, Linux `$XDG_CACHE_HOME` or `~/.cache/sysenv/`; `--refresh` forces a re-fetch
 - Matching: case-insensitive exact match on model `id` / `canonical_model_id` / `name`, with substring fallback
 - **Canonical preference**: when several providers expose the same model name, the primary entry is chosen by majority vote on the `canonical_model_id` provider prefix (e.g. `gpt-4.1` → OpenAI), its detail is printed and the remaining providers are summarized; full ids (`openai/gpt-4.1-mini`) pin down one entry exactly
-- `-s/--search`: grep-style list output (`id<TAB>name<TAB>provider` per line), `--limit` controls the count (default 20)
+- `-s/--search`: substring-search list output; `--limit` controls the count (default 20)
 - `--list`: paginated browsing of all models / providers
+- **No args lists all**: `sysenv ai model` with no arguments lists every model (`--limit N` still caps the output)
+- **Text lists have a header row**: the default output of no-arg / `--list` / `--search` is an aligned table headed `ID  NAME  FAMILY  LAST UPDATED` (id / name / family / last updated)
+- `--date YYYY-MM-DD`: show only models whose `last_updated` is **strictly after** the given date; combines with no-arg / `--list` / `--search` / name lookups (the date filter is applied before matching); a malformed date is rejected with an error
+- `--open`: show only models with `open_weights: yes`; combines with `--date` and the other filters (date first, then open weights)
 - `-o/--output-format json|csv`: machine-readable output — `json` prints a **JSON array** (equivalent to `--json`; a single hit is still an array), `csv` prints a header + CSV table (24 columns for models, 6 for providers, RFC-4180 escaping). Works for detail, search, list and multi-match modes alike
 - Model detail fields: `id / name / provider / family / description / modalities / context / output limit / cost (input/output/cache_read per 1M tokens, in USD) / reasoning / tool call / structured output / temperature / attachment / open weights / release date / last updated / knowledge cutoff / reasoning options` and more
 
 ### Examples
 
 ```
+sysenv ai model                          # no args: list every model (same as `sai model`)
+sysenv ai model --date 2026-10-01        # only models last updated after 2026-10-01
+sysenv ai model --date 2026-10-01 --limit 10   # above + first 10 entries
+sysenv ai model --open --limit 10        # only models with open_weights: yes
+sysenv ai model --open --date 2025-01-01 # combined filters: updated after 2025 and open weights
 sysenv ai model gpt-4.1                  # exact lookup; picks the canonical entry when several providers match
 sysenv ai model openai/gpt-4.1-mini      # full id pins one entry
 sysenv ai model -s qwen --limit 10       # substring search (grep-style list)
@@ -192,7 +203,30 @@ sysenv ai provider --list                # list all providers
 
 CSV columns: models `id,name,provider,family,status,knowledge_cutoff,description,context,input_limit,output_limit,cost_input,cost_output,cost_cache_read,modalities_input,modalities_output,reasoning,tool_call,structured_output,temperature,attachment,open_weights,release_date,last_updated,canonical_model_id`; providers `id,name,api,env,npm,models_count`.
 
-## 6. httpie-compatible HTTP client (`http`)
+## 6. Process management (`task`)
+
+### Features
+
+- **No args lists all**: `sysenv task` (or `stask`) with no subcommand lists every process, equivalent to `task list`
+- `task list [NAME]`: list every process with **PID / name / executable path**; `NAME` fuzzy-matches the process name (substring, case-insensitive), a numeric value looks up that PID
+- `-o/--port <PORT>`: show only the **process using that port** (e.g. `task -o 8080` or `task list -o 8080`), combinable with the name / PID filter; Windows uses `netstat -ano`, Linux uses `ss -ltnp`
+- `task kill <PID|name>`: terminate by PID or by name; a fuzzy name match kills **every** matching process; `-f/--force` forces the kill (SIGKILL on Linux, SIGTERM by default); permission failures are reported per process without aborting the rest
+- Cross-platform: Windows uses a Toolhelp snapshot + `TerminateProcess`; Linux reads `/proc` and calls `kill`
+
+### Examples
+
+```
+sysenv task                       # no args: list all processes (same as `task list`)
+sysenv task -o 8080               # show the process using port 8080
+sysenv task list -o 8080          # same, explicit `list` form
+sysenv task list chrome           # fuzzy name match (substring, case-insensitive)
+sysenv task list 1234             # look up by PID
+sysenv task kill 1234             # terminate by PID
+sysenv task kill notepad          # fuzzy name match; kills every match
+sysenv task kill -f 1234          # force kill (SIGKILL on Linux)
+```
+
+## 7. httpie-compatible HTTP client (`http`)
 
 Flags follow [httpie](https://httpie.io) (subset).
 
@@ -258,7 +292,7 @@ sysenv http --verify no https://self-signed.example  # skip certificate verifica
 
 > Note: inside the `http` subcommand, `-h` means httpie-style "print response headers only", so use `sysenv help http` for help.
 
-## 7. Shortcut shims (`short`)
+## 8. Shortcut shims (`short`)
 
 ### Features
 
@@ -275,11 +309,12 @@ sysenv http --verify no https://self-signed.example  # skip certificate verifica
 | `slink` | `sysenv link` |
 | `shttp` | `sysenv http` |
 | `sai` | `sysenv ai` |
+| `stask` | `sysenv task` |
 
 ### Examples
 
 ```
-sysenv short              # install all 5 shims into the managed dir and register PATH
+sysenv short              # install all 6 shims into the managed dir and register PATH
 sysenv short --dir ~/bin  # custom directory
 sysenv short -f           # overwrite existing shims
 sysenv short --temporary  # no PATH persistence, print a paste-ready snippet

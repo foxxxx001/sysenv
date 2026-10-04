@@ -5,6 +5,7 @@ mod link;
 mod path;
 mod short;
 mod store;
+mod task;
 
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -25,6 +26,8 @@ Examples:
   sysenv link myapp.exe
   sysenv ai model gpt-4.1
   sysenv ai provider openai
+  sysenv task list
+  sysenv task kill 1234
   sysenv short
   sysenv http pie.dev/get name=John"
 )]
@@ -69,7 +72,9 @@ Use `sysenv help http` for help (in http subcommand, -h means response headers).
     Http(HttpArgs),
     /// Query the models.dev database of AI models & providers
     Ai(AiArgs),
-    /// Install shell shims for every subcommand (spath/senv/slink/shttp/sai)
+    /// Query and kill processes (list PID/name/path; kill by PID or name; no args lists all)
+    Task(TaskArgs),
+    /// Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask)
     Short(ShortArgs),
 }
 
@@ -210,7 +215,7 @@ struct AiArgs {
 
 #[derive(Subcommand)]
 enum AiCmd {
-    /// Query models.dev for model information by name
+    /// Query models.dev for model information by name (no args: list every model)
     Model(AiModelArgs),
     /// Query models.dev for provider information by name
     Provider(AiProviderArgs),
@@ -218,7 +223,7 @@ enum AiCmd {
 
 #[derive(Args)]
 struct AiModelArgs {
-    /// Model name or id to look up (e.g. gpt-4.1 or openai/gpt-4.1)
+    /// Model name or id to look up (e.g. gpt-4.1 or openai/gpt-4.1); omit to list every model
     name: Option<String>,
     /// Substring search over model ids and names
     #[arg(short = 's', long, value_name = "QUERY", conflicts_with = "name")]
@@ -226,9 +231,15 @@ struct AiModelArgs {
     /// List available models
     #[arg(long, conflicts_with_all = ["name", "search"])]
     list: bool,
-    /// Maximum number of entries to show when listing (default 20)
-    #[arg(long, default_value_t = 20)]
-    limit: usize,
+    /// Maximum number of entries to show when listing (default 20 with --list; all when no arguments)
+    #[arg(long)]
+    limit: Option<usize>,
+    /// Show only models whose last_updated is after DATE (YYYY-MM-DD)
+    #[arg(long, value_name = "DATE")]
+    date: Option<String>,
+    /// Show only models with open_weights enabled
+    #[arg(long)]
+    open: bool,
     /// Print the raw JSON (as a JSON array) instead of the formatted view
     #[arg(long)]
     json: bool,
@@ -265,6 +276,36 @@ enum OutFormat {
     Json,
     /// CSV table output
     Csv,
+}
+
+#[derive(Args)]
+struct TaskArgs {
+    /// Show only the process using PORT (list mode, e.g. `sysenv task -o 8080`)
+    #[arg(short = 'o', long, value_name = "PORT")]
+    port: Option<u16>,
+    /// Subcommand; omitted to list all processes
+    #[command(subcommand)]
+    cmd: Option<TaskCmd>,
+}
+
+#[derive(Subcommand)]
+enum TaskCmd {
+    /// List processes (PID, name, path); NAME fuzzy-matches the process name
+    List {
+        /// Fuzzy match on the process name; a numeric value matches the PID
+        name: Option<String>,
+        /// Show only the process using PORT (e.g. -o 8080)
+        #[arg(short = 'o', long, value_name = "PORT")]
+        port: Option<u16>,
+    },
+    /// Kill a process by PID or by name (name is fuzzy-matched; every match is killed)
+    Kill {
+        /// PID or process name
+        target: String,
+        /// Force the kill (SIGKILL on Linux)
+        #[arg(short = 'f', long)]
+        force: bool,
+    },
 }
 
 #[derive(Args)]
@@ -367,6 +408,7 @@ fn main() -> ExitCode {
         Cmd::Link(l) => run_link(l).map(|_| 0),
         Cmd::Http(h) => run_http(h),
         Cmd::Ai(a) => run_ai(a).map(|_| 0),
+        Cmd::Task(t) => run_task(t).map(|_| 0),
         Cmd::Short(s) => run_short(s).map(|_| 0),
     };
     match result {
@@ -426,6 +468,8 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             m.json,
             m.output,
             a.refresh,
+            m.date.as_deref(),
+            m.open,
         ),
         AiCmd::Provider(p) => ai::cmd_provider(
             p.name.as_deref(),
@@ -441,6 +485,20 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
 
 fn run_short(s: ShortArgs) -> anyhow::Result<()> {
     short::cmd_short(s.dir, s.force, s.temporary)
+}
+
+fn run_task(t: TaskArgs) -> anyhow::Result<()> {
+    match t.cmd {
+        Some(TaskCmd::List { name, port }) => task::cmd_list(name.as_deref(), port.or(t.port)),
+        Some(TaskCmd::Kill { target, force }) => {
+            if t.port.is_some() {
+                anyhow::bail!("`-o/--port` applies to the list mode only (e.g. `sysenv task -o 8080`)");
+            }
+            task::cmd_kill(&target, force)
+        }
+        // `sysenv task` with no subcommand defaults to listing every process.
+        None => task::cmd_list(None, t.port),
+    }
 }
 
 fn run_http(h: HttpArgs) -> anyhow::Result<i32> {

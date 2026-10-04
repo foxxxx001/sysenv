@@ -21,7 +21,7 @@
 
 
 ```
-sysenv 0.2.3 (Made by Gary-china)
+sysenv 0.2.8 (Made by Gary-china)
 
 Usage: sysenv <COMMAND>
 
@@ -31,7 +31,8 @@ Commands:
   link   Link a file into a PATH directory so it runs from anywhere
   http   httpie-compatible HTTP client: http [flags] [METHOD] URL [ITEM...]
   ai     Query the models.dev database of AI models & providers
-  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai)
+  task   Query and kill processes (list PID/name/path; kill by PID or name)
+  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask)
 ```
 
 
@@ -48,9 +49,10 @@ Commands:
 | 注册表导入导出   | `path export/import` | `.reg` / JSON / TXT 三种格式；合并或 `--replace` 整体替换；跨机迁移备份                                   |
 | 链接到 PATH  | `link`               | 硬链接 → 符号链接 → 拷贝三级自动回退；Windows `.cmd` 垫片；自定义命令名；系统目录或托管目录                               |
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
-| AI 模型查询   | `ai`                 | 226 个 Provider、8000+ 模型；24h 本地缓存；canonical 优选；`--search / --list / --json / --refresh` |
+| AI 模型查询   | `ai`                 | 226 个 Provider、8000+ 模型；24h 本地缓存；canonical 优选；无参列出全部；`--date 日期` 按更新时间过滤；`--open` 只看开放权重；`--search / --list / --json / --refresh` |
+| 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式                   |
-| 快捷垫片      | `short`              | 一键安装五种短命令；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
+| 快捷垫片      | `short`              | 一键安装六种短命令；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
 
 
 
@@ -76,9 +78,9 @@ cargo build --release
 * 文件名包含平台 + 架构 + 版本号：`sysenv-<平台>-<架构>_v<版本>`
 
 
-  * Windows：`sysenv-windows-x86_64_v0.2.3.exe`
+  * Windows：`sysenv-windows-x86_64_v0.2.8.exe`
 
-  * Ubuntu：`sysenv-linux-x86_64_v0.2.3`
+  * Ubuntu：`sysenv-linux-x86_64_v0.2.8`
 
 * 一键发布脚本（推荐）：**每次编译成功后自动清除临时编译产物**（`target/`），仅保留 `dist/` 发布产物
 
@@ -92,7 +94,7 @@ cargo build --release
 
 ```
 cargo build --release
-upx --best -o dist/sysenv-windows-x86_64_v0.2.3.exe target/release/sysenv.exe
+upx --best -o dist/sysenv-windows-x86_64_v0.2.8.exe target/release/sysenv.exe
 cargo clean
 ```
 
@@ -248,9 +250,17 @@ sysenv env list
 
 * **canonical 优选**：多个 Provider 暴露同名模型时，按 `canonical_model_id` 前缀多数投票选出主条目（如 `gpt-4.1` → OpenAI），打印详情并提示其余 Provider 数量；也可用完整 id（`openai/gpt-4.1-mini`）精确定位
 
-* `-s/--search`：grep 风格列表输出（`id 名称 provider` 每行一条），`--limit` 控制条数（默认 20）
+* `-s/--search`：子串搜索列表输出，`--limit` 控制条数（默认 20）
 
 * `--list`：分页浏览全部模型 / Provider
+
+* **无参默认全量**：`sysenv ai model` 不加参数直接列出全部模型（`--limit N` 仍可限制条数）
+
+* **文本列表带列名**：无参 / `--list` / `--search` 的默认输出为对齐表格，表头 `ID  NAME  FAMILY  LAST UPDATED`（id / 名称 / 所属家族 / 最后更新时间）
+
+* `--date YYYY-MM-DD`：只显示 `last_updated` **晚于**该日期（严格大于）的模型；可与无参 / `--list` / `--search` / 名称查询组合（先按日期过滤再匹配），日期格式非法会报错
+
+* `--open`：只显示 `open_weights: yes` 的模型；可与 `--date` 等过滤组合（先按日期、再按开放权重过滤）
 
 * `-o/--output-format json|csv`：机器可读输出 ——`json` 输出 **JSON 数组**（与 `--json` 等价，单命中也是数组）；`csv` 输出带表头的 CSV 表格（model 24 列、provider 6 列，RFC-4180 转义），适用于详情、搜索、列表与多匹配全部场景
 
@@ -261,6 +271,11 @@ sysenv env list
 
 
 ```
+sysenv ai model                          # 无参：列出全部模型（sai model 同）
+sysenv ai model --date 2026-10-01        # 只显示 last updated 晚于 2026-10-01 的模型
+sysenv ai model --date 2026-10-01 --limit 10   # 上一条 + 只显示前 10 条
+sysenv ai model --open --limit 10        # 只显示 open_weights: yes 的模型
+sysenv ai model --open --date 2025-01-01 # 两个过滤组合：2025 年后更新且开放权重
 sysenv ai model gpt-4.1                  # 精确查询；多 provider 同名时自动选 canonical 并提示其余
 sysenv ai model openai/gpt-4.1-mini      # 用完整 id 精确定位
 sysenv ai model -s qwen --limit 10       # 子串搜索（grep 风格列表）
@@ -277,7 +292,32 @@ sysenv ai provider --list                # 列出全部 Provider
 
 CSV 列：model 为 `id,name,provider,family,status,knowledge_cutoff,description,context,input_limit,output_limit,cost_input,cost_output,cost_cache_read,modalities_input,modalities_output,reasoning,tool_call,structured_output,temperature,attachment,open_weights,release_date,last_updated,canonical_model_id`；provider 为 `id,name,api,env,npm,models_count`。
 
-## 6. httpie 兼容 HTTP 客户端（`http`）
+## 6. 进程管理（`task`）
+
+### 特性
+
+* **无参默认全量**：`sysenv task`（`stask`）不加参数直接列出全部进程，等价于 `task list`
+
+* `task list [NAME]`：列出全部进程的 **PID / 名称 / 可执行文件路径**；`NAME` 按名称模糊匹配（子串、大小写不敏感），传数字则按 PID 精确查询
+
+* `-o/--port <PORT>`：只显示**占用该端口**的进程（如 `task -o 8080` 或 `task list -o 8080`），可与名称 / PID 过滤组合；Windows 用 `netstat -ano`，Linux 用 `ss -ltnp`
+* `task kill <PID|名称>`：按 PID 或名称终止进程；名称模糊匹配会终止**全部**命中进程；`-f/--force` 强制终止（Linux 发送 SIGKILL，默认 SIGTERM）；无权限等失败项单独提示，不中断其余
+* 跨平台实现：Windows 使用 Toolhelp 快照 + `TerminateProcess`，Linux 读取 `/proc` + `kill`
+
+### 示例
+
+```
+sysenv task                       # 无参：列出全部进程（等价于 task list）
+sysenv task -o 8080               # 查看占用 8080 端口的进程
+sysenv task list -o 8080          # 同上（显式 list 写法）
+sysenv task list chrome           # 按名称模糊匹配（子串，大小写不敏感）
+sysenv task list 1234             # 按 PID 查询
+sysenv task kill 1234             # 按 PID 终止
+sysenv task kill notepad          # 按名称模糊匹配，终止全部命中的进程
+sysenv task kill -f 1234          # 强制终止（Linux 发送 SIGKILL）
+```
+
+## 7. httpie 兼容 HTTP 客户端（`http`）
 
 参数与 [httpie](https://httpie.io) 保持一致（子集）。
 
@@ -367,7 +407,7 @@ sysenv http --verify no https://self-signed.example  # 跳过证书校验
 > `sysenv help http`
 > 。
 
-## 7. 快捷命令垫片（`short`）
+## 8. 快捷命令垫片（`short`）
 
 ### 特性
 
@@ -392,13 +432,14 @@ sysenv http --verify no https://self-signed.example  # 跳过证书校验
 | `slink` | `sysenv link` |
 | `shttp` | `sysenv http` |
 | `sai`   | `sysenv ai`   |
+| `stask` | `sysenv task` |
 
 ### 示例
 
 
 
 ```
-sysenv short              # 安装全部 5 个垫片到托管目录并自动加入 PATH
+sysenv short              # 安装全部 6 个垫片到托管目录并自动加入 PATH
 sysenv short --dir ~/bin  # 指定安装目录
 sysenv short -f           # 覆盖已存在的垫片
 sysenv short --temporary  # 不持久化 PATH，只打印可粘贴的片段

@@ -4,6 +4,47 @@
 
 ---
 
+## v0.2.8（2026-10-04）
+
+### 新增
+- `sysenv task`（`stask`）新增 `-o/--port <PORT>`：查看**占用指定端口的进程**（与 `list` 的名称 / PID 过滤可组合；`kill` 模式不适用）；Windows 用 `netstat -ano`，Linux 用 `ss -ltnp`
+
+---
+
+## v0.2.7（2026-10-04）
+
+### 新增
+- `sysenv task`（`stask`）不加参数时默认列出**全部进程**（等价于 `sysenv task list`），与 `sai model` 无参默认全量的行为保持一致
+
+---
+
+## v0.2.6（2026-10-04）
+
+### 变更
+- `sysenv ai model` 文本列表（无参 / `--list` / `--search` / 多匹配）默认展示改为**带列名对齐表格**：`ID  NAME  FAMILY  LAST UPDATED`（原先为无表头的 `id 名称 provider` 制表符行）；单模型详情视图（`== 标题 ==` + 字段行）不变
+
+---
+
+## v0.2.5（2026-10-04）
+
+### 新增
+- `sysenv ai model --date YYYY-MM-DD`：由 v0.2.4 的 `--data` 更名定稿（功能不变：仅显示 `last_updated` 晚于该日期的模型）
+- `sysenv ai model --open`：仅显示 `open_weights: yes` 的模型；可与 `--date` / 无参全量 / `--list` / `--search` / 名称查询组合（先按日期、再按开放权重过滤）
+- 新增 `sysenv task` 子命令（Windows / Ubuntu）：
+  - `task list [NAME]`：列出进程的 PID / 名称 / 可执行文件路径；NAME 按名称模糊匹配（子串、大小写不敏感），传数字则按 PID 精确查询
+  - `task kill <PID|名称>`：按 PID 或名称终止进程；名称模糊匹配会终止全部命中进程；`-f/--force` 强制终止（Linux 发送 SIGKILL，默认 SIGTERM）；无权限等失败项单独提示
+- 快捷垫片新增 `stask`（`sysenv task`），`sysenv short` 一次性安装 6 个短命令
+
+---
+
+## v0.2.4（2026-10-04）
+
+### 新增
+- `sysenv ai model`（`sai model`）不加参数时默认列出**全部模型**（原为报错提示需提供名称或 `--search/--list`）；`--limit N` 仍可限制条数，`--list` 保持默认 20 条分页
+- `sysenv ai model --data YYYY-MM-DD`：仅显示 `last_updated` **晚于**该日期（严格大于）的模型；可与 `--list` / 无参全量 / `--search` / 名称查询组合（先按日期过滤再匹配）；日期格式非法时给出明确报错
+
+---
+
 ## v0.2.3（2026-10-03）
 
 ### 新增
