@@ -2,9 +2,27 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sysenv-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
----
+## v0.2.9（2026-10-04）
 
-## v0.2.8（2026-10-04）
+### 新增
+- `sysenv ai cn-model`：新增**国内 AI 模型查询**子命令，数据源为 [datalearner](https://www.datalearner.com/ai-models/pretrained-models) 的预训练模型列表（约 1015 个模型，分页抓取 + slug 去重，24h 本地缓存 `datalearner-models.json`）：
+  - 只做查询：按名称精确查询 / `-s` 子串搜索（别名也匹配）；**没有** `--list`、**没有** `--open`（该数据源不提供开放权重信息）
+  - `--date YYYY-MM-DD`：以卡片 **published 发布日期**为筛选标准，只显示严格晚于该日期的模型；单独使用 `--date` 时直接列出全部晚于该日期的模型
+  - 字段：id（slug）/ name / provider / aliases / type 徽章 / category / published / url；`--json` / `-o json` 输出 JSON 数组，`-o csv` 输出 8 列 CSV；`--refresh` 强制重抓
+- `sysenv ai chat`：新增**聊天**子命令，按 OpenAI `/chat/completions`（type=openai，默认）或 Anthropic Messages API（type=anthropic）标准发请求：
+  - 配置文件默认 `~/.sysenv/config.yaml`（缺失明确提示；`-c/--config` 覆盖）；`clients` 存放多 Provider（必填 name / api_base / api_key / models，weight 缺省 1，max_tokens 可选）
+  - 顶层 `model` 选择规则：缺失 → 第一个 Provider 的第 1 个模型；`provider:model` → 双匹配；`provider:*` → 该 Provider 全部模型**加权轮询**；裸 `model` → 跨 Provider 匹配模型合集**加权轮询**（轮询状态持久化于配置同目录 `chat_state.json`）
+  - 顶层 `stream: true` 默认 SSE 流式逐字输出；`--no-stream` 关闭；`--debug` 时自动非流式
+  - `--debug`：打印实际 HTTP 请求（方法 / URL / 头 / 体）与响应（状态 / 头 / 体）到 stderr
+- `sysenv ai task`：新增**任务模板聊天**子命令：
+  - 无参数列出 `tasks` 的 name / desc（最多 10 个）；`-t <name>` 取对应任务组装消息后走 chat 通道
+  - `msg` 占位符 `{key:默认值}`：命令行传 `key:值` / `key=值` 则替换，否则用默认值（如 `{country:深圳}` + `country:北京` → 北京）
+  - `msg` 前缀 `file://`（读本地相对路径文件）与 `url:`（抓取网络内容）
+- `sysenv http --help`：新增帮助参数，打印接口参数说明与示例（http 子命令 `-h` 仍是 httpie 语义的“只打印响应头”）
+- `sysenv http --debug`：新增调试参数，把实际 HTTP 请求（方法 / URL / 请求头 / 请求体，含 Content-Length）与响应（状态 / 响应头 / 响应体）打印到 stderr，stdout 保持正常输出
+- 新增脱敏示例配置 `doc/config.example.yaml`（README 引用的 `doc/config.yaml` 为本地测试用真实配置，文档一律不出现真实密钥）
+
+---
 
 ### 新增
 - `sysenv task`（`stask`）新增 `-o/--port <PORT>`：查看**占用指定端口的进程**（与 `list` 的名称 / PID 过滤可组合；`kill` 模式不适用）；Windows 用 `netstat -ano`，Linux 用 `ss -ltnp`

@@ -1,13 +1,18 @@
-//! `sysenv ai` — query the models.dev database of AI models & providers.
+//! `sysenv ai` — query AI model info.
 //!
-//! The models.dev `/models/` and `/providers/` pages are generated from the
-//! same data that is served at `https://models.dev/api.json`; this command
-//! fetches that data and filters it by model / provider name.
+//! - `ai model` / `ai provider` query the models.dev database
+//!   (`https://models.dev/api.json`), the data behind the `/models/` and
+//!   `/providers/` pages.
+//! - `ai cn-model` queries the DataLearner AI model list
+//!   (`https://www.datalearner.com/ai-models/pretrained-models`), a
+//!   server-rendered HTML page (paged via `?page=N`); only released models
+//!   with a real `published` date are kept.
 
 use anyhow::{Context, Result, bail};
 use crate::OutFormat;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
@@ -872,6 +877,508 @@ pub fn cmd_provider(
 }
 
 // ---------------------------------------------------------------------------
+// `sysenv ai cn-model` — query the DataLearner AI model list.
+//
+// The DataLearner page (https://www.datalearner.com/ai-models/pretrained-models)
+// is server-rendered HTML. Models are listed as cards in the "全部模型" grid,
+// one page at a time (`?page=N`, page 1 has no query string). Each released
+// model card carries: name, provider, optional aliases (又名), type badges
+// (预览版 / 精选 / 开源模型 / 闭源模型 ...), a published date and a category.
+// Rumor (传闻) cards carry "预计发布" instead of a real date and are skipped.
+// ---------------------------------------------------------------------------
+
+const DL_BASE: &str = "https://www.datalearner.com/ai-models/pretrained-models";
+const DL_UA: &str = "Mozilla/5.0 (compatible; sysenv)";
+const DL_MAX_PAGES: usize = 200;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DlModel {
+    /// URL slug, e.g. `gpt-6-1-sol`
+    id: String,
+    /// Display name, e.g. `GPT-6.1 Sol`
+    name: String,
+    /// Publishing organization, e.g. `OpenAI`
+    provider: String,
+    /// Aliases joined with " / " (又名 on the page)
+    aliases: String,
+    /// Type badges joined with spaces (e.g. "精选 闭源模型")
+    r#type: String,
+    /// Model category, e.g. `推理大模型`
+    category: String,
+    /// Published date YYYY-MM-DD (empty when the card has no real date)
+    published: String,
+    /// Detail page URL
+    url: String,
+}
+
+const DL_CSV_HEADER: &str = "id,name,provider,aliases,type,category,published,url";
+
+fn dl_cache_file() -> PathBuf {
+    cache_dir().join("datalearner-models.json")
+}
+
+fn load_dl_cache() -> Option<Vec<DlModel>> {
+    let file = dl_cache_file();
+    let meta = std::fs::metadata(&file).ok()?;
+    let mtime = meta.modified().ok()?;
+    if SystemTime::now().duration_since(mtime).map(|d| d < CACHE_TTL).unwrap_or(false) {
+        if let Ok(content) = std::fs::read_to_string(&file) {
+            if let Ok(v) = serde_json::from_str(&content) {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+fn save_dl_cache(models: &[DlModel]) -> Result<()> {
+    let dir = cache_dir();
+    std::fs::create_dir_all(&dir).context("cannot create cache directory")?;
+    let text = serde_json::to_string(models).context("cannot serialize DataLearner cache")?;
+    std::fs::write(dl_cache_file(), text).context("cannot write DataLearner cache")?;
+    Ok(())
+}
+
+fn fetch_dl_page(url: &str) -> Result<String> {
+    let resp = reqwest::blocking::Client::builder()
+        .user_agent(DL_UA)
+        .build()
+        .context("failed to build HTTP client")?
+        .get(url)
+        .send()
+        .with_context(|| format!("cannot fetch {url} (offline? use a cached copy if available)"))?;
+    if !resp.status().is_success() {
+        bail!("{url} returned HTTP {}", resp.status());
+    }
+    resp.text().with_context(|| format!("cannot read response from {url}"))
+}
+
+/// Fetch every page of the DataLearner model list (deduplicated by slug) and
+/// cache it as JSON for 24 h. Returns the flattened model list.
+fn fetch_datalearner(refresh: bool) -> Result<Vec<DlModel>> {
+    if !refresh {
+        if let Some(v) = load_dl_cache() {
+            return Ok(v);
+        }
+    }
+    eprintln!("sysenv: fetching {DL_BASE} ...");
+    let mut models: Vec<DlModel> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut page = 1usize;
+    loop {
+        let url = if page == 1 {
+            DL_BASE.to_string()
+        } else {
+            format!("{DL_BASE}?page={page}")
+        };
+        let html = fetch_dl_page(&url)?;
+        let cards = parse_dl_cards(&html);
+        if cards.is_empty() {
+            break;
+        }
+        for m in cards {
+            if seen.insert(m.id.clone()) {
+                models.push(m);
+            }
+        }
+        if page >= DL_MAX_PAGES {
+            break;
+        }
+        page += 1;
+        std::thread::sleep(Duration::from_millis(120));
+    }
+    if models.is_empty() {
+        bail!("no model entries could be parsed from {DL_BASE}");
+    }
+    save_dl_cache(&models)?;
+    Ok(models)
+}
+
+// --- minimal HTML scanning helpers (no external parser dependency) ---------
+
+/// Byte offset of `needle` at or after `from` (None when absent).
+fn find_sub(haystack: &str, needle: &str, from: usize) -> Option<usize> {
+    haystack.get(from..)?.find(needle).map(|i| from + i)
+}
+
+/// Remove every `<...>` tag from a string, keeping the text content.
+fn html_strip_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find('<') {
+        out.push_str(&rest[..start]);
+        match rest[start..].find('>') {
+            Some(end) => rest = &rest[start + end + 1..],
+            None => break,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn html_unescape(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+}
+
+/// Value of the first `attr="..."` attribute found in `s`.
+fn tag_attr(s: &str, attr: &str) -> Option<String> {
+    let marker = format!("{attr}=\"");
+    let start = s.find(&marker)?;
+    let rest = &s[start + marker.len()..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// Inner text of the first `<tag ...>TEXT</tag>` element.
+fn tag_inner_text(s: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}");
+    let start = s.find(&open)?;
+    let gt = find_sub(s, ">", start + open.len())?;
+    let close = format!("</{tag}>");
+    let cl = find_sub(s, &close, gt + 1)?;
+    let text = html_strip_tags(&s[gt + 1..cl]);
+    Some(html_unescape(&text).trim().to_string())
+}
+
+/// Inner text of the first `<span class="...MARKER...">TEXT</span>` after `from`.
+fn span_class_text(s: &str, marker: &str) -> String {
+    let start = match s.find("<span class=\"") {
+        Some(i) => i,
+        None => return String::new(),
+    };
+    let rest = &s[start..];
+    if !rest[..rest.find('>').unwrap_or(rest.len())].contains(marker) {
+        return String::new();
+    }
+    let gt = find_sub(rest, ">", 0).unwrap_or(0);
+    let cl = match find_sub(rest, "</span>", gt) {
+        Some(i) => i,
+        None => return String::new(),
+    };
+    let text = html_strip_tags(&rest[gt + 1..cl]);
+    html_unescape(&text).trim().to_string()
+}
+
+/// Aliases from a `<span class="text-[11px]" title="...">又名...</span>` element.
+fn alias_text(card: &str) -> String {
+    let start = match card.find("text-[11px]") {
+        Some(i) => i,
+        None => return String::new(),
+    };
+    let head = &card[..start];
+    let span_start = head.rfind("<span").unwrap_or(start);
+    let seg = &card[span_start..];
+    let marker = "title=\"";
+    let ti = match seg.find(marker) {
+        Some(i) => i,
+        None => return String::new(),
+    };
+    let rest = &seg[ti + marker.len()..];
+    let end = match rest.find('"') {
+        Some(i) => i,
+        None => return String::new(),
+    };
+    rest[..end].trim().to_string()
+}
+
+/// True for a bare `YYYY-MM-DD` string.
+fn is_plain_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[..4].iter().all(|c| c.is_ascii_digit())
+        && b[5..7].iter().all(|c| c.is_ascii_digit())
+        && b[8..10].iter().all(|c| c.is_ascii_digit())
+}
+
+/// Parse every main-grid model card out of one DataLearner page.
+///
+/// Only cards whose anchor class contains `flex flex-col` (the "全部模型"
+/// grid) are considered; sidebar entries (特色/开源最新 lists) and rumor
+/// cards (`预计发布`) are skipped. Cards are deduplicated later by slug.
+fn parse_dl_cards(html: &str) -> Vec<DlModel> {
+    const HREF: &str = "<a href=\"/ai-models/pretrained-models/";
+    let mut out: Vec<DlModel> = Vec::new();
+    let mut pos = 0usize;
+    while let Some(start) = find_sub(html, HREF, pos) {
+        let slug_start = start + HREF.len();
+        let slug_end = match html.get(slug_start..).and_then(|r| r.find('"')) {
+            Some(i) => i,
+            None => break,
+        };
+        let slug = html[slug_start..slug_start + slug_end].to_string();
+        let a_close = match html.get(slug_start + slug_end..).and_then(|r| r.find("</a>")) {
+            Some(i) => i,
+            None => break,
+        };
+        let card_end = slug_start + slug_end + a_close;
+        let card = &html[start..card_end];
+        pos = card_end + 4;
+
+        let cls = tag_attr(card, "class").unwrap_or_default();
+        if !cls.contains("flex flex-col") || card.contains("预计发布") {
+            continue;
+        }
+
+        let name = tag_inner_text(card, "h3").unwrap_or_default();
+        let provider = match find_sub(card, "</h3>", 0) {
+            Some(h3e) => span_class_text(&card[h3e + 5..], "text-[12px]"),
+            None => String::new(),
+        };
+        let aliases = alias_text(card);
+
+        let mut badges: Vec<String> = Vec::new();
+        let mut i = 0usize;
+        while let Some(p) = find_sub(card, "text-[10px]", i) {
+            let span_start = match card[..p].rfind("<span") {
+                Some(s) => s,
+                None => break,
+            };
+            let gt = match find_sub(card, ">", span_start) {
+                Some(g) => g,
+                None => break,
+            };
+            let cl = match find_sub(card, "</span>", gt) {
+                Some(c) => c,
+                None => break,
+            };
+            let t = html_strip_tags(&card[gt + 1..cl]);
+            let t = html_unescape(&t).trim().to_string();
+            if !t.is_empty() {
+                badges.push(t);
+            }
+            i = cl + 7;
+        }
+
+        let mut published = String::new();
+        let mut category = String::new();
+        if let Some(mr) = find_sub(card, "flex items-center justify-between mt-auto", 0) {
+            let row_start = card[..mr].rfind("<div class=").unwrap_or(mr);
+            if let Some(row_end) = find_sub(card, "</div>", mr) {
+                let row = &card[row_start..row_end];
+                let mut j = 0usize;
+                while let Some(sp) = find_sub(row, "<span", j) {
+                    let gt = match find_sub(row, ">", sp) {
+                        Some(g) => g,
+                        None => break,
+                    };
+                    let cl = match find_sub(row, "</span>", gt) {
+                        Some(c) => c,
+                        None => break,
+                    };
+                    let t = html_strip_tags(&row[gt + 1..cl]);
+                    let t = html_unescape(&t).trim().to_string();
+                    if !t.is_empty() {
+                        if is_plain_date(&t) {
+                            published = t;
+                        } else if category.is_empty() {
+                            category = t;
+                        }
+                    }
+                    j = cl + 7;
+                }
+            }
+        }
+
+        out.push(DlModel {
+            id: slug.clone(),
+            name,
+            provider,
+            aliases,
+            r#type: badges.join(" "),
+            category,
+            published,
+            url: format!("{DL_BASE}/{slug}"),
+        });
+    }
+    out
+}
+
+/// Match models: exact (case-insensitive) on name / slug / alias first, then
+/// substring on name / slug / aliases.
+fn search_dl(models: &[DlModel], query: &str) -> Vec<DlModel> {
+    let exact: Vec<DlModel> = models
+        .iter()
+        .filter(|m| {
+            ci_eq(&m.name, query)
+                || ci_eq(&m.id, query)
+                || m.aliases.split(" / ").any(|a| ci_eq(a.trim(), query))
+        })
+        .cloned()
+        .collect();
+    if !exact.is_empty() {
+        return exact;
+    }
+    models
+        .iter()
+        .filter(|m| {
+            contains_ci(&m.name, query)
+                || contains_ci(&m.id, query)
+                || contains_ci(&m.aliases, query)
+        })
+        .cloned()
+        .collect()
+}
+
+/// True when the model has a real published date strictly after `date`.
+fn dl_published_after(m: &DlModel, date: &str) -> bool {
+    is_plain_date(&m.published) && m.published.as_str() > date
+}
+
+fn filter_dl_by_date(models: Vec<DlModel>, date: &str) -> Vec<DlModel> {
+    models
+        .into_iter()
+        .filter(|m| dl_published_after(m, date))
+        .collect()
+}
+
+fn dl_csv_row(m: &DlModel) -> String {
+    csv_row(&[
+        &m.id, &m.name, &m.provider, &m.aliases, &m.r#type, &m.category, &m.published, &m.url,
+    ])
+}
+
+/// Aligned `ID  NAME  PROVIDER  PUBLISHED` table for a list of models.
+fn print_dl_rows(hits: &[DlModel]) {
+    let w_id = hits.iter().map(|m| m.id.chars().count()).max().unwrap_or(0).max(2);
+    let w_name = hits.iter().map(|m| m.name.chars().count()).max().unwrap_or(0).max(4);
+    let w_prov = hits.iter().map(|m| m.provider.chars().count()).max().unwrap_or(0).max(8);
+    let w_pub = hits.iter().map(|m| m.published.chars().count()).max().unwrap_or(0).max(9);
+
+    println!("{:<w_id$}  {:<w_name$}  {:<w_prov$}  {:<w_pub$}", "ID", "NAME", "PROVIDER", "PUBLISHED");
+    for m in hits {
+        println!("{:<w_id$}  {:<w_name$}  {:<w_prov$}  {:<w_pub$}", m.id, m.name, m.provider, m.published);
+    }
+}
+
+/// Aligned `label: value` detail view for a single model.
+fn print_dl_detail(m: &DlModel) {
+    println!("== {} ==", if m.name.is_empty() { &m.id } else { &m.name });
+    let mut rows: Vec<(String, String)> = Vec::new();
+    rows.push(("id".into(), m.id.clone()));
+    rows.push(("name".into(), m.name.clone()));
+    rows.push(("provider".into(), m.provider.clone()));
+    if !m.aliases.is_empty() {
+        rows.push(("aliases".into(), m.aliases.clone()));
+    }
+    if !m.r#type.is_empty() {
+        rows.push(("type".into(), m.r#type.clone()));
+    }
+    if !m.category.is_empty() {
+        rows.push(("category".into(), m.category.clone()));
+    }
+    if !m.published.is_empty() {
+        rows.push(("published".into(), m.published.clone()));
+    }
+    rows.push(("url".into(), m.url.clone()));
+    let width = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    for (k, v) in rows {
+        println!("{k:>width$}: {v}");
+    }
+}
+
+fn output_dl(hits: &[DlModel], take: usize, fmt: Option<OutFormat>, list_mode: bool) -> Result<()> {
+    let shown = hits.len().min(take);
+    match fmt {
+        Some(OutFormat::Json) => {
+            let arr: Vec<&DlModel> = hits.iter().take(take).collect();
+            println!("{}", serde_json::to_string_pretty(&arr)?);
+        }
+        Some(OutFormat::Csv) => {
+            println!("{DL_CSV_HEADER}");
+            for m in hits.iter().take(take) {
+                println!("{}", dl_csv_row(m));
+            }
+        }
+        None => {
+            if list_mode {
+                print_dl_rows(&hits[..shown]);
+                let mut footer = format!("--- {shown} of {} models", hits.len());
+                if hits.len() > shown {
+                    footer.push_str(" (use --limit to show more)");
+                }
+                println!("{footer}");
+            } else {
+                print_dl_detail(&hits[0]);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `sysenv ai cn-model [NAME | -s QUERY] [--date DATE] [--limit N] [-o json|csv] [--refresh]`
+///
+/// Query-only: a NAME or `--search` is required (no `--list` / bare full
+/// listing, no `--open` — DataLearner exposes no structured open-weights
+/// field). `--date YYYY-MM-DD` keeps only models published strictly after it.
+pub fn cmd_cn_model(
+    name: Option<&str>,
+    search: Option<&str>,
+    limit: Option<usize>,
+    json: bool,
+    out: Option<OutFormat>,
+    refresh: bool,
+    updated_after: Option<&str>,
+) -> Result<()> {
+    let models = fetch_datalearner(refresh)?;
+    let fmt = out.or(if json { Some(OutFormat::Json) } else { None });
+    let date = updated_after.map(parse_date).transpose()?;
+
+    // --date alone lists every model published after that date.
+    if name.is_none() && search.is_none() {
+        if date.is_none() {
+            bail!("provide a model NAME or --search QUERY (data: {DL_BASE})");
+        }
+        let hits = filter_dl_by_date(models, updated_after.unwrap());
+        if hits.is_empty() {
+            bail!("no model published after {} (source: {DL_BASE})", updated_after.unwrap());
+        }
+        return output_dl(&hits, limit.unwrap_or(20).max(1), fmt, true);
+    }
+
+    let query = name.or(search).unwrap_or_default();
+
+    let hits = search_dl(&models, query);
+    let hits = match &date {
+        Some(d) => filter_dl_by_date(hits, d),
+        None => hits,
+    };
+    if hits.is_empty() {
+        let mut msg = format!("no model matches `{query}`");
+        if let Some(d) = &date {
+            msg.push_str(&format!(" published after {d}"));
+        }
+        bail!("{msg} (source: {DL_BASE})");
+    }
+
+    if search.is_some() {
+        // grep-style listing of every match.
+        let take = limit.unwrap_or(20).max(1);
+        return output_dl(&hits, take, fmt, true);
+    }
+
+    if hits.len() == 1 {
+        return output_dl(&hits, 1, fmt, false);
+    }
+
+    // Several models match exactly: show the list and how to disambiguate.
+    if fmt.is_none() {
+        println!("Multiple models match `{query}`:");
+    }
+    output_dl(&hits, limit.unwrap_or(20).max(1), fmt, true)?;
+    if fmt.is_none() {
+        println!("Use -o json or -o csv for machine output, or a full name / slug.");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1076,5 +1583,78 @@ mod tests {
         assert_eq!(hits.len(), 2);
         // no filters keeps everything
         assert_eq!(apply_filters(all_models(&data), None, false).len(), 3);
+    }
+
+    // ------------------------------------------------------------------
+    // DataLearner (cn-model) parsing
+    // ------------------------------------------------------------------
+
+    const CARD_HTML: &str = r#"<a href="/ai-models/pretrained-models/gpt-6-1-sol" class=" group flex flex-col p-5 border border-slate-100 dark:border-slate-700/60 rounded-xl hover:border-slate-200 dark:hover:border-slate-600 hover:bg-slate-50/50 dark:hover:bg-slate-800/50 hover:-translate-y-0.5 hover:shadow-sm transition-all duration-200 no-underline text-inherit "><div class="flex flex-wrap items-center gap-3 mb-3"><div class="flex-none w-10 h-10 rounded-full ring-1 ring-slate-200/80 dark:ring-slate-600/50 grid place-items-center bg-slate-100 dark:bg-slate-800 overflow-hidden relative"><img alt="GPT-6.1 Sol - OpenAI 标志" loading="lazy" decoding="async" data-nimg="fill" class="object-cover dark:brightness-90" style="position:absolute;height:100%;width:100%;left:0;top:0;right:0;bottom:0;color:transparent" src="/resources/ai-org-logo/x.png"/></div><div class="min-w-0 flex-1"><h3 class="m-0 text-[15px] font-semibold text-slate-900 dark:text-slate-100 leading-snug line-clamp-1 group-hover:text-black dark:group-hover:text-white">GPT-6.1 Sol</h3><span class="text-[12px] text-slate-400 dark:text-slate-500 line-clamp-1">OpenAI</span><span class="text-[11px] text-slate-400 dark:text-slate-500 line-clamp-1" title="GPT 6.1 Sol / gpt-6.1-sol">又名<!-- -->：<!-- -->GPT 6.1 Sol / gpt-6.1-sol</span></div><div class="flex items-center gap-1.5 flex-shrink-0"><span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/30"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-star" aria-hidden="true"><path d="M11.525 2.295a.53.53 0 0 1 .95 0"/></svg>精选</span><span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium text-slate-500 bg-slate-50 dark:bg-slate-700 dark:text-slate-400">闭源模型</span></div></div><div class="flex items-center justify-between mt-auto pt-2 border-t border-slate-50 dark:border-slate-700/60 text-[11px] text-slate-400 dark:text-slate-500"><span class="inline-flex items-center gap-1"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-calendar text-slate-300 dark:text-slate-600" aria-hidden="true"><path d="M8 2v4"></path></svg>2026-09-29</span><span class="inline-flex items-center gap-1"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-tag text-slate-300 dark:text-slate-600" aria-hidden="true"><path d="M12 2H2v10l9.29 9.29a1 1 0 0 0 1.42 0l8.58-8.58a1 1 0 0 0 0-1.42z"></path></svg>推理大模型</span></div></a>"#;
+
+    #[test]
+    fn dl_parse_full_card() {
+        let cards = parse_dl_cards(CARD_HTML);
+        assert_eq!(cards.len(), 1);
+        let m = &cards[0];
+        assert_eq!(m.id, "gpt-6-1-sol");
+        assert_eq!(m.name, "GPT-6.1 Sol");
+        assert_eq!(m.provider, "OpenAI");
+        assert_eq!(m.aliases, "GPT 6.1 Sol / gpt-6.1-sol");
+        assert_eq!(m.r#type, "精选 闭源模型");
+        assert_eq!(m.category, "推理大模型");
+        assert_eq!(m.published, "2026-09-29");
+        assert_eq!(m.url, "https://www.datalearner.com/ai-models/pretrained-models/gpt-6-1-sol");
+    }
+
+    #[test]
+    fn dl_skips_rumor_and_sidebar_cards() {
+        // rumor card: w-[260px] carousel + 预计发布
+        let rumor = r#"<a href="/ai-models/pretrained-models/claude-fable-5-5" title="查看模型详情" class="group flex min-h-[140px] w-[260px] flex-none snap-start flex-col rounded-xl border border-slate-100 bg-white p-4 text-inherit no-underline transition-colors hover:border-amber-200/80 hover:bg-amber-50/30 dark:border-slate-700/60 dark:bg-transparent dark:hover:border-amber-800/60 dark:hover:bg-amber-950/10 sm:w-[280px]"><h3 class="m-0 line-clamp-2 text-[15px] font-semibold leading-snug text-slate-900 group-hover:text-black dark:text-slate-100 dark:group-hover:text-white">Claude Fable 5.5</h3><div class="mt-auto pt-3 flex items-center justify-between"><span class="flex items-center gap-1.5 text-[12px] text-slate-400 dark:text-slate-500"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-calendar-clock flex-none text-amber-500/80 dark:text-amber-400/70" aria-hidden="true"><path d="M16 14v2.2l1.6 1"></path></svg><span class="text-slate-400 dark:text-slate-500">预计发布</span><span class="font-medium tabular-nums text-slate-600 dark:text-slate-300">2026-11-04</span></div></div></a>"#;
+        // sidebar row: flex items-center gap-3 py-2.5
+        let sidebar = r#"<a href="/ai-models/pretrained-models/gpt-6-luna" class="group flex items-center gap-3 py-2.5 no-underline -mx-2.5 px-2.5 rounded-lg transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/60" title="查看模型详情"><span class="flex-none w-1.5 h-1.5 rounded-full ml-[7px] mr-[5px] bg-amber-500"></span><span class="flex-1 min-w-0 truncate text-[13px] text-slate-800 dark:text-slate-200 group-hover:text-slate-900 dark:group-hover:text-white font-semibold">GPT-6 Luna</span></a>"#;
+        let html = format!("{}{}{}", rumor, sidebar, CARD_HTML);
+        let cards = parse_dl_cards(&html);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].id, "gpt-6-1-sol");
+    }
+
+    #[test]
+    fn dl_dedupe_not_here_but_search_works() {
+        let models = parse_dl_cards(CARD_HTML);
+        // exact match by name, slug and alias (case-insensitive)
+        assert_eq!(search_dl(&models, "gpt-6.1 sol").len(), 1);
+        assert_eq!(search_dl(&models, "GPT-6-1-SOL").len(), 1);
+        assert_eq!(search_dl(&models, "gpt-6.1-sol").len(), 1);
+        // substring match
+        assert_eq!(search_dl(&models, "6.1").len(), 1);
+        assert!(search_dl(&models, "nope").is_empty());
+    }
+
+    #[test]
+    fn dl_published_date_filter() {
+        let mut models = parse_dl_cards(CARD_HTML);
+        assert!(dl_published_after(&models[0], "2026-09-28"));
+        assert!(!dl_published_after(&models[0], "2026-09-29")); // strictly after
+        assert!(!dl_published_after(&models[0], "2026-09-30"));
+        models[0].published = String::new();
+        assert!(!dl_published_after(&models[0], "2020-01-01")); // no real date -> never matches
+        assert!(is_plain_date("2026-10-01"));
+        assert!(!is_plain_date("预计发布2026-10-01"));
+        assert!(!is_plain_date("2026-1-1"));
+    }
+
+    #[test]
+    fn dl_csv_row_fields() {
+        let models = parse_dl_cards(CARD_HTML);
+        let row = dl_csv_row(&models[0]);
+        let cols: Vec<&str> = row.split(',').collect();
+        assert_eq!(cols[0], "gpt-6-1-sol");
+        assert_eq!(cols[1], "GPT-6.1 Sol");
+        assert_eq!(cols[2], "OpenAI");
+        assert_eq!(cols[3], "GPT 6.1 Sol / gpt-6.1-sol");
+        assert_eq!(cols[5], "推理大模型");
+        assert_eq!(cols[6], "2026-09-29");
+        assert_eq!(cols.len(), 8);
+        assert!(DL_CSV_HEADER.split(',').count() == 8);
     }
 }

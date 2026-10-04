@@ -41,6 +41,7 @@ pub struct HttpConfig {
     pub verify: Option<String>,
     pub ignore_stdin: bool,
     pub default_scheme: String,
+    pub debug: bool,
     pub args: Vec<String>,
 }
 
@@ -694,8 +695,8 @@ fn pretty_json(body: &[u8]) -> Option<String> {
     }
 }
 
-fn guess_download_name(resp: &reqwest::blocking::Response, url: &str) -> String {
-    if let Some(cd) = resp.headers().get("content-disposition") {
+fn guess_download_name(headers: &HeaderMap, url: &str) -> String {
+    if let Some(cd) = headers.get("content-disposition") {
         if let Ok(s) = cd.to_str() {
             if let Some(pos) = s.find("filename=") {
                 let rest = &s[pos + 9..];
@@ -712,6 +713,138 @@ fn guess_download_name(resp: &reqwest::blocking::Response, url: &str) -> String 
         last.to_string()
     } else {
         "response".to_string()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Help & debug output
+// ---------------------------------------------------------------------------
+
+/// Print the `sysenv http --help` text (parameter descriptions + examples).
+pub fn print_help() {
+    println!(
+        r#"sysenv http - httpie-compatible HTTP client
+
+Usage: sysenv http [flags] [METHOD] URL [ITEM...]
+
+位置参数 / Positional:
+  METHOD       请求方法 GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS（缺省：有请求体时 POST，否则 GET）
+  URL          目标地址（缺省协议为 http；localhost 简写 :3000）
+  ITEM         请求项，见下表
+
+请求项 / Request items:
+  key=value       JSON 数据字段（默认 JSON；-f 时表单）
+  key:=json       原始 JSON 值（数字/布尔/对象/数组）
+  key==value      URL 查询参数
+  key:value       请求头（key: 空值 = 取消默认头）
+  key@file        multipart 文件上传（;type=mime 指定类型）
+  key=@file       将文件内容作为字段值
+  @file           以文件内容作为原始请求体（管道 stdin 亦可）
+
+参数 / Flags:
+  -j, --json              数据项序列化为 JSON（默认）
+  -f, --form              序列化为 application/x-www-form-urlencoded
+      --multipart         强制 multipart/form-data
+      --raw DATA          显式原始请求体
+  -p, --print WHAT        打印内容 H B h b m 任意组合（请求头/体、响应头/体、状态行）
+  -h, --headers           只打印响应头
+  -b, --body              只打印响应体
+  -m, --meta              只打印状态行
+  -v, --verbose           打印完整请求与响应
+  -o, --output FILE       响应体保存到文件（其余信息打到 stderr）
+  -d, --download          wget 式下载，自动猜测文件名
+  -q, --quiet             静默（仅错误输出）
+      --pretty MODE       none|all|colors|format 控制输出美化
+  -a, --auth USER[:PASS]|TOKEN   认证凭据
+  -A, --auth-type TYPE    basic（默认）或 bearer
+      --proxy PROTO:URL   http/https/all 代理（可重复）
+  -F, --follow            跟随 30x 重定向
+      --max-redirects N   最大重定向次数（默认 30）
+      --timeout SECONDS   连接超时（0 = 不限）
+      --check-status      3xx/4xx/5xx 退出码 3/4/5
+      --offline           只构建并打印请求，不发送
+      --verify MODE       yes|no|CA文件路径 控制证书校验
+  -I, --ignore-stdin      不读取 stdin
+      --default-scheme S  缺省协议（默认 http）
+      --debug             打印实际 HTTP 请求（方法/URL/头/体）与响应（状态/头/体）到 stderr
+      --help              显示本帮助（注意：http 子命令的 -h 是“只打印响应头”）
+
+示例 / Examples:
+  sysenv http pie.dev/get
+  sysenv http pie.dev/post name=John age:=29
+  sysenv http -f POST pie.dev/post name='John Smith'
+  sysenv http -v pie.dev/get
+  sysenv http GET pie.dev/get q==httpie per_page==1
+  sysenv http pie.dev/post X-API-Token:123 name=John
+  sysenv http -d pie.dev/image.png
+  sysenv http POST pie.dev/post @data.json
+  sysenv http pie.dev/post cv@resume.pdf
+  sysenv http -a user:pass pie.dev/anything
+  sysenv http -A bearer -a TOKEN pie.dev/anything
+  sysenv http --check-status pie.dev/404
+  sysenv http --offline pie.dev/post a=1
+  sysenv http --debug pie.dev/get
+  echo '{{"a":1}}' | sysenv http POST pie.dev/post
+"#
+    );
+}
+
+/// Dump the actual request (method, URL with query, headers, body) to stderr.
+fn debug_dump_request(spec: &RequestSpec, req: &reqwest::blocking::Request, body: &Option<Vec<u8>>) {
+    let mut w = std::io::stderr().lock();
+    let _ = writeln!(w, "# request");
+    let path_and_query = match req.url().query() {
+        Some(q) => format!("{}?{q}", req.url().path()),
+        None => req.url().path().to_string(),
+    };
+    let _ = writeln!(w, "{} {path_and_query} HTTP/1.1", spec.method);
+    let mut headers: Vec<(String, String)> = req
+        .headers()
+        .iter()
+        .map(|(n, v)| (n.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+    if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("host")) {
+        if let Some(h) = req.url().host_str() {
+            headers.push(("Host".to_string(), h.to_string()));
+        }
+    }
+    headers.sort_by(|a, b| a.0.cmp(&b.0));
+    for (n, v) in &headers {
+        let _ = writeln!(w, "{n}: {v}");
+    }
+    if let Some(b) = body {
+        if !b.is_empty() && !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-length")) {
+            let _ = writeln!(w, "Content-Length: {}", b.len());
+        }
+    }
+    let _ = writeln!(w);
+    if let Some(b) = body {
+        if !b.is_empty() {
+            let pretty = pretty_json(b).unwrap_or_else(|| String::from_utf8_lossy(b).into_owned());
+            let _ = writeln!(w, "{pretty}");
+            let _ = writeln!(w);
+        }
+    }
+}
+
+/// Dump the actual response (status, headers, body) to stderr.
+fn debug_dump_response(status: reqwest::StatusCode, headers: &HeaderMap, body: &[u8]) {
+    let mut w = std::io::stderr().lock();
+    let _ = writeln!(w, "# response");
+    let _ = writeln!(
+        w,
+        "HTTP {} {}",
+        status.as_u16(),
+        status.canonical_reason().unwrap_or("")
+    );
+    for (name, value) in headers.iter() {
+        let _ = writeln!(w, "{name}: {}", value.to_str().unwrap_or(""));
+    }
+    let _ = writeln!(w);
+    if !body.is_empty() {
+        let pretty = pretty_json(body).unwrap_or_else(|| String::from_utf8_lossy(body).into_owned());
+        let _ = writeln!(w, "{pretty}");
+        let _ = writeln!(w);
     }
 }
 
@@ -879,6 +1012,11 @@ pub fn run(cfg: &HttpConfig) -> Result<i32> {
 
     let req = req_builder.build().context("failed to build HTTP request")?;
 
+    // --debug: dump the actual request (method/URL/headers/body) to stderr.
+    if cfg.debug {
+        debug_dump_request(&spec, &req, &body_bytes);
+    }
+
     // --- Determine what to print.
     let print = if cfg.offline {
         parse_print_set(cfg.print.as_deref().unwrap_or("HB"))?
@@ -964,10 +1102,23 @@ pub fn run(cfg: &HttpConfig) -> Result<i32> {
     let resp = client.execute(req).context("request failed")?;
     let status = resp.status();
     let st_line = status_line(&resp);
+    let resp_headers = resp.headers().clone();
+
+    // --debug: dump the real response (status/headers/body) to stderr and keep
+    // the body for the regular output path below.
+    let mut body_opt: Option<Vec<u8>> = None;
+    let resp = if cfg.debug {
+        let bytes = resp.bytes().context("cannot read response body")?;
+        debug_dump_response(status, &resp_headers, &bytes);
+        body_opt = Some(bytes.to_vec());
+        None
+    } else {
+        Some(resp)
+    };
 
     let out_path = if let Some(p) = out_path {
         if p.as_os_str().is_empty() {
-            Some(PathBuf::from(guess_download_name(&resp, spec.url.as_str())))
+            Some(PathBuf::from(guess_download_name(&resp_headers, spec.url.as_str())))
         } else {
             Some(p)
         }
@@ -982,7 +1133,7 @@ pub fn run(cfg: &HttpConfig) -> Result<i32> {
             let _ = writeln!(w, "{st_line}");
         }
         if print.response_headers {
-            for (name, value) in resp.headers().iter() {
+            for (name, value) in resp_headers.iter() {
                 let _ = writeln!(w, "{name}: {}", value.to_str().unwrap_or(""));
             }
             let _ = writeln!(w);
@@ -994,7 +1145,7 @@ pub fn run(cfg: &HttpConfig) -> Result<i32> {
             let _ = writeln!(w, "{st_line}");
         }
         if print.response_headers {
-            for (name, value) in resp.headers().iter() {
+            for (name, value) in resp_headers.iter() {
                 let _ = writeln!(w, "{name}: {}", value.to_str().unwrap_or(""));
             }
             let _ = writeln!(w);
@@ -1003,20 +1154,29 @@ pub fn run(cfg: &HttpConfig) -> Result<i32> {
 
     // --- Body: file or terminal.
     if let Some(path) = &out_path {
-        let body = resp.bytes().context("cannot read response body")?;
+        let body: Vec<u8> = match &body_opt {
+            Some(b) => b.clone(),
+            None => resp
+                .unwrap()
+                .bytes()
+                .context("cannot read response body")?
+                .to_vec(),
+        };
         std::fs::write(path, &body)
             .with_context(|| format!("cannot write output file `{}`", path.display()))?;
         if !cfg.quiet {
             eprintln!("Saved response body to {}", path.display());
         }
     } else if print.response_body && !cfg.quiet {
-        let body_is_json = resp
-            .headers()
+        let body_is_json = resp_headers
             .get(CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(|ct| ct.contains("json"))
             .unwrap_or(false);
-        let text = resp.text().unwrap_or_default();
+        let text = match &body_opt {
+            Some(b) => String::from_utf8_lossy(b).into_owned(),
+            None => resp.unwrap().text().unwrap_or_default(),
+        };
         let pretty = pretty_json(text.as_bytes());
         let rendered = if pretty_enabled && (body_is_json || pretty.is_some()) {
             pretty.unwrap_or(text)
@@ -1025,8 +1185,8 @@ pub fn run(cfg: &HttpConfig) -> Result<i32> {
         };
         let mut w = std::io::stdout().lock();
         let _ = writeln!(w, "{rendered}");
-    } else {
-        let _ = resp.bytes(); // drain
+    } else if body_opt.is_none() {
+        let _ = resp.unwrap().bytes(); // drain
     }
 
     // --- Exit code semantics.

@@ -35,9 +35,9 @@ Commands:
 | Registry import/export | `path export/import` | `.reg` / JSON / TXT formats; merge or `--replace` full replace; machine migration & backup |
 | Link into PATH | `link` | hard link → symlink → copy fallback chain; Windows `.cmd` shim; custom command name; system or managed directory |
 | Environment variables | `env` | get / set / unset / list; persisted by default; `--temporary` for the current shell only; `machine` scope |
-| AI model lookup | `ai` | 226 providers, 8000+ models; 24 h local cache; canonical-entry preference; no args lists all; `--date DATE` filters by last updated; `--open` filters open-weights models; `--search / --list / --json / --refresh` |
+| AI model lookup | `ai` | `ai model` (models.dev: 226 providers, 8000+ models; 24 h cache; canonical preference; no args lists all; `--date` / `--open` / `--search / --list / --json / --refresh`); `ai cn-model` (datalearner: ~1015 models; `--date` filters by published); `ai chat` (multi-provider weighted round-robin chat, OpenAI / Anthropic compatible); `ai task` (task-template chat) |
 | Process management | `task` | no args lists all processes; list (PID / name / path, fuzzy name match); `-o` shows the process using a port; kill by PID or name; `-f` force |
-| HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline |
+| HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
 | Shortcut shims | `short` | installs six short commands at once; Windows `.cmd` / Linux sh scripts; auto PATH registration |
 
 ---
@@ -203,6 +203,67 @@ sysenv ai provider --list                # list all providers
 
 CSV columns: models `id,name,provider,family,status,knowledge_cutoff,description,context,input_limit,output_limit,cost_input,cost_output,cost_cache_read,modalities_input,modalities_output,reasoning,tool_call,structured_output,temperature,attachment,open_weights,release_date,last_updated,canonical_model_id`; providers `id,name,api,env,npm,models_count`.
 
+#### 5.1 China AI model lookup (`ai cn-model`)
+
+Data source: the [datalearner](https://www.datalearner.com/ai-models/pretrained-models) pretrained-model list (server-rendered HTML, about **1015 models**, fetched page by page and deduplicated by slug), fully independent from `ai model` (models.dev).
+
+- Query-only: exact lookup by **name** and `-s/--search` substring search (aliases match too); there is **no** `--list` and **no** `--open` (this source does not expose open-weights info)
+- `--date YYYY-MM-DD`: filters by the **published** date shown on each card, keeping only models **strictly after** the date; used alone (without a name / search term) it lists every model published after the date
+- Fields: `id (slug) / name / provider (publisher) / aliases / type (精选/预览版/开源模型/闭源模型 badges) / category (e.g. 推理大模型) / published / url`
+- 24 h local cache (same cache dir as `ai model`, file `datalearner-models.json`); `--refresh` forces a re-fetch
+- `--limit N` caps the list (default 20); `--json` / `-o json` print a JSON array; `-o csv` prints an 8-column CSV (`id,name,provider,aliases,type,category,published,url`)
+
+```
+sysenv ai cn-model gpt-6-1-sol            # exact lookup (case-insensitive)
+sysenv ai cn-model -s ernie --limit 10    # substring search (aliases match too)
+sysenv ai cn-model --date 2026-09-28      # list every model published after that date
+sysenv ai cn-model -s qwen --date 2026-01-01   # search + date filter
+sysenv ai cn-model gpt-6-1-sol --json     # JSON array output
+sysenv ai cn-model -s ernie -o csv        # CSV output
+sysenv ai cn-model gpt-6-1-sol --refresh  # force re-fetch
+```
+
+#### 5.2 AI chat (`ai chat`)
+
+Chats with the configured providers using the OpenAI `/v1/chat/completions` or the Anthropic Messages API standard.
+
+- Config file defaults to **`~/.sysenv/config.yaml`** (a clear message is shown when missing); `-c/--config FILE` overrides it. The format is documented in `doc/config.yaml`; the sanitized template is `doc/config.example.yaml`
+- `clients` holds the providers: required `name / api_base / api_key / models` (each `models` entry has `name` plus optional `weight`, default 1, and optional `max_tokens`); `type` is `openai` (default; `open` is accepted) or `anthropic`, and the request follows the OpenAI or the Claude API standard accordingly
+- Top-level `model` selects the model:
+  - missing → the first model of the first provider
+  - `provider:model` → the model whose provider name and model name both match
+  - `provider:*` → **all** models of that provider, picked by **weighted round-robin** on `weight` (default 1)
+  - `model` (bare name) → every matching model across all providers, again weighted round-robin
+- The rotation state persists in `chat_state.json` next to the config, so successive calls keep rotating
+- Message source: command-line arguments (joined with spaces); with no arguments, stdin is read when it is not a terminal
+- Top-level `stream: true` enables SSE streaming by default (printed token by token); `--no-stream` disables it; `--debug` forces non-streaming
+- `--debug`: prints the **actual HTTP request** (method / URL / headers / body) and **response** (status / headers / body) to stderr without polluting stdout
+
+```
+sysenv ai chat "hi"                       # chat with the default config (~/.sysenv/config.yaml)
+sysenv ai chat hi there                   # multiple args are joined
+echo "summarize this" | sysenv ai chat    # pipe via stdin
+sysenv ai chat "hi" -c doc/config.yaml    # explicit config file
+sysenv ai chat "hi" --no-stream           # disable streaming
+sysenv ai chat "hi" --debug               # print the actual request & response (incl. headers)
+```
+
+#### 5.3 Task templates (`ai task`)
+
+Assembles a chat message from a predefined `tasks` template, then sends it through the `ai chat` pipeline.
+
+- **No arguments**: lists each task's `name / desc` (at most 10)
+- `-t <name>`: picks the task whose `name` matches and builds the message from its `msg` (`desc` is the task description)
+- `msg` placeholders `{key:default}`: pass `key:value` or `key=value` on the command line to substitute, otherwise the default is used (e.g. `{country:深圳}` + `country:北京` → 北京)
+- `msg` prefixes: `file://` reads a local **relative-path** file as the message; `url:` fetches a web page as the message
+
+```
+sysenv ai task                          # list the tasks (name / desc, at most 10)
+sysenv ai task -t weather               # build the message with defaults and chat
+sysenv ai task -t weather country:北京   # substitute country with 北京
+sysenv ai task -t weather country=北京   # '=' syntax is equivalent
+```
+
 ## 6. Process management (`task`)
 
 ### Features
@@ -240,6 +301,8 @@ Flags follow [httpie](https://httpie.io) (subset).
 - Auth: `-a user:pass` Basic, `-A bearer -a TOKEN` Bearer token
 - Network behavior: `-F/--follow` redirects, `--max-redirects`, `--timeout`, `--proxy`, `--verify no` skips TLS verification, `--offline` builds & prints the request without sending, `-I/--ignore-stdin`
 - `--check-status`: exit code 3 for 3xx, 4 for 4xx, 5 for 5xx (script-friendly)
+- `--help`: prints the flag reference with examples (`-h` inside `http` keeps the httpie meaning of "response headers only")
+- `--debug`: prints the **actual HTTP request** (method / URL / headers / body, incl. Content-Length) and **response** (status line / headers / body) to stderr while stdout keeps its normal output — handy for verifying what is really sent over the wire
 - stdin piped as the raw request body; `--raw` sets an explicit raw body
 - Terminal pretty-printing: JSON responses are indented by default; `--pretty none` disables it
 
@@ -262,6 +325,8 @@ sysenv http -A bearer -a TOKEN pie.dev/anything   # Bearer token
 sysenv http -F --max-redirects 5 pie.dev/     # follow redirects
 sysenv http --check-status pie.dev/404        # exit code 4
 sysenv http --offline pie.dev/post a=1        # build & print the request only
+sysenv http --help                            # print the flag reference with examples
+sysenv http --debug pie.dev/post a=1 b:=2     # print the actual request & response (incl. headers)
 sysenv http POST pie.dev/post --raw '{"a":1}' # explicit raw body
 sysenv http pie.dev/post -- -name=foo         # field names starting with - go after --
 echo '{"a":1}' | sysenv http POST pie.dev/post  # stdin as raw body
@@ -290,7 +355,9 @@ sysenv http --verify no https://self-signed.example  # skip certificate verifica
 `-a/--auth` `-A/--auth-type` `--proxy` `-F/--follow` `--max-redirects` `--timeout`
 `--check-status` `--offline` `--verify` `-I/--ignore-stdin` `--default-scheme`
 
-> Note: inside the `http` subcommand, `-h` means httpie-style "print response headers only", so use `sysenv help http` for help.
+`--debug` `--help`
+
+> Note: inside the `http` subcommand, `-h` means httpie-style "print response headers only", so use `sysenv http --help` for help.
 
 ## 8. Shortcut shims (`short`)
 

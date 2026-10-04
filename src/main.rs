@@ -1,4 +1,5 @@
 mod ai;
+mod chat;
 mod env;
 mod httpie;
 mod link;
@@ -16,7 +17,7 @@ use std::process::ExitCode;
     name = "sysenv",
     version = concat!(env!("CARGO_PKG_VERSION"), " (Made by Gary-china)"),
     about = "System PATH & environment manager + httpie-compatible HTTP client (Windows / Ubuntu)",
-    long_about = "sysenv manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the models.dev database of AI models/providers, installs command shims (spath/senv/slink/shttp/sai), and ships an httpie-compatible HTTP client.
+    long_about = "sysenv manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, installs command shims (spath/senv/slink/shttp/sai), and ships an httpie-compatible HTTP client.
 
 Examples:
   sysenv path list
@@ -25,6 +26,9 @@ Examples:
   sysenv env set FOO bar
   sysenv link myapp.exe
   sysenv ai model gpt-4.1
+  sysenv ai cn-model gpt-6.1-sol
+  sysenv ai chat \"你好\"
+  sysenv ai task -t weather country:北京
   sysenv ai provider openai
   sysenv task list
   sysenv task kill 1234
@@ -70,7 +74,7 @@ Flags follow httpie: -j/--json, -f/--form, --multipart, -p/--print,
 Use `sysenv help http` for help (in http subcommand, -h means response headers)."
     )]
     Http(HttpArgs),
-    /// Query the models.dev database of AI models & providers
+    /// Query AI model info (DataLearner), provider info (models.dev), chat with configured providers
     Ai(AiArgs),
     /// Query and kill processes (list PID/name/path; kill by PID or name; no args lists all)
     Task(TaskArgs),
@@ -206,7 +210,7 @@ struct LinkArgs {
 
 #[derive(Args)]
 struct AiArgs {
-    /// Force re-fetching the models.dev data (otherwise use the 24 h cache)
+    /// Force re-fetching the remote data (otherwise use the 24 h cache)
     #[arg(long)]
     refresh: bool,
     #[command(subcommand)]
@@ -217,8 +221,14 @@ struct AiArgs {
 enum AiCmd {
     /// Query models.dev for model information by name (no args: list every model)
     Model(AiModelArgs),
+    /// Query the DataLearner AI model list by name (published date filter via --date)
+    CnModel(CnModelArgs),
     /// Query models.dev for provider information by name
     Provider(AiProviderArgs),
+    /// Chat with an LLM configured in ~/.sysenv/config.yaml (OpenAI / Anthropic compatible)
+    Chat(ChatArgs),
+    /// Run a chat task template from the config (no -t lists the tasks)
+    Task(AiTaskArgs),
 }
 
 #[derive(Args)]
@@ -246,6 +256,62 @@ struct AiModelArgs {
     /// Output format: json (JSON array) or csv (table); default is a formatted text view
     #[arg(short = 'o', long = "output-format", value_name = "FORMAT", value_enum, conflicts_with = "json")]
     output: Option<OutFormat>,
+}
+
+#[derive(Args)]
+struct CnModelArgs {
+    /// Model name / alias / id (slug) to look up (e.g. "GPT-6.1 Sol" or gpt-6-1-sol)
+    name: Option<String>,
+    /// Substring search over model names, ids and aliases
+    #[arg(short = 's', long, value_name = "QUERY", conflicts_with = "name")]
+    search: Option<String>,
+    /// Maximum number of entries to show for --search results (default 20)
+    #[arg(long)]
+    limit: Option<usize>,
+    /// Show only models whose published date is after DATE (YYYY-MM-DD)
+    #[arg(long, value_name = "DATE")]
+    date: Option<String>,
+    /// Print the raw JSON (as a JSON array) instead of the formatted view
+    #[arg(long)]
+    json: bool,
+    /// Output format: json (JSON array) or csv (table); default is a formatted text view
+    #[arg(short = 'o', long = "output-format", value_name = "FORMAT", value_enum, conflicts_with = "json")]
+    output: Option<OutFormat>,
+}
+
+#[derive(Args)]
+struct ChatArgs {
+    /// The message to send (multiple words are joined with spaces; when omitted, stdin is read when piped)
+    #[arg(value_name = "MSG")]
+    msg: Vec<String>,
+    /// Config file path (default: ~/.sysenv/config.yaml)
+    #[arg(short = 'c', long, value_name = "FILE")]
+    config: Option<PathBuf>,
+    /// Print the actual HTTP request (method/URL/headers/body) and response (status/headers/body)
+    #[arg(long)]
+    debug: bool,
+    /// Disable streaming even if the config sets stream: true
+    #[arg(long)]
+    no_stream: bool,
+}
+
+#[derive(Args)]
+struct AiTaskArgs {
+    /// Task name from the config (e.g. -t weather); omit to list the available tasks
+    #[arg(short = 't', long, value_name = "NAME")]
+    task: Option<String>,
+    /// Template parameters like key:value or key=value (e.g. country:北京)
+    #[arg(value_name = "PARAM")]
+    params: Vec<String>,
+    /// Config file path (default: ~/.sysenv/config.yaml)
+    #[arg(short = 'c', long, value_name = "FILE")]
+    config: Option<PathBuf>,
+    /// Print the actual HTTP request (method/URL/headers/body) and response (status/headers/body)
+    #[arg(long)]
+    debug: bool,
+    /// Disable streaming even if the config sets stream: true
+    #[arg(long)]
+    no_stream: bool,
 }
 
 #[derive(Args)]
@@ -323,6 +389,12 @@ struct ShortArgs {
 
 #[derive(Args)]
 struct HttpArgs {
+    /// Print parameter descriptions and examples, then exit (use `sysenv help http` for clap help)
+    #[arg(long)]
+    help: bool,
+    /// Print the actual HTTP request (method/URL/headers/body) and response (status/headers/body) to stderr
+    #[arg(long)]
+    debug: bool,
     /// Serialize data items as a JSON object (default when data items exist)
     #[arg(short = 'j', long)]
     json: bool,
@@ -471,6 +543,15 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             m.date.as_deref(),
             m.open,
         ),
+        AiCmd::CnModel(m) => ai::cmd_cn_model(
+            m.name.as_deref(),
+            m.search.as_deref(),
+            m.limit,
+            m.json,
+            m.output,
+            a.refresh,
+            m.date.as_deref(),
+        ),
         AiCmd::Provider(p) => ai::cmd_provider(
             p.name.as_deref(),
             p.search.as_deref(),
@@ -479,6 +560,14 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             p.json,
             p.output,
             a.refresh,
+        ),
+        AiCmd::Chat(c) => chat::cmd_chat(&c.msg, c.config.as_deref(), c.debug, c.no_stream),
+        AiCmd::Task(t) => chat::cmd_task(
+            t.task.as_deref(),
+            &t.params,
+            t.config.as_deref(),
+            t.debug,
+            t.no_stream,
         ),
     }
 }
@@ -502,6 +591,10 @@ fn run_task(t: TaskArgs) -> anyhow::Result<()> {
 }
 
 fn run_http(h: HttpArgs) -> anyhow::Result<i32> {
+    if h.help {
+        httpie::print_help();
+        return Ok(0);
+    }
     let cfg = httpie::HttpConfig {
         json: h.json,
         form: h.form,
@@ -527,6 +620,7 @@ fn run_http(h: HttpArgs) -> anyhow::Result<i32> {
         verify: h.verify,
         ignore_stdin: h.ignore_stdin,
         default_scheme: h.default_scheme.unwrap_or_else(|| "http".to_string()),
+        debug: h.debug,
         args: h.args,
     };
     httpie::run(&cfg)

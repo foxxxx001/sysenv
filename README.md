@@ -49,9 +49,9 @@ Commands:
 | 注册表导入导出   | `path export/import` | `.reg` / JSON / TXT 三种格式；合并或 `--replace` 整体替换；跨机迁移备份                                   |
 | 链接到 PATH  | `link`               | 硬链接 → 符号链接 → 拷贝三级自动回退；Windows `.cmd` 垫片；自定义命令名；系统目录或托管目录                               |
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
-| AI 模型查询   | `ai`                 | 226 个 Provider、8000+ 模型；24h 本地缓存；canonical 优选；无参列出全部；`--date 日期` 按更新时间过滤；`--open` 只看开放权重；`--search / --list / --json / --refresh` |
+| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` 按 published 过滤）；`ai chat`（多 Provider 加权轮询聊天，OpenAI / Anthropic 兼容）；`ai task`（任务模板聊天） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
-| HTTP 客户端  | `http`               | httpie 参数子集对齐；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式                   |
+| HTTP 客户端  | `http`               | httpie 参数子集对齐；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
 | 快捷垫片      | `short`              | 一键安装六种短命令；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
 
 
@@ -292,6 +292,80 @@ sysenv ai provider --list                # 列出全部 Provider
 
 CSV 列：model 为 `id,name,provider,family,status,knowledge_cutoff,description,context,input_limit,output_limit,cost_input,cost_output,cost_cache_read,modalities_input,modalities_output,reasoning,tool_call,structured_output,temperature,attachment,open_weights,release_date,last_updated,canonical_model_id`；provider 为 `id,name,api,env,npm,models_count`。
 
+#### 5.1 国内 AI 模型查询（`ai cn-model`）
+
+数据源为 [datalearner](https://www.datalearner.com/ai-models/pretrained-models) 的预训练模型列表（服务端渲染 HTML，约 **1015 个模型**，分页抓取 + slug 去重），与 `ai model`（models.dev）相互独立。
+
+* 只做查询：支持按**名称精确查询**与 `-s/--search` 子串搜索（别名也会匹配），**没有** `--list`、**没有** `--open`（该数据源不提供开放权重信息）
+
+* `--date YYYY-MM-DD`：以卡片上的 **published 发布日期**为筛选标准，只显示**晚于**该日期的模型；单独使用 `--date`（不带名称 / 搜索词）时直接列出全部晚于该日期的模型
+
+* 字段：`id（slug）/ name / provider（发布机构）/ aliases（又名）/ type（精选 / 预览版 / 开源模型 / 闭源模型等徽章）/ category（分类，如 推理大模型）/ published / url`
+
+* 24 小时本地缓存（与 `ai model` 同一缓存目录，文件名 `datalearner-models.json`）；`--refresh` 强制重新抓取
+
+* `--limit N` 限制列表条数（默认 20）；`--json` / `-o json` 输出 JSON 数组；`-o csv` 输出 8 列 CSV（`id,name,provider,aliases,type,category,published,url`）
+
+```
+sysenv ai cn-model gpt-6-1-sol            # 精确查询（大小写不敏感）
+sysenv ai cn-model -s ernie --limit 10    # 子串搜索（别名也匹配）
+sysenv ai cn-model --date 2026-09-28      # 列出所有 published 晚于该日期的模型
+sysenv ai cn-model -s qwen --date 2026-01-01   # 搜索 + 日期过滤
+sysenv ai cn-model gpt-6-1-sol --json     # JSON 数组输出
+sysenv ai cn-model -s ernie -o csv        # CSV 输出
+sysenv ai cn-model gpt-6-1-sol --refresh  # 强制重新抓取
+```
+
+#### 5.2 AI 聊天（`ai chat`）
+
+按 OpenAI `/v1/chat/completions` 或 Anthropic Messages API 标准与配置好的 Provider 聊天。
+
+* 配置文件默认位置 **`~/.sysenv/config.yaml`**（找不到会明确提示），可用 `-c/--config FILE` 覆盖；格式见 `doc/config.yaml`，脱敏模板见 `doc/config.example.yaml`
+
+* `clients` 列表存放 Provider：必填 `name / api_base / api_key / models`（`models` 每项 `name` + 可选 `weight`，缺省权重 1，可选 `max_tokens`）；`type` 为 `openai`（默认，兼容 `open`）或 `anthropic`，分别按 OpenAI / Claude API 标准发请求
+
+* 顶层 `model` 选择模型，规则：
+  - 缺失 → 第一个 Provider 的第 1 个模型
+  - `provider:model` → Provider 名称与模型名称都匹配的那个模型
+  - `provider:*` → 该 Provider 下**所有**模型，按 `weight` **带权重轮询**（缺省 1）
+  - `model`（裸名）→ 所有 Provider 中名称匹配的模型合集，同样带权重轮询
+
+* 轮询状态持久化在配置同目录的 `chat_state.json`，多次调用会持续轮转
+
+* 消息来源：命令行参数（多段自动拼接）；无参数时若 stdin 非终端则读取管道内容
+
+* 顶层 `stream: true` 时默认 SSE 流式输出（逐字打印）；`--no-stream` 关闭；`--debug` 时自动改为非流式
+
+* `--debug`：把**实际 HTTP 请求**（方法 / URL / 请求头 / 请求体）与**响应**（状态 / 响应头 / 响应体）打印到 stderr，不污染 stdout
+
+```
+sysenv ai chat "你好"                     # 用默认配置聊天（~/.sysenv/config.yaml）
+sysenv ai chat 你好 世界                  # 多参数自动拼接
+echo "帮我总结这段文字" | sysenv ai chat   # stdin 管道
+sysenv ai chat "你好" -c doc/config.yaml  # 指定配置文件
+sysenv ai chat "你好" --no-stream         # 关闭流式
+sysenv ai chat "你好" --debug             # 打印实际请求与响应（含 header）
+```
+
+#### 5.3 任务模板聊天（`ai task`）
+
+把 `tasks` 里预定义的模板组装成聊天消息后走 `ai chat` 通道。
+
+* **无参数**：列出 `tasks` 中每个任务的 `name / desc`（最多 10 个）
+
+* `-t <name>`：取 `name` 匹配的任务，按 `msg` 组装消息（`desc` 为任务描述）
+
+* `msg` 模板占位符 `{key:默认值}`：命令行传 `key:值` 或 `key=值` 则替换为传入值，否则用默认值（如 `{country:深圳}` + `country:北京` → 北京）
+
+* `msg` 前缀：`file://` 读取本地**相对路径**文件内容作为消息；`url:` 抓取网络内容作为消息
+
+```
+sysenv ai task                          # 列出任务（name / desc，最多 10 个）
+sysenv ai task -t weather               # 用默认值（深圳）组装消息并聊天
+sysenv ai task -t weather country:北京   # 替换 country 为北京
+sysenv ai task -t weather country=北京   # = 号写法等价
+```
+
 ## 6. 进程管理（`task`）
 
 ### 特性
@@ -341,6 +415,10 @@ sysenv task kill -f 1234          # 强制终止（Linux 发送 SIGKILL）
 
 * `--check-status`：3xx → 退出码 3，4xx → 4，5xx → 5（脚本友好）
 
+* `--help`：打印接口参数说明与示例（http 子命令的 `-h` 是 httpie 语义的“只打印响应头”）
+
+* `--debug`：把**实际 HTTP 请求**（方法 / URL / 请求头 / 请求体，含 Content-Length）与**响应**（状态行 / 响应头 / 响应体）打印到 stderr，stdout 保持正常输出，便于排查真实发包内容
+
 * stdin 管道直接作为原始请求体；`--raw` 显式指定原始体
 
 * 终端美化：默认对 JSON 响应做缩进格式化，`--pretty none` 关闭
@@ -366,6 +444,8 @@ sysenv http -A bearer -a TOKEN pie.dev/anything   # Bearer Token
 sysenv http -F --max-redirects 5 pie.dev/     # 跟随重定向
 sysenv http --check-status pie.dev/404        # 退出码 = 4
 sysenv http --offline pie.dev/post a=1        # 只构建并打印请求，不发送
+sysenv http --help                            # 打印接口参数说明与示例
+sysenv http --debug pie.dev/post a=1 b:=2     # 打印实际请求与响应（含 header）
 sysenv http POST pie.dev/post --raw '{"a":1}' # 显式原始体
 sysenv http pie.dev/post -- -name=foo         # 以 - 开头的字段名需跟在 -- 之后
 echo '{"a":1}' | sysenv http POST pie.dev/post  # stdin 作为原始体
@@ -401,10 +481,12 @@ sysenv http --verify no https://self-signed.example  # 跳过证书校验
 
 `--check-status` `--offline` `--verify` `-I/--ignore-stdin` `--default-scheme`
 
+`--debug` `--help`
+
 > 说明：http 子命令中
 > `-h`
 > 是 httpie 语义的 "只打印响应头"，因此帮助请用
-> `sysenv help http`
+> `sysenv http --help`
 > 。
 
 ## 8. 快捷命令垫片（`short`）
