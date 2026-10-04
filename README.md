@@ -284,7 +284,7 @@ sysenv ai model gpt-4.1 --json           # 输出 JSON 数组（同 -o json）
 sysenv ai model gpt-4.1 -o csv           # 输出 CSV 表格（24 列）
 sysenv ai model -s qwen -o csv           # 搜索结果的 CSV 输出
 sysenv ai provider openai -o csv         # Provider CSV（6 列）
-sysenv ai model gpt-4.1 --refresh        # 强制重抓数据
+sysenv ai model gpt-4.1 --refresh        # 强制重抓数据（--refresh 属 ai 层，也可写 ai --refresh model gpt-4.1）
 sysenv ai provider openai                # Provider 详情（api / npm / models 数量与清单）
 sysenv ai provider -s groq               # Provider 子串搜索
 sysenv ai provider --list                # 列出全部 Provider
@@ -313,7 +313,7 @@ sysenv ai cn-model --date 2026-09-28      # 列出所有 published 晚于该日�
 sysenv ai cn-model -s qwen --date 2026-01-01   # 搜索 + 日期过滤
 sysenv ai cn-model gpt-6-1-sol --json     # JSON 数组输出
 sysenv ai cn-model -s ernie -o csv        # CSV 输出
-sysenv ai cn-model gpt-6-1-sol --refresh  # 强制重新抓取
+sysenv ai cn-model gpt-6-1-sol --refresh  # 强制重新抓取（--refresh 属 ai 层）
 ```
 
 #### 5.2 AI 聊天（`ai chat`）

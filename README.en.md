@@ -195,7 +195,7 @@ sysenv ai model gpt-4.1 --json           # JSON array output (same as -o json)
 sysenv ai model gpt-4.1 -o csv           # CSV table output (24 columns)
 sysenv ai model -s qwen -o csv           # CSV output for search results
 sysenv ai provider openai -o csv         # provider CSV (6 columns)
-sysenv ai model gpt-4.1 --refresh        # force re-fetch
+sysenv ai model gpt-4.1 --refresh        # force re-fetch (--refresh lives on `ai`; `ai --refresh model gpt-4.1` also works)
 sysenv ai provider openai                # provider detail (api / npm / model count & list)
 sysenv ai provider -s groq               # provider substring search
 sysenv ai provider --list                # list all providers
@@ -220,7 +220,7 @@ sysenv ai cn-model --date 2026-09-28      # list every model published after tha
 sysenv ai cn-model -s qwen --date 2026-01-01   # search + date filter
 sysenv ai cn-model gpt-6-1-sol --json     # JSON array output
 sysenv ai cn-model -s ernie -o csv        # CSV output
-sysenv ai cn-model gpt-6-1-sol --refresh  # force re-fetch
+sysenv ai cn-model gpt-6-1-sol --refresh  # force re-fetch (--refresh lives on `ai`)
 ```
 
 #### 5.2 AI chat (`ai chat`)
