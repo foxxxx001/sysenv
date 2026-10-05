@@ -2,6 +2,15 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sysenv-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.10 (2026-10-05)
+
+### Fixed
+- **hotdrama / cloudrank search failure**: fixed off-topic tool results for requests like "今天电视剧热度排行榜".
+  - Root cause: vendor names like 德塔文/云合 get tokenized badly by the search engines (e.g. 德塔文 → 德), returning Chinese-character dictionary entries, Amap links and other irrelevant rows; the Data Eye site (dxtower.com) is also unreachable directly.
+  - Fix: the `dxtower` source now uses the generic query `电视剧 热度 排行榜 今日` and `enlightent` uses `电视剧 热播 榜单 今日`, matching hot-drama channel pages on iQiyi / Tencent Video / CCTV, which the model summarizes into today's drama ranks.
+  - hotdrama / cloudrank task descriptions updated to "电视剧热度排行榜/热播榜（AI 聚合多源搜索）".
+- Smoke-verified: `-t hotdrama` returns real platform hot-drama channel results with no dictionary/encyclopedia/map pollution.
+
 ## v0.4.9 (2026-10-05)
 
 ### Fixed

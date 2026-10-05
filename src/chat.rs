@@ -1824,8 +1824,11 @@ fn builtin_search(source: &str, args: &HashMap<String, String>) -> Result<String
             }
             aggregate_search(&q, &get)?
         }
-        "dxtower" => aggregate_search("德塔文 电视剧景气指数 今日 榜单", &get)?,
-        "enlightent" => aggregate_search("云合数据 热播电视剧 霸屏榜 今日", &get)?,
+        // Drama-rank aggregate search. The vendors' own names (德塔文/云合) get
+        // tokenized badly by the engines (e.g. 德 → dictionary entries), so use
+        // generic heat-rank words that match Maoyan/Guduo/Dengta/EntGroup etc.
+        "dxtower" => aggregate_search("电视剧 热度 排行榜 今日", &get)?,
+        "enlightent" => aggregate_search("电视剧 热播 榜单 今日", &get)?,
         "cls" => aggregate_search("财联社 电报 今日 财经", &get)?,
         "dongchedi" => aggregate_search("懂车帝 汽车 资讯 新闻", &get)?,
         "autohome" => aggregate_search("汽车之家 汽车 新闻 资讯", &get)?,
