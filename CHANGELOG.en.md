@@ -2,6 +2,13 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sysenv-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.6 (2026-10-05)
+
+### Added
+- New search source `szhousing` for `sysenv ai task`: **Shenzhen housing sales** (new/second-hand transaction counts from the Shenzhen Real Estate Information Platform's public data).
+- Implementation note: `fdc.zjj.sz.gov.cn` runs a Ruishi dynamic WAF (full browser headers still return HTTP 412), so it cannot be fetched directly. It uses AI aggregate search (Sogou first, Bing fallback) over public channels (Leyoujia / Centaline / the housing bureau site) and the model summarizes honestly with sources.
+- Sample config adds the `szhousing` task (both `~/.sysenv/config.yaml` and `doc/config.yaml`).
+
 ## v0.4.5 (2026-10-05)
 
 ### Added

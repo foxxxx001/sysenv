@@ -1788,8 +1788,11 @@ fn builtin_search(source: &str, args: &HashMap<String, String>) -> Result<String
         "cls" => aggregate_search("财联社 电报 今日 财经", &get)?,
         "dongchedi" => aggregate_search("懂车帝 汽车 资讯 新闻", &get)?,
         "autohome" => aggregate_search("汽车之家 汽车 新闻 资讯", &get)?,
+        // Shenzhen housing sales (fdc.zjj.sz.gov.cn is behind a Ruishi WAF, so
+        // use aggregate search over the public housing-market data).
+        "szhousing" => aggregate_search("深圳 新房 成交 套数 深圳房地产信息平台", &get)?,
         other => bail!(
-            "unknown search source `{other}` (available: zhihu, baidu, bilibili, github, hn, toutiao, tophub, oschina, smzdm, bing, sogou, dxtower, enlightent, cls, dongchedi, autohome)"
+            "unknown search source `{other}` (available: zhihu, baidu, bilibili, github, hn, toutiao, tophub, oschina, smzdm, bing, sogou, dxtower, enlightent, cls, dongchedi, autohome, szhousing)"
         ),
     };
     if rows.is_empty() {
