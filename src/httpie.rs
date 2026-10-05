@@ -4,6 +4,10 @@
 //! with `key=value` (JSON/form data), `key:=json` (raw JSON),
 //! `key==value` (query), `key:value` (headers), `key@file` (upload),
 //! `key=@file` (embed file content), `@file` (raw body), `--raw` and stdin.
+//!
+//! JSON is the default mode: requests carry `Content-Type: application/json`
+//! unless `--form` / `--multipart` or an explicit `Content-Type: ...` header
+//! is supplied.
 
 use anyhow::{Context, Result, bail};
 use reqwest::blocking::multipart;
@@ -742,7 +746,7 @@ Usage: sysenv http [flags] [METHOD] URL [ITEM...]
   @file           以文件内容作为原始请求体（管道 stdin 亦可）
 
 参数 / Flags:
-  -j, --json              数据项序列化为 JSON（默认）
+  -j, --json              JSON 模式（默认；无数据项时请求也默认 Content-Type: application/json）
   -f, --form              序列化为 application/x-www-form-urlencoded
       --multipart         强制 multipart/form-data
       --raw DATA          显式原始请求体
@@ -889,7 +893,9 @@ pub fn run(cfg: &HttpConfig) -> Result<i32> {
     }
 
     let (body_kind, body_ct) = build_body(&spec, cfg)?;
-    let json_mode = cfg.json || (!cfg.form && !cfg.multipart && !spec.data.is_empty());
+    // JSON is the default mode unless --form / --multipart is requested (or an
+    // explicit Content-Type header is supplied by the caller).
+    let json_mode = cfg.json || (!cfg.form && !cfg.multipart);
 
     // --- Build URL with query parameters.
     let mut url: reqwest::Url = spec
@@ -931,6 +937,9 @@ pub fn run(cfg: &HttpConfig) -> Result<i32> {
                 HeaderValue::from_str(ct).with_context(|| "invalid Content-Type")?,
             );
         }
+    } else if json_mode && !header_present(&headers, "Content-Type") {
+        // Default every request to JSON unless the caller overrides it.
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     }
 
     // --- Client.
@@ -1244,6 +1253,67 @@ mod tests {
             parse_item(r"foo\==bar").unwrap(),
             Item::Data { name, value, .. } if name == "foo=" && value == "bar"
         ));
+    }
+
+    #[test]
+    fn build_body_defaults_to_json_or_none() {
+        fn hcfg() -> HttpConfig {
+            HttpConfig {
+                json: false,
+                form: false,
+                multipart: false,
+                raw: None,
+                print: None,
+                headers_only: false,
+                body_only: false,
+                meta_only: false,
+                verbose: false,
+                output: None,
+                download: false,
+                quiet: false,
+                pretty: None,
+                auth: None,
+                auth_type: None,
+                proxies: Vec::new(),
+                follow: false,
+                max_redirects: None,
+                timeout: None,
+                check_status: false,
+                offline: false,
+                verify: None,
+                ignore_stdin: false,
+                default_scheme: "https".to_string(),
+                debug: false,
+                args: Vec::new(),
+            }
+        }
+        let cfg = hcfg();
+        // With data: JSON body + application/json.
+        let mut spec = RequestSpec::default();
+        spec.method = "POST".to_string();
+        spec.url = "https://x.example".to_string();
+        spec.data = vec![("name".to_string(), "J".to_string(), false)];
+        let (kind, ct) = build_body(&spec, &cfg).unwrap();
+        assert!(matches!(kind, BodyKind::Bytes(_)));
+        assert_eq!(ct.as_deref(), Some("application/json"));
+        // Without data: no body, no content type (the request layer then
+        // defaults to application/json unless overridden).
+        let mut spec = RequestSpec::default();
+        spec.method = "GET".to_string();
+        spec.url = "https://x.example".to_string();
+        let (kind, ct) = build_body(&spec, &cfg).unwrap();
+        assert!(matches!(kind, BodyKind::None));
+        assert_eq!(ct, None);
+        // --form forces the urlencoded content type when data exists.
+        let mut fcfg = hcfg();
+        fcfg.form = true;
+        let mut spec = RequestSpec::default();
+        spec.method = "POST".to_string();
+        spec.url = "https://x.example".to_string();
+        spec.data = vec![("name".to_string(), "J".to_string(), false)];
+        let (kind, ct) = build_body(&spec, &fcfg).unwrap();
+        assert!(matches!(kind, BodyKind::Bytes(_)));
+        assert_eq!(ct.as_deref(), Some("application/x-www-form-urlencoded; charset=utf-8"));
     }
 
     #[test]

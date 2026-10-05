@@ -51,7 +51,7 @@ Commands:
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
 | AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai task`（任务模板聊天；`-t *` 全任务 0-10 分打分匹配） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
-| HTTP 客户端  | `http`               | httpie 参数子集对齐；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
+| HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
 | 快捷垫片      | `short`              | 一键安装六种短命令；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
 
 
@@ -430,7 +430,7 @@ sysenv task kill -f 1234          # 强制终止（Linux 发送 SIGKILL）
 
 * 方法自动推导：URL 项中不含方法时自动 GET；含数据项时自动 POST
 
-* 默认 JSON：`key=value` 自动构造成 JSON 对象；`-f/--form` 切换表单、`--multipart` 文件上传
+* **默认 JSON**：`key=value` 自动构造成 JSON 对象；**所有请求默认带 `Content-Type: application/json`**（即使无数据项；可用 `-f/--form`、`--multipart` 或显式 `Content-Type:xxx` 头覆盖）；`-f` 切换表单、`--multipart` 文件上传
 
 * 完整请求项语法（与 httpie 一致）：数据字段、原始 JSON、查询参数、请求头、multipart 文件、`@file` 原始体、嵌套 JSON 构建（`a[b][c]=v`、`a[]=v`、`a[1]=v`）
 
