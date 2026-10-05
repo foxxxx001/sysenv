@@ -49,7 +49,7 @@ Commands:
 | 注册表导入导出   | `path export/import` | `.reg` / JSON / TXT 三种格式；合并或 `--replace` 整体替换；跨机迁移备份                                   |
 | 链接到 PATH  | `link`               | 硬链接 → 符号链接 → 拷贝三级自动回退；Windows `.cmd` 垫片；自定义命令名；系统目录或托管目录                               |
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
-| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type` / `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，OpenAI / Anthropic 兼容）；`ai task`（任务模板聊天） |
+| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai task`（任务模板聊天；`-t *` 全任务 0-10 分打分匹配） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
 | 快捷垫片      | `short`              | 一键安装六种短命令；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
@@ -262,7 +262,7 @@ sysenv env list
 
 * `--open`：只显示 `open_weights: yes` 的模型；可与 `--date` 等过滤组合（先按日期、再按开放权重过滤）
 
-* `--model-type TYPE`：只显示支持该模态的模型，取值 `text / image / audio / video / pdf`（也接受中文 `文本 / 图像 / 语音 / 视频`）；按 `modalities.input` / `modalities.output` 判定，可与 `--date` / `--open` 等组合
+* `--model-type TYPE[,TYPE...]`：只显示支持这些模态的模型，取值 `text / image / audio / video / pdf`（也接受中文 `文本 / 图像 / 语音 / 视频`）；**多个值用半角 `,` 或全角 `，` 分隔，取交集（模型须同时包含全部指定模态）**，如 `--model-type text,image` 只显示既能文本又能图像的模型；可与 `--date` / `--open` 等组合
 
 * `-o/--output-format json|csv`：机器可读输出 ——`json` 输出 **JSON 数组**（与 `--json` 等价，单命中也是数组）；`csv` 输出带表头的 CSV 表格（model 24 列、provider 6 列，RFC-4180 转义），适用于详情、搜索、列表与多匹配全部场景
 
@@ -279,6 +279,8 @@ sysenv ai model --date 2026-10-01 --limit 10   # 上一条 + 只显示前 10 条
 sysenv ai model --open --limit 10        # 只显示 open_weights: yes 的模型
 sysenv ai model --open --date 2025-01-01 # 两个过滤组合：2025 年后更新且开放权重
 sysenv ai model --model-type audio --limit 10   # 只显示支持语音/音频的模型（文本/图像/语音/视频同理）
+sysenv ai model --model-type text,image --limit 10  # 多值取交集：同时支持文本和图像的模型
+sysenv ai model --model-type "文本，图像" --limit 10 # 中文别名 + 全角逗号同样可用
 sysenv ai model gpt-4.1                  # 精确查询；多 provider 同名时自动选 canonical 并提示其余
 sysenv ai model openai/gpt-4.1-mini      # 用完整 id 精确定位
 sysenv ai model -s qwen --limit 10       # 子串搜索（grep 风格列表）
@@ -303,7 +305,7 @@ CSV 列：model 为 `id,name,provider,family,status,knowledge_cutoff,description
 
 * `--date YYYY-MM-DD`：以卡片上的 **published 发布日期**为筛选标准，只显示**晚于**该日期的模型；单独使用 `--date`（不带名称 / 搜索词）时直接列出全部晚于该日期的模型
 
-* `--model-type TYPE`：按**分类**筛选模型，取值 `text / image / audio / video / multimodal`（也接受中文 `文本 / 图像 / 语音 / 视频 / 多模态`）；如 `audio` 匹配分类含“语音”的模型（语音大模型），`image` 匹配“视觉 / 多模态”类模型
+* `--model-type TYPE[,TYPE...]`：按**分类**筛选模型，取值 `text / image / audio / video / multimodal`（也接受中文 `文本 / 图像 / 语音 / 视频 / 多模态`）；**多个值用半角 `,` 或全角 `，` 分隔，取交集**（分类须同时匹配每个类型的关键词，如 `audio` 匹配“语音”分类、`image` 匹配“视觉 / 多模态”类）
 
 * **精确命中时抓详情页**：单模型精确查询会额外抓取该模型的详情页，输出中附带 `context`（上下文长度，如 `1.05M`）与 `modality`（输入/输出模态，如 `文本、图像 → 文本`），失败时静默降级（字段留空）
 
@@ -318,6 +320,7 @@ sysenv ai cn-model gpt-6-1-sol            # 精确查询（大小写不敏感；
 sysenv ai cn-model -s ernie --limit 10    # 子串搜索（别名也匹配）
 sysenv ai cn-model --date 2026-09-28      # 列出所有 published 晚于该日期的模型
 sysenv ai cn-model --model-type 语音       # 列出所有语音大模型
+sysenv ai cn-model --model-type 语音,多模态 # 多值取交集：同时命中语音与多模态分类
 sysenv ai cn-model -s qwen --date 2026-01-01   # 搜索 + 日期过滤
 sysenv ai cn-model gpt-6-1-sol --json     # JSON 数组输出
 sysenv ai cn-model -s ernie -o csv        # CSV 输出
@@ -330,7 +333,11 @@ sysenv ai cn-model gpt-6-1-sol --refresh  # 强制重新抓取（--refresh 属 a
 
 * 配置文件默认位置 **`~/.sysenv/config.yaml`**（找不到会明确提示），可用 `-c/--config FILE` 覆盖；格式见 `doc/config.yaml`，脱敏模板见 `doc/config.example.yaml`
 
-* `clients` 列表存放 Provider：必填 `name / api_base / api_key / models`（`models` 每项 `name` + 可选 `weight`，缺省权重 1，**取值范围 0-9**，可选 `max_tokens`）；`type` 为 `openai`（默认，兼容 `open`）或 `anthropic`，分别按 OpenAI / Claude API 标准发请求
+* `clients` 列表存放 Provider：必填 `name / api_base / api_key / models`（`models` 每项 `name` + 可选 `weight`，缺省权重 1，**取值范围 0-9**，可选 `max_tokens`、`max_input_tokens`、`type`）；`type` 为 `openai`（默认，兼容 `open`）或 `anthropic`，分别按 OpenAI / Claude API 标准发请求
+
+* **请求前自动补齐能力字段**：发送 HTTP 请求前，若模型项缺少 `max_input_tokens` 或 `type`，自动从 models.dev 按模型名称查匹配的第 1 个模型：`max_input_tokens` 用其 `context`（上下文长度）填充，`type` 用其输入/输出模态并集填充，然后**写回配置文件**（下次直接使用，不再查询）；models.dev 查询失败或无匹配时静默跳过，不阻塞请求
+
+* **消息长度截断**：发送前检查消息字符数是否超过该模型的 `max_input_tokens`，超过则截取到限制内（stderr 打印截断提示），防止超出上下文窗口
 
 * 顶层 `model` 选择模型，规则：
   - 缺失 → 第一个 Provider 的第 1 个模型
@@ -374,6 +381,8 @@ sysenv ai chat --list-model               # 列出配置中的所有模型（含
 
 * `-t <name>`：取 `name` 匹配的任务，按 `msg` 组装消息（`desc` 为任务描述）
 
+* `-t *`（**全任务打分匹配**）：把**所有任务**的 `desc` 与用户提供的聊天信息（命令行参数或 stdin）组装，调用配置的大模型按 **10 分制**打分（0=不匹配，10=完全匹配），输出 `TASK / DESC / SCORE` 表格并按分数降序排列；某个任务请求失败时其 SCORE 显示 `-` 并在 stderr 提示
+
 * `msg` 模板占位符 `{key:默认值}`：命令行传 `key:值` 或 `key=值` 则替换为传入值，否则用默认值（如 `{country:深圳}` + `country:北京` → 北京）
 
 * `msg` 前缀：`file://` 读取本地**相对路径**文件内容作为消息；`url:` 抓取网络内容作为消息
@@ -383,6 +392,7 @@ sysenv ai task                          # 列出任务（name / desc，最多 10
 sysenv ai task -t weather               # 用默认值（深圳）组装消息并聊天
 sysenv ai task -t weather country:北京   # 替换 country 为北京
 sysenv ai task -t weather country=北京   # = 号写法等价
+sysenv ai task -t "*" "帮我查今天深圳的天气"  # 对全部任务打分（TASK/DESC/SCORE，按分数排序）
 ```
 
 ## 6. 进程管理（`task`）

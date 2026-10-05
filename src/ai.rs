@@ -287,6 +287,22 @@ fn normalize_modality(t: &str) -> String {
     }
 }
 
+/// Split a `--model-type` argument into canonical modalities. Accepts both
+/// half-width `,` and full-width `，` as separators; every value is trimmed and
+/// normalized. An empty / all-separator input yields `None` (no filter).
+fn parse_model_types(input: &str) -> Option<Vec<String>> {
+    let v: Vec<String> = input
+        .split([',', '，'])
+        .map(normalize_modality)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
+}
+
 /// True when the model's `modalities.input` or `modalities.output` contains
 /// `modality` (case-insensitive). Models without a `modalities` field never
 /// match.
@@ -303,11 +319,13 @@ fn model_has_modality(m: &Value, modality: &str) -> bool {
     })
 }
 
-fn filter_by_model_type(models: Vec<ModelHit>, model_type: &str) -> Vec<ModelHit> {
-    let modality = normalize_modality(model_type);
+/// Keep only models that support **every** requested modality (AND semantics,
+/// e.g. `text,image` keeps models whose input/output modalities contain both
+/// text and image).
+fn filter_by_model_type(models: Vec<ModelHit>, types: &[String]) -> Vec<ModelHit> {
     models
         .into_iter()
-        .filter(|(_, m)| model_has_modality(m, &modality))
+        .filter(|(_, m)| types.iter().all(|t| model_has_modality(m, t)))
         .collect()
 }
 
@@ -327,6 +345,43 @@ fn model_modalities(m: &Value) -> String {
         }
     }
     out.join(",")
+}
+
+/// Best-effort lookup of a model's capabilities in the models.dev data (24h
+/// cache): returns `(context_tokens, modality_union)` of the **first** model
+/// whose id or name matches `model_name` (exact match first, then substring).
+/// Any failure (network / cache / no match) yields `(None, None)` so callers
+/// can degrade silently.
+pub fn lookup_model_capabilities(model_name: &str) -> (Option<u64>, Option<String>) {
+    let data = match fetch_data(false) {
+        Ok(d) => d,
+        Err(_) => return (None, None),
+    };
+    let needle = model_name.to_ascii_lowercase();
+    let mut exact: Option<(Option<u64>, Option<String>)> = None;
+    let mut fuzzy: Option<(Option<u64>, Option<String>)> = None;
+    for (_, m) in all_models(&data) {
+        let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("").to_ascii_lowercase();
+        let name = m.get("name").and_then(|v| v.as_str()).unwrap_or("").to_ascii_lowercase();
+        let ctx = m
+            .get("limit")
+            .and_then(|v| v.get("context"))
+            .and_then(|v| v.as_u64())
+            .filter(|&c| c > 0);
+        let modl = model_modalities(&m);
+        let modl = if modl.is_empty() { None } else { Some(modl) };
+        let cap = (ctx, modl);
+        if id == needle || name == needle {
+            if exact.is_none() {
+                exact = Some(cap);
+            }
+        } else if id.contains(&needle) || name.contains(&needle) {
+            if fuzzy.is_none() {
+                fuzzy = Some(cap);
+            }
+        }
+    }
+    exact.or(fuzzy).unwrap_or((None, None))
 }
 
 /// Character length of a string field (used for column widths).
@@ -502,10 +557,12 @@ pub fn cmd_model(
     let bare = name.is_none() && search.is_none() && !list;
     let default_limit = if bare { usize::MAX } else { 20 };
     let date = updated_after.map(parse_date).transpose()?;
-    let mt = model_type.map(normalize_modality);
-    if let Some(t) = &mt {
-        if !["text", "image", "audio", "video", "pdf"].contains(&t.as_str()) {
-            bail!("unsupported --model-type `{t}` (supported: text, image, audio, video, pdf or 文本/图像/语音/视频)");
+    let mt = model_type.and_then(parse_model_types);
+    if let Some(ts) = &mt {
+        for t in ts {
+            if !["text", "image", "audio", "video", "pdf"].contains(&t.as_str()) {
+                bail!("unsupported --model-type `{t}` (supported: text, image, audio, video, pdf or 文本/图像/语音/视频; comma-separated multi-values like `text,image` are AND-ed)");
+            }
         }
     }
 
@@ -513,7 +570,7 @@ pub fn cmd_model(
         let all = all_models(&data);
         let hits = apply_filters(all, date.as_deref(), open);
         let hits = match &mt {
-            Some(t) => filter_by_model_type(hits, t),
+            Some(ts) => filter_by_model_type(hits, ts),
             None => hits,
         };
         let total_hits = hits.len();
@@ -539,6 +596,9 @@ pub fn cmd_model(
                 if open {
                     footer.push_str(" with open weights");
                 }
+                if let Some(ts) = &mt {
+                    footer.push_str(&format!(" with modalities {}", ts.join(",")));
+                }
                 if total_hits > shown {
                     footer.push_str(" (use --limit to show more)");
                 }
@@ -556,7 +616,7 @@ pub fn cmd_model(
 
     let hits = apply_filters(search_models(&data, query), date.as_deref(), open);
     let hits = match &mt {
-        Some(t) => filter_by_model_type(hits, t),
+        Some(ts) => filter_by_model_type(hits, ts),
         None => hits,
     };
     if hits.is_empty() {
@@ -567,8 +627,8 @@ pub fn cmd_model(
         if open {
             msg.push_str(" with open weights");
         }
-        if let Some(t) = &mt {
-            msg.push_str(&format!(" with modality {t}"));
+        if let Some(ts) = &mt {
+            msg.push_str(&format!(" with modalities {}", ts.join(",")));
         }
         bail!("{msg} (source: {DATA_URL})");
     }
@@ -1139,15 +1199,27 @@ fn dl_type_keywords(t: &str) -> Option<Vec<&'static str>> {
     }
 }
 
-fn filter_dl_by_type(models: Vec<DlModel>, model_type: &str) -> Result<Vec<DlModel>> {
-    let kws = dl_type_keywords(model_type).ok_or_else(|| {
-        anyhow::anyhow!(
-            "unsupported --model-type `{model_type}` (supported: text, image, audio, video, multimodal or 文本/图像/语音/视频/多模态)"
-        )
-    })?;
+/// Keep only DataLearner models whose category matches **every** requested
+/// type (AND semantics: each type's keyword set must hit the category at
+/// least once).
+fn filter_dl_by_type(models: Vec<DlModel>, types: &[String]) -> Result<Vec<DlModel>> {
+    let kw_sets: Vec<Vec<&'static str>> = types
+        .iter()
+        .map(|t| {
+            dl_type_keywords(t).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unsupported --model-type `{t}` (supported: text, image, audio, video, multimodal or 文本/图像/语音/视频/多模态; comma-separated multi-values like `text,image` are AND-ed)"
+                )
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(models
         .into_iter()
-        .filter(|m| kws.iter().any(|k| m.category.contains(k)))
+        .filter(|m| {
+            kw_sets
+                .iter()
+                .all(|kws| kws.iter().any(|k| m.category.contains(k)))
+        })
         .collect())
 }
 
@@ -1505,9 +1577,12 @@ pub fn cmd_cn_model(
     let models = fetch_datalearner(refresh)?;
     let fmt = out.or(if json { Some(OutFormat::Json) } else { None });
     let date = updated_after.map(parse_date).transpose()?;
-    if let Some(t) = &model_type {
-        if dl_type_keywords(t).is_none() {
-            bail!("unsupported --model-type `{t}` (supported: text, image, audio, video, multimodal or 文本/图像/语音/视频/多模态)");
+    let mt = model_type.and_then(parse_model_types);
+    if let Some(ts) = &mt {
+        for t in ts {
+            if dl_type_keywords(t).is_none() {
+                bail!("unsupported --model-type `{t}` (supported: text, image, audio, video, multimodal or 文本/图像/语音/视频/多模态; comma-separated multi-values like `text,image` are AND-ed)");
+            }
         }
     }
 
@@ -1520,8 +1595,8 @@ pub fn cmd_cn_model(
             Some(d) => filter_dl_by_date(models, d),
             None => models,
         };
-        let hits = match &model_type {
-            Some(t) => filter_dl_by_type(hits, t)?,
+        let hits = match &mt {
+            Some(ts) => filter_dl_by_type(hits, ts)?,
             None => hits,
         };
         if hits.is_empty() {
@@ -1529,8 +1604,8 @@ pub fn cmd_cn_model(
             if let Some(d) = &date {
                 msg.push_str(&format!(" published after {d}"));
             }
-            if let Some(t) = &model_type {
-                msg.push_str(&format!(" of type {t}"));
+            if let Some(ts) = &mt {
+                msg.push_str(&format!(" of types {}", ts.join(",")));
             }
             bail!("{msg} (source: {DL_BASE})");
         }
@@ -1544,8 +1619,8 @@ pub fn cmd_cn_model(
         Some(d) => filter_dl_by_date(hits, d),
         None => hits,
     };
-    let hits = match &model_type {
-        Some(t) => filter_dl_by_type(hits, t)?,
+    let hits = match &mt {
+        Some(ts) => filter_dl_by_type(hits, ts)?,
         None => hits,
     };
     if hits.is_empty() {
@@ -1553,8 +1628,8 @@ pub fn cmd_cn_model(
         if let Some(d) = &date {
             msg.push_str(&format!(" published after {d}"));
         }
-        if let Some(t) = &model_type {
-            msg.push_str(&format!(" of type {t}"));
+        if let Some(ts) = &mt {
+            msg.push_str(&format!(" of types {}", ts.join(",")));
         }
         bail!("{msg} (source: {DL_BASE})");
     }
@@ -1892,13 +1967,32 @@ mod tests {
                 }
             }
         });
-        assert_eq!(filter_by_model_type(all_models(&data), "text").len(), 3);
-        assert_eq!(filter_by_model_type(all_models(&data), "image").len(), 1);
-        assert_eq!(filter_by_model_type(all_models(&data), "audio").len(), 1);
-        assert_eq!(filter_by_model_type(all_models(&data), "video").len(), 0);
+        let one = |s: &str| vec![normalize_modality(s)];
+        assert_eq!(filter_by_model_type(all_models(&data), &one("text")).len(), 3);
+        assert_eq!(filter_by_model_type(all_models(&data), &one("image")).len(), 1);
+        assert_eq!(filter_by_model_type(all_models(&data), &one("audio")).len(), 1);
+        assert_eq!(filter_by_model_type(all_models(&data), &one("video")).len(), 0);
         // Chinese alias
-        assert_eq!(filter_by_model_type(all_models(&data), "图像").len(), 1);
-        assert_eq!(filter_by_model_type(all_models(&data), "语音").len(), 1);
+        assert_eq!(filter_by_model_type(all_models(&data), &one("图像")).len(), 1);
+        assert_eq!(filter_by_model_type(all_models(&data), &one("语音")).len(), 1);
+        // Multi-value: AND semantics — only the model with both modalities.
+        assert_eq!(
+            filter_by_model_type(all_models(&data), &["text".to_string(), "image".to_string()]).len(),
+            1
+        );
+        assert_eq!(
+            filter_by_model_type(all_models(&data), &["text".to_string(), "audio".to_string()]).len(),
+            1
+        );
+        assert_eq!(
+            filter_by_model_type(all_models(&data), &["image".to_string(), "audio".to_string()]).len(),
+            0
+        );
+        // parse_model_types splits commas and normalizes aliases.
+        assert_eq!(parse_model_types("text,image"), Some(vec!["text".to_string(), "image".to_string()]));
+        assert_eq!(parse_model_types("文本，语音"), Some(vec!["text".to_string(), "audio".to_string()]));
+        assert_eq!(parse_model_types(""), None);
+        assert_eq!(parse_model_types(",,，"), None);
         assert!(model_has_modality(&serde_json::json!({"modalities": {"input": ["TEXT"]}}), "text"));
     }
 
@@ -1953,10 +2047,39 @@ mod tests {
             },
         ];
         let ids = |v: &[DlModel]| -> Vec<String> { v.iter().map(|m| m.id.clone()).collect() };
-        assert_eq!(ids(&filter_dl_by_type(models.clone(), "text").unwrap()), vec!["a".to_string()]);
-        assert_eq!(ids(&filter_dl_by_type(models.clone(), "语音").unwrap()), vec!["b".to_string()]);
-        assert_eq!(ids(&filter_dl_by_type(models.clone(), "image").unwrap()), vec!["c".to_string()]);
-        assert!(filter_dl_by_type(models.clone(), "nope").is_err());
+        let one = |s: &str| vec![s.to_string()];
+        assert_eq!(ids(&filter_dl_by_type(models.clone(), &one("text")).unwrap()), vec!["a".to_string()]);
+        assert_eq!(ids(&filter_dl_by_type(models.clone(), &one("语音")).unwrap()), vec!["b".to_string()]);
+        assert_eq!(ids(&filter_dl_by_type(models.clone(), &one("image")).unwrap()), vec!["c".to_string()]);
+        assert!(filter_dl_by_type(models.clone(), &one("nope")).is_err());
+        // Multi-value AND: category must match every type's keywords.
+        assert_eq!(
+            ids(&filter_dl_by_type(models.clone(), &["text".to_string(), "image".to_string()]).unwrap()),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            ids(&filter_dl_by_type(models.clone(), &["text".to_string(), "语音".to_string()]).unwrap()),
+            Vec::<String>::new()
+        );
+        // A category containing both 推理 and 多模态 matches text+image.
+        let both = DlModel {
+            id: "d".into(),
+            name: "D".into(),
+            provider: "X".into(),
+            aliases: String::new(),
+            r#type: String::new(),
+            category: "多模态 推理大模型".into(),
+            context: String::new(),
+            modality: String::new(),
+            published: String::new(),
+            url: String::new(),
+        };
+        let mut m2 = models.clone();
+        m2.push(both);
+        assert_eq!(
+            ids(&filter_dl_by_type(m2, &["text".to_string(), "image".to_string()]).unwrap()),
+            vec!["d".to_string()]
+        );
     }
 
     #[test]

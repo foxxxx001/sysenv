@@ -67,6 +67,12 @@ struct Model {
     name: String,
     weight: u32,
     max_tokens: Option<u64>,
+    /// Max input length (chars) enforced before sending; when absent it is
+    /// filled from the models.dev `limit.context` of the first matching model
+    /// and persisted back into the config file.
+    max_input_tokens: Option<u64>,
+    /// Modality type (e.g. `text,image`); filled from models.dev when absent.
+    model_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -313,7 +319,22 @@ fn provider_from_yaml(c: &YVal) -> Result<Provider> {
                     .get("max_tokens")
                     .and_then(|v| v.scalar())
                     .and_then(|s| s.parse::<u64>().ok());
-                models.push(Model { name: mname.to_string(), weight, max_tokens });
+                let max_input_tokens = item
+                    .get("max_input_tokens")
+                    .and_then(|v| v.scalar())
+                    .and_then(|s| s.parse::<u64>().ok());
+                let model_type = item
+                    .get("type")
+                    .and_then(|v| v.scalar())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                models.push(Model {
+                    name: mname.to_string(),
+                    weight,
+                    max_tokens,
+                    max_input_tokens,
+                    model_type,
+                });
                 last = Some(models.len() - 1);
             } else if let Some(w) = item.get("weight").and_then(|v| v.scalar()) {
                 // Tolerate a stray "- weight: N" item that was meant as the
@@ -573,7 +594,15 @@ fn line_parts(line: &str) -> (usize, String) {
 
 /// Replace the numeric value of a `weight:` (or `- weight:`) line, preserving
 /// indentation, spacing and any trailing comment.
+#[allow(dead_code)] // exercised by unit tests
 fn replace_weight_value(line: &str, new_value: u32) -> String {
+    replace_scalar_value(line, &new_value.to_string())
+}
+
+/// Replace the scalar value of the first `key:` occurrence in `line`, keeping
+/// the key prefix, one space, the new value, and everything after the value
+/// (e.g. a trailing comment). Works for both `key: N` and `- key: N` lines.
+fn replace_scalar_value(line: &str, new_value: &str) -> String {
     let idx = match line.find(':') {
         Some(i) => i,
         None => return line.to_string(),
@@ -601,6 +630,22 @@ fn replace_weight_value(line: &str, new_value: u32) -> String {
 /// item right after `- name:`). When no `weight:` line exists at all, a new
 /// `weight:` sub-key is inserted after the `- name:` line.
 fn update_weight_in_config(config_path: &Path, provider_name: &str, model_name: &str, new_weight: u32) -> Result<()> {
+    update_model_field_in_config(config_path, provider_name, model_name, "weight", &new_weight.to_string())
+}
+
+/// Update a scalar field `key` of `model_name` under `provider_name` in the
+/// YAML config file, writing the change back in place (comments and layout are
+/// preserved). For `key == "weight"` the mangled form (`- weight: N` as a
+/// separate list item right after `- name:`) is also handled. When no such key
+/// exists in the model entry, a new `key: value` sub-key is inserted after the
+/// `- name:` line.
+fn update_model_field_in_config(
+    config_path: &Path,
+    provider_name: &str,
+    model_name: &str,
+    key: &str,
+    value: &str,
+) -> Result<()> {
     let text = std::fs::read_to_string(config_path)
         .with_context(|| format!("cannot read config `{}`", config_path.display()))?;
     let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
@@ -669,18 +714,19 @@ fn update_weight_in_config(config_path: &Path, provider_name: &str, model_name: 
                             .unwrap_or(false);
                         if provider_ok && ci_eq(&mname, model_name) {
                             let name_indent = indent;
-                            // Mangled form: the very next line is `- weight: N`
-                            // at the same indent.
-                            if i + 1 < lines.len() {
+                            // Mangled form (weight only): the very next line is
+                            // `- weight: N` at the same indent.
+                            if key == "weight" && i + 1 < lines.len() {
                                 let (ni, nc) = line_parts(&lines[i + 1]);
                                 if nc.starts_with("- weight:") && ni == name_indent {
-                                    lines[i + 1] = replace_weight_value(&lines[i + 1], new_weight);
+                                    lines[i + 1] = replace_scalar_value(&lines[i + 1], value);
                                     done = true;
                                     break;
                                 }
                             }
-                            // Conventional form: a deeper `weight:` sub-key
+                            // Conventional form: a deeper `key:` sub-key
                             // anywhere inside this model entry.
+                            let marker = format!("{key}:");
                             let mut j = i + 1;
                             while j < lines.len() {
                                 let (nj, nc) = line_parts(&lines[j]);
@@ -691,17 +737,17 @@ fn update_weight_in_config(config_path: &Path, provider_name: &str, model_name: 
                                 if nj <= name_indent {
                                     break;
                                 }
-                                if nc.starts_with("weight:") {
-                                    lines[j] = replace_weight_value(&lines[j], new_weight);
+                                if nc.starts_with(&marker) {
+                                    lines[j] = replace_scalar_value(&lines[j], value);
                                     done = true;
                                     break;
                                 }
                                 j += 1;
                             }
                             if !done {
-                                // No weight line: insert one after the name line.
+                                // No such key: insert one after the name line.
                                 let pad = " ".repeat(name_indent + 2);
-                                lines.insert(i + 1, format!("{pad}weight: {new_weight}"));
+                                lines.insert(i + 1, format!("{pad}{key}: {value}"));
                                 done = true;
                                 break;
                             }
@@ -1082,15 +1128,79 @@ fn resolve_task_msg(task: &Task, params: &[String]) -> Result<String> {
     Ok(substitute(&raw, &map))
 }
 
-/// Chat with the configured providers using the given message.
-///
-/// `model_override` (the `-m/--model` argument) takes precedence over the
-/// top-level `model` from the config; both may hold comma-separated selectors.
-/// Weighted round-robin picks the first candidate; on request failure the
-/// failed model's weight is decremented (>1) and persisted to the config, and
-/// the next model in order is tried. A model that succeeds after a failure has
-/// its weight incremented (<9) and persisted.
-fn chat_with(cfg: &Config, path: &Path, msg: &str, debug: bool, no_stream: bool, model_override: Option<&str>) -> Result<()> {
+/// Complete the target model's capabilities in memory and in the config file:
+/// when `max_input_tokens` or `type` is missing, look them up in models.dev by
+/// model name (first match) and persist the values. Best effort: lookup or
+/// persistence failures only warn and never block the request.
+fn ensure_model_capabilities(cfg: &mut Config, path: &Path, pi: usize, mi: usize) {
+    let (ctx, modl) = {
+        let m = &cfg.providers[pi].models[mi];
+        if m.max_input_tokens.is_some() && m.model_type.is_some() {
+            return;
+        }
+        crate::ai::lookup_model_capabilities(&m.name)
+    };
+    let need_ctx = cfg.providers[pi].models[mi].max_input_tokens.is_none() && ctx.is_some();
+    let need_type = cfg.providers[pi].models[mi].model_type.is_none() && modl.is_some();
+    if !need_ctx && !need_type {
+        return;
+    }
+    let pname = cfg.providers[pi].name.clone();
+    let mname = cfg.providers[pi].models[mi].name.clone();
+    let model = &mut cfg.providers[pi].models[mi];
+    if need_ctx {
+        model.max_input_tokens = ctx;
+    }
+    if need_type {
+        model.model_type = modl.clone();
+    }
+    if need_ctx {
+        if let Some(c) = ctx {
+            if let Err(e) = update_model_field_in_config(path, &pname, &mname, "max_input_tokens", &c.to_string()) {
+                eprintln!("sysenv: warning: cannot persist max_input_tokens for {pname} / {mname}: {e:#}");
+            }
+        }
+    }
+    if need_type {
+        if let Some(t) = &modl {
+            if let Err(e) = update_model_field_in_config(path, &pname, &mname, "type", t) {
+                eprintln!("sysenv: warning: cannot persist type for {pname} / {mname}: {e:#}");
+            }
+        }
+    }
+}
+
+/// Truncate `msg` to `limit` characters when a limit is set; otherwise the
+/// message passes through unchanged. A notice is printed when truncation
+/// actually happens.
+fn truncate_to_limit(msg: &str, limit: Option<u64>) -> String {
+    match limit {
+        Some(l) if (msg.chars().count() as u64) > l => {
+            let truncated: String = msg.chars().take(l as usize).collect();
+            eprintln!(
+                "sysenv: message of {} chars truncated to {} (model input limit)",
+                msg.chars().count(),
+                l
+            );
+            truncated
+        }
+        _ => msg.to_string(),
+    }
+}
+
+/// One chat round-trip through the weighted rotation. Before each HTTP request
+/// the target model's capabilities are completed (`max_input_tokens` / `type`
+/// looked up in models.dev and persisted when missing) and the message is
+/// truncated to the model's input limit. Returns the model's reply text (which
+/// has already been streamed to stdout when streaming is active).
+fn chat_once(
+    cfg: &mut Config,
+    path: &Path,
+    msg: &str,
+    debug: bool,
+    no_stream: bool,
+    model_override: Option<&str>,
+) -> Result<String> {
     let selector = model_override.or(cfg.model.as_deref()).unwrap_or("<default>");
     let targets = resolve_targets(cfg, selector)?;
     if targets.is_empty() {
@@ -1112,10 +1222,12 @@ fn chat_with(cfg: &Config, path: &Path, msg: &str, debug: bool, no_stream: bool,
     let mut errors: Vec<String> = Vec::new();
     for ti in order {
         let t = &targets[ti];
+        ensure_model_capabilities(cfg, path, t.provider, t.model);
         let p = &cfg.providers[t.provider];
         let m = &p.models[t.model];
         eprintln!("sysenv: using {} / {} ({})", p.name, m.name, p.kind);
-        match send_chat(p, m, msg, stream, debug) {
+        let payload = truncate_to_limit(msg, m.max_input_tokens);
+        match send_chat(p, m, &payload, stream, debug) {
             Ok(text) => {
                 // A model that succeeded after a previous failure gets its
                 // weight bumped (max 9), persisted to the config file.
@@ -1124,10 +1236,7 @@ fn chat_with(cfg: &Config, path: &Path, msg: &str, debug: bool, no_stream: bool,
                         eprintln!("sysenv: warning: failed to persist weight bump for {} / {}: {e:#}", p.name, m.name);
                     }
                 }
-                if !stream {
-                    println!("{text}");
-                }
-                return Ok(());
+                return Ok(text);
             }
             Err(e) => {
                 errors.push(format!("{} / {}: {e:#}", p.name, m.name));
@@ -1143,6 +1252,17 @@ fn chat_with(cfg: &Config, path: &Path, msg: &str, debug: bool, no_stream: bool,
         }
     }
     bail!("all {} model(s) failed: {}", targets.len(), errors.join(" | "));
+}
+
+/// `sysenv ai chat` core: runs `chat_once` and prints the reply when the
+/// request was non-streaming (streaming already printed to stdout).
+fn chat_with(cfg: &mut Config, path: &Path, msg: &str, debug: bool, no_stream: bool, model_override: Option<&str>) -> Result<()> {
+    let text = chat_once(cfg, path, msg, debug, no_stream, model_override)?;
+    let stream = cfg.stream && !debug && !no_stream;
+    if !stream {
+        println!("{text}");
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1164,7 +1284,7 @@ pub fn cmd_chat(
     list_model: bool,
     list_provider: bool,
 ) -> Result<()> {
-    let (cfg, path) = load_config(config)?;
+    let (mut cfg, path) = load_config(config)?;
 
     if list_model || list_provider {
         if list_provider {
@@ -1204,7 +1324,7 @@ pub fn cmd_chat(
     } else {
         bail!("provide a message: `sysenv ai chat \"your message\"` (or pipe text via stdin)");
     };
-    chat_with(&cfg, &path, &msg, debug, no_stream, model)
+    chat_with(&mut cfg, &path, &msg, debug, no_stream, model)
 }
 
 /// `sysenv ai task [-t NAME] [key:value...] [-c FILE] [--debug] [--no-stream]`
@@ -1215,7 +1335,7 @@ pub fn cmd_task(
     debug: bool,
     no_stream: bool,
 ) -> Result<()> {
-    let (cfg, path) = load_config(config)?;
+    let (mut cfg, path) = load_config(config)?;
     match sel {
         None => {
             if cfg.tasks.is_empty() {
@@ -1234,6 +1354,7 @@ pub fn cmd_task(
             }
             Ok(())
         }
+        Some(name) if name == "*" => score_all_tasks(&mut cfg, &path, params, debug),
         Some(name) => {
             let task = cfg
                 .tasks
@@ -1249,9 +1370,93 @@ pub fn cmd_task(
                     anyhow::anyhow!("no task named `{name}` (available: {})", avail.join(", "))
                 })?;
             let msg = resolve_task_msg(task, params)?;
-            chat_with(&cfg, &path, &msg, debug, no_stream, None)
+            chat_with(&mut cfg, &path, &msg, debug, no_stream, None)
         }
     }
+}
+
+/// Extract a 0-10 integer score from a model reply. The first number in the
+/// text that lies within 0..=10 wins (e.g. `9`, `8/10`, `score: 10`).
+fn parse_score(text: &str) -> Option<u32> {
+    let mut nums: Vec<u32> = Vec::new();
+    let mut cur = String::new();
+    for c in text.chars() {
+        if c.is_ascii_digit() {
+            cur.push(c);
+        } else if !cur.is_empty() {
+            if let Ok(v) = cur.parse::<u32>() {
+                nums.push(v);
+            }
+            cur.clear();
+        }
+    }
+    if !cur.is_empty() {
+        if let Ok(v) = cur.parse::<u32>() {
+            nums.push(v);
+        }
+    }
+    nums.into_iter().find(|&v| v <= 10)
+}
+
+/// `sysenv ai task -t * [USER REQUEST]`: ask the configured LLM to score how
+/// well each configured task's description matches the user's request (0 = no
+/// match, 10 = perfect match). Prints `TASK / DESC / SCORE`, best match first.
+fn score_all_tasks(cfg: &mut Config, path: &Path, params: &[String], debug: bool) -> Result<()> {
+    let user_msg = if !params.is_empty() {
+        params.join(" ")
+    } else if !std::io::stdin().is_terminal() {
+        let mut s = String::new();
+        std::io::stdin().read_to_string(&mut s).context("cannot read stdin")?;
+        if s.trim().is_empty() {
+            bail!("empty request from stdin; provide the user request as arguments or pipe it via stdin");
+        }
+        s
+    } else {
+        bail!("provide the user request: `sysenv ai task -t * \"your request\"` (or pipe it via stdin)");
+    };
+    if cfg.tasks.is_empty() {
+        bail!("no tasks configured under `tasks` in `{}`", path.display());
+    }
+
+    let mut rows: Vec<(String, String, Option<u32>)> = Vec::new();
+    let tasks: Vec<(String, String)> = cfg
+        .tasks
+        .iter()
+        .map(|t| (t.name.clone(), t.desc.clone()))
+        .collect();
+    for (tname, tdesc) in &tasks {
+        let prompt = format!(
+            "你是任务匹配评估器。请评估下面的任务与用户需求是否匹配。\n\
+             任务名称：{}\n\
+             任务描述：{}\n\
+             用户需求：{}\n\
+             输出 0 到 10 的整数匹配分数（0=完全不匹配，10=完全匹配），只输出分数数字本身，不要任何其他内容。",
+            tname, tdesc, user_msg
+        );
+        match chat_once(cfg, path, &prompt, debug, true, None) {
+            Ok(text) => {
+                let score = parse_score(&text);
+                if score.is_none() {
+                    eprintln!("sysenv: warning: cannot parse a 0-10 score from the reply for task `{}`", tname);
+                }
+                rows.push((tname.clone(), tdesc.clone(), score));
+            }
+            Err(e) => {
+                eprintln!("sysenv: warning: scoring task `{}` failed: {e:#}", tname);
+                rows.push((tname.clone(), tdesc.clone(), None));
+            }
+        }
+    }
+
+    rows.sort_by(|a, b| b.2.cmp(&a.2));
+    let w_name = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(4).max(4);
+    let w_desc = rows.iter().map(|r| r.1.chars().count()).max().unwrap_or(4).max(4);
+    println!("{:<w_name$}  {:<w_desc$}  {}", "TASK", "DESC", "SCORE");
+    for (n, d, s) in &rows {
+        let sv = s.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string());
+        println!("{:<w_name$}  {:<w_desc$}  {}", n, d, sv);
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1590,5 +1795,83 @@ clients:
         assert_eq!(replace_weight_value("      - weight: 1\t", 2), "      - weight: 2\t");
         assert_eq!(replace_weight_value("        weight: 9 # keep me", 1), "        weight: 1 # keep me");
         assert_eq!(replace_weight_value("no colon here", 3), "no colon here");
+    }
+
+    #[test]
+    fn update_model_field_inserts_replaces_and_reparses() {
+        let p = tmp_config(
+            "field",
+            r#"clients:
+  - type: openai
+    name: agnes
+    api_base: https://x.example/v1
+    api_key: sk-test
+    models:
+      - name: m1
+        weight: 1
+"#,
+        );
+        // Insert a missing key after the name line.
+        update_model_field_in_config(&p, "agnes", "m1", "max_input_tokens", "1048576").unwrap();
+        let t = std::fs::read_to_string(&p).unwrap();
+        assert!(t.contains("      - name: m1\n        max_input_tokens: 1048576"));
+        // Replace an existing key.
+        update_model_field_in_config(&p, "agnes", "m1", "weight", "5").unwrap();
+        let t = std::fs::read_to_string(&p).unwrap();
+        assert!(t.contains("        weight: 5"));
+        // Insert the type field.
+        update_model_field_in_config(&p, "agnes", "m1", "type", "text,image").unwrap();
+        let t = std::fs::read_to_string(&p).unwrap();
+        assert!(t.contains("        type: text,image"));
+        // The file must still parse back into the same model entry.
+        let y = parse_yaml(&t).unwrap();
+        let cfg = config_from_yaml(&y).unwrap();
+        let m = &cfg.providers[0].models[0];
+        assert_eq!(m.max_input_tokens, Some(1048576));
+        assert_eq!(m.model_type.as_deref(), Some("text,image"));
+        assert_eq!(m.weight, 5);
+        // Unknown model still errors.
+        assert!(update_model_field_in_config(&p, "agnes", "nope", "type", "text").is_err());
+    }
+
+    #[test]
+    fn parse_score_extracts_0_to_10() {
+        assert_eq!(parse_score("9"), Some(9));
+        assert_eq!(parse_score("8/10"), Some(8));
+        assert_eq!(parse_score("匹配分数：10"), Some(10));
+        assert_eq!(parse_score("score: 4.5"), Some(4));
+        assert_eq!(parse_score("完全匹配"), None);
+        assert_eq!(parse_score(""), None);
+        assert_eq!(parse_score("7.9 分"), Some(7));
+    }
+
+    #[test]
+    fn truncate_to_limit_cuts_only_when_needed() {
+        assert_eq!(truncate_to_limit("你好世界", Some(2)), "你好");
+        assert_eq!(truncate_to_limit("你好世界", Some(4)), "你好世界");
+        assert_eq!(truncate_to_limit("你好世界", None), "你好世界");
+        assert_eq!(truncate_to_limit("abcdef", Some(3)), "abc");
+    }
+
+    #[test]
+    fn model_parses_capability_fields() {
+        let y = parse_yaml(
+            r#"clients:
+  - type: openai
+    name: agnes
+    api_base: https://x.example/v1
+    api_key: sk-test
+    models:
+      - name: m1
+        max_input_tokens: 4096
+        type: text,image
+"#,
+        )
+        .unwrap();
+        let cfg = config_from_yaml(&y).unwrap();
+        let m = &cfg.providers[0].models[0];
+        assert_eq!(m.max_input_tokens, Some(4096));
+        assert_eq!(m.model_type.as_deref(), Some("text,image"));
+        assert_eq!(m.max_tokens, None);
     }
 }
