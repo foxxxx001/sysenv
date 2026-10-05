@@ -7,3 +7,4 @@ out_body.json
 .wsl_check.sh
 dev/*.tmp
 dist/
+doc/

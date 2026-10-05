@@ -247,6 +247,9 @@ struct AiModelArgs {
     /// Show only models whose last_updated is after DATE (YYYY-MM-DD)
     #[arg(long, value_name = "DATE")]
     date: Option<String>,
+    /// Show only models supporting this modality: text | image | audio | video | pdf (or 文本/图像/语音/视频)
+    #[arg(long, value_name = "TYPE")]
+    model_type: Option<String>,
     /// Show only models with open_weights enabled
     #[arg(long)]
     open: bool,
@@ -271,6 +274,9 @@ struct CnModelArgs {
     /// Show only models whose published date is after DATE (YYYY-MM-DD)
     #[arg(long, value_name = "DATE")]
     date: Option<String>,
+    /// Show only models of this kind: text | image | audio | video | multimodal (or 文本/图像/语音/视频/多模态)
+    #[arg(long, value_name = "TYPE")]
+    model_type: Option<String>,
     /// Print the raw JSON (as a JSON array) instead of the formatted view
     #[arg(long)]
     json: bool,
@@ -284,6 +290,15 @@ struct ChatArgs {
     /// The message to send (multiple words are joined with spaces; when omitted, stdin is read when piped)
     #[arg(value_name = "MSG")]
     msg: Vec<String>,
+    /// Override the top-level model from the config; accepts {provider}:{model}, {model} or comma-separated (half/full-width) model lists
+    #[arg(short = 'm', long, value_name = "MODEL")]
+    model: Option<String>,
+    /// List every model configured under `clients` (grouped by provider) and exit
+    #[arg(long)]
+    list_model: bool,
+    /// List every provider configured under `clients` and exit
+    #[arg(long)]
+    list_provider: bool,
     /// Config file path (default: ~/.sysenv/config.yaml)
     #[arg(short = 'c', long, value_name = "FILE")]
     config: Option<PathBuf>,
@@ -542,6 +557,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             a.refresh,
             m.date.as_deref(),
             m.open,
+            m.model_type.as_deref(),
         ),
         AiCmd::CnModel(m) => ai::cmd_cn_model(
             m.name.as_deref(),
@@ -551,6 +567,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             m.output,
             a.refresh,
             m.date.as_deref(),
+            m.model_type.as_deref(),
         ),
         AiCmd::Provider(p) => ai::cmd_provider(
             p.name.as_deref(),
@@ -561,7 +578,15 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             p.output,
             a.refresh,
         ),
-        AiCmd::Chat(c) => chat::cmd_chat(&c.msg, c.config.as_deref(), c.debug, c.no_stream),
+        AiCmd::Chat(c) => chat::cmd_chat(
+            &c.msg,
+            c.config.as_deref(),
+            c.debug,
+            c.no_stream,
+            c.model.as_deref(),
+            c.list_model,
+            c.list_provider,
+        ),
         AiCmd::Task(t) => chat::cmd_task(
             t.task.as_deref(),
             &t.params,

@@ -273,6 +273,62 @@ fn csv_get(v: &Value, k: &str) -> String {
     v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
 }
 
+/// Normalize a `--model-type` value to the canonical modality name used by
+/// models.dev (`text`, `image`, `audio`, `video`, `pdf`); Chinese aliases are
+/// accepted and unknown values are returned unchanged (so the caller can
+/// report them).
+fn normalize_modality(t: &str) -> String {
+    match t.trim().to_ascii_lowercase().as_str() {
+        "文本" => "text".to_string(),
+        "图像" | "图片" => "image".to_string(),
+        "语音" | "音频" => "audio".to_string(),
+        "视频" => "video".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// True when the model's `modalities.input` or `modalities.output` contains
+/// `modality` (case-insensitive). Models without a `modalities` field never
+/// match.
+fn model_has_modality(m: &Value, modality: &str) -> bool {
+    ["input", "output"].iter().any(|dir| {
+        m.get("modalities")
+            .and_then(|x| x.get(*dir))
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .any(|e| e.as_str().map(|s| ci_eq(s, modality)).unwrap_or(false))
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn filter_by_model_type(models: Vec<ModelHit>, model_type: &str) -> Vec<ModelHit> {
+    let modality = normalize_modality(model_type);
+    models
+        .into_iter()
+        .filter(|(_, m)| model_has_modality(m, &modality))
+        .collect()
+}
+
+/// The modality family of a model, e.g. `text,image` (union of input and
+/// output modalities; empty when unknown).
+fn model_modalities(m: &Value) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for dir in ["input", "output"] {
+        if let Some(arr) = m.get("modalities").and_then(|x| x.get(dir)).and_then(|x| x.as_array()) {
+            for e in arr {
+                if let Some(s) = e.as_str() {
+                    if !s.is_empty() && !out.iter().any(|x| x == s) {
+                        out.push(s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out.join(",")
+}
+
 /// Character length of a string field (used for column widths).
 fn field_len(m: &Value, key: &str) -> usize {
     m.get(key)
@@ -282,7 +338,7 @@ fn field_len(m: &Value, key: &str) -> usize {
 }
 
 /// Print a list of models as an aligned table with a header row
-/// (`id`, `name`, `family`, `last_updated`).
+/// (`id`, `name`, `family`, `context`, `type`, `last_updated`).
 fn print_model_rows(hits: &[ModelHit]) {
     let w_id = hits.iter().map(|(_, m)| field_len(m, "id")).max().unwrap_or(0).max(2);
     let w_name = hits.iter().map(|(_, m)| field_len(m, "name")).max().unwrap_or(0).max(4);
@@ -292,6 +348,18 @@ fn print_model_rows(hits: &[ModelHit]) {
         .max()
         .unwrap_or(0)
         .max(6);
+    let w_ctx = hits
+        .iter()
+        .map(|(_, m)| fmt_num(m.get("limit").and_then(|l| l.get("context")).and_then(|v| v.as_u64()).unwrap_or(0)).len())
+        .max()
+        .unwrap_or(0)
+        .max(7);
+    let w_type = hits
+        .iter()
+        .map(|(_, m)| model_modalities(m).chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(4);
     let w_updated = hits
         .iter()
         .map(|(_, m)| field_len(m, "last_updated"))
@@ -300,15 +368,19 @@ fn print_model_rows(hits: &[ModelHit]) {
         .max(12);
 
     println!(
-        "{:<w_id$}  {:<w_name$}  {:<w_family$}  {:<w_updated$}",
-        "ID", "NAME", "FAMILY", "LAST UPDATED"
+        "{:<w_id$}  {:<w_name$}  {:<w_family$}  {:<w_ctx$}  {:<w_type$}  {:<w_updated$}",
+        "ID", "NAME", "FAMILY", "CONTEXT", "TYPE", "LAST UPDATED"
     );
     for (_, m) in hits {
         let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("?");
         let nm = m.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let fam = m.get("family").and_then(|v| v.as_str()).unwrap_or("");
+        let ctx = m.get("limit").and_then(|l| l.get("context")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let ctx = if ctx == 0 { "-".to_string() } else { fmt_num(ctx) };
+        let typ = model_modalities(m);
+        let typ = if typ.is_empty() { "-".to_string() } else { typ };
         let lu = m.get("last_updated").and_then(|v| v.as_str()).unwrap_or("");
-        println!("{:<w_id$}  {:<w_name$}  {:<w_family$}  {:<w_updated$}", id, nm, fam, lu);
+        println!("{:<w_id$}  {:<w_name$}  {:<w_family$}  {:<w_ctx$}  {:<w_type$}  {:<w_updated$}", id, nm, fam, ctx, typ, lu);
     }
 }
 
@@ -421,6 +493,7 @@ pub fn cmd_model(
     refresh: bool,
     updated_after: Option<&str>,
     open: bool,
+    model_type: Option<&str>,
 ) -> Result<()> {
     let data = fetch_data(refresh)?;
     let fmt = out.or(if json { Some(OutFormat::Json) } else { None });
@@ -429,10 +502,20 @@ pub fn cmd_model(
     let bare = name.is_none() && search.is_none() && !list;
     let default_limit = if bare { usize::MAX } else { 20 };
     let date = updated_after.map(parse_date).transpose()?;
+    let mt = model_type.map(normalize_modality);
+    if let Some(t) = &mt {
+        if !["text", "image", "audio", "video", "pdf"].contains(&t.as_str()) {
+            bail!("unsupported --model-type `{t}` (supported: text, image, audio, video, pdf or 文本/图像/语音/视频)");
+        }
+    }
 
     if list || bare {
         let all = all_models(&data);
         let hits = apply_filters(all, date.as_deref(), open);
+        let hits = match &mt {
+            Some(t) => filter_by_model_type(hits, t),
+            None => hits,
+        };
         let total_hits = hits.len();
         let take = limit.unwrap_or(default_limit).max(1);
         match fmt {
@@ -472,6 +555,10 @@ pub fn cmd_model(
     };
 
     let hits = apply_filters(search_models(&data, query), date.as_deref(), open);
+    let hits = match &mt {
+        Some(t) => filter_by_model_type(hits, t),
+        None => hits,
+    };
     if hits.is_empty() {
         let mut msg = format!("no model matches `{query}`");
         if let Some(d) = &date {
@@ -479,6 +566,9 @@ pub fn cmd_model(
         }
         if open {
             msg.push_str(" with open weights");
+        }
+        if let Some(t) = &mt {
+            msg.push_str(&format!(" with modality {t}"));
         }
         bail!("{msg} (source: {DATA_URL})");
     }
@@ -905,13 +995,17 @@ struct DlModel {
     r#type: String,
     /// Model category, e.g. `推理大模型`
     category: String,
+    /// Context length from the detail page, e.g. `1.05M` (empty when unknown)
+    context: String,
+    /// Input/output modalities from the detail page, e.g. `文本、图像 → 文本`
+    modality: String,
     /// Published date YYYY-MM-DD (empty when the card has no real date)
     published: String,
     /// Detail page URL
     url: String,
 }
 
-const DL_CSV_HEADER: &str = "id,name,provider,aliases,type,category,published,url";
+const DL_CSV_HEADER: &str = "id,name,provider,aliases,type,category,context,modality,published,url";
 
 fn dl_cache_file() -> PathBuf {
     cache_dir().join("datalearner-models.json")
@@ -992,6 +1086,69 @@ fn fetch_datalearner(refresh: bool) -> Result<Vec<DlModel>> {
     }
     save_dl_cache(&models)?;
     Ok(models)
+}
+
+/// Parse the value that follows a labeled row in a DataLearner detail page.
+/// The label sits in a small header div, immediately followed by the value
+/// div: `...>LABEL</div><div class="...">VALUE</div>`. The label may be
+/// wrapped in its own span (`>LABEL</span></div><div class="...">`), so we
+/// locate the label text and then read the value div that directly follows
+/// the next `</div><div class="` sequence.
+fn dl_detail_value(html: &str, label: &str) -> Option<String> {
+    let label_pos = html.find(label)?;
+    let rest = &html[label_pos + label.len()..];
+    let marker = "</div><div class=\"";
+    let ms = rest.find(marker)?;
+    let after = &rest[ms + marker.len()..];
+    let gt = after.find('>')?;
+    let value_start = gt + 1;
+    let value_end = after[value_start..].find("</div>")? + value_start;
+    let raw = &after[value_start..value_end];
+    let text = html_unescape(&html_strip_tags(raw));
+    let t = text.trim();
+    if !t.is_empty() && t != "暂无数据" {
+        Some(t.to_string())
+    } else {
+        None
+    }
+}
+
+/// Fetch a model's detail page and extract the context length and
+/// input/output modalities. Failures (network, missing fields) return empty
+/// strings rather than aborting the whole query.
+fn fetch_dl_detail(url: &str) -> Result<(String, String)> {
+    let html = fetch_dl_page(url)?;
+    Ok((
+        dl_detail_value(&html, "上下文长度").unwrap_or_default(),
+        dl_detail_value(&html, "输入/输出模态").unwrap_or_default(),
+    ))
+}
+
+/// Map a `--model-type` value for the DataLearner list to the category
+/// keywords it matches. The list cards carry a category such as
+/// `推理大模型` / `语音大模型` / `多模态大模型` / `视觉大模型` /
+/// `编程大模型` / `基础大模型` / `翻译大模型`.
+fn dl_type_keywords(t: &str) -> Option<Vec<&'static str>> {
+    match t.trim().to_ascii_lowercase().as_str() {
+        "text" | "文本" => Some(vec!["推理", "编程", "对话", "翻译", "基础", "文本"]),
+        "image" | "图像" | "视觉" | "图片" => Some(vec!["视觉", "图像", "多模态"]),
+        "audio" | "语音" | "音频" | "voice" => Some(vec!["语音"]),
+        "video" | "视频" => Some(vec!["视频"]),
+        "multimodal" | "多模态" => Some(vec!["多模态"]),
+        _ => None,
+    }
+}
+
+fn filter_dl_by_type(models: Vec<DlModel>, model_type: &str) -> Result<Vec<DlModel>> {
+    let kws = dl_type_keywords(model_type).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unsupported --model-type `{model_type}` (supported: text, image, audio, video, multimodal or 文本/图像/语音/视频/多模态)"
+        )
+    })?;
+    Ok(models
+        .into_iter()
+        .filter(|m| kws.iter().any(|k| m.category.contains(k)))
+        .collect())
 }
 
 // --- minimal HTML scanning helpers (no external parser dependency) ---------
@@ -1193,6 +1350,8 @@ fn parse_dl_cards(html: &str) -> Vec<DlModel> {
             aliases,
             r#type: badges.join(" "),
             category,
+            context: String::new(),
+            modality: String::new(),
             published,
             url: format!("{DL_BASE}/{slug}"),
         });
@@ -1240,20 +1399,26 @@ fn filter_dl_by_date(models: Vec<DlModel>, date: &str) -> Vec<DlModel> {
 
 fn dl_csv_row(m: &DlModel) -> String {
     csv_row(&[
-        &m.id, &m.name, &m.provider, &m.aliases, &m.r#type, &m.category, &m.published, &m.url,
+        &m.id, &m.name, &m.provider, &m.aliases, &m.r#type, &m.category, &m.context, &m.modality,
+        &m.published, &m.url,
     ])
 }
 
-/// Aligned `ID  NAME  PROVIDER  PUBLISHED` table for a list of models.
+/// Aligned `ID  NAME  PROVIDER  TYPE  PUBLISHED` table for a list of models.
 fn print_dl_rows(hits: &[DlModel]) {
     let w_id = hits.iter().map(|m| m.id.chars().count()).max().unwrap_or(0).max(2);
     let w_name = hits.iter().map(|m| m.name.chars().count()).max().unwrap_or(0).max(4);
     let w_prov = hits.iter().map(|m| m.provider.chars().count()).max().unwrap_or(0).max(8);
+    let w_type = hits.iter().map(|m| m.category.chars().count()).max().unwrap_or(0).max(4);
     let w_pub = hits.iter().map(|m| m.published.chars().count()).max().unwrap_or(0).max(9);
 
-    println!("{:<w_id$}  {:<w_name$}  {:<w_prov$}  {:<w_pub$}", "ID", "NAME", "PROVIDER", "PUBLISHED");
+    println!(
+        "{:<w_id$}  {:<w_name$}  {:<w_prov$}  {:<w_type$}  {:<w_pub$}",
+        "ID", "NAME", "PROVIDER", "TYPE", "PUBLISHED"
+    );
     for m in hits {
-        println!("{:<w_id$}  {:<w_name$}  {:<w_prov$}  {:<w_pub$}", m.id, m.name, m.provider, m.published);
+        let typ = if m.category.is_empty() { "-".to_string() } else { m.category.clone() };
+        println!("{:<w_id$}  {:<w_name$}  {:<w_prov$}  {:<w_type$}  {:<w_pub$}", m.id, m.name, m.provider, typ, m.published);
     }
 }
 
@@ -1272,6 +1437,12 @@ fn print_dl_detail(m: &DlModel) {
     }
     if !m.category.is_empty() {
         rows.push(("category".into(), m.category.clone()));
+    }
+    if !m.context.is_empty() {
+        rows.push(("context".into(), m.context.clone()));
+    }
+    if !m.modality.is_empty() {
+        rows.push(("modality".into(), m.modality.clone()));
     }
     if !m.published.is_empty() {
         rows.push(("published".into(), m.published.clone()));
@@ -1312,11 +1483,15 @@ fn output_dl(hits: &[DlModel], take: usize, fmt: Option<OutFormat>, list_mode: b
     Ok(())
 }
 
-/// `sysenv ai cn-model [NAME | -s QUERY] [--date DATE] [--limit N] [-o json|csv] [--refresh]`
+/// `sysenv ai cn-model [NAME | -s QUERY] [--date DATE] [--model-type TYPE] [--limit N] [-o json|csv] [--refresh]`
 ///
 /// Query-only: a NAME or `--search` is required (no `--list` / bare full
 /// listing, no `--open` — DataLearner exposes no structured open-weights
-/// field). `--date YYYY-MM-DD` keeps only models published strictly after it.
+/// field). `--date YYYY-MM-DD` keeps only models published strictly after it;
+/// `--model-type` keeps only models whose category matches the given kind
+/// (text / image / audio / video / multimodal). A single exact hit fetches the
+/// detail page to enrich the output with the context length and
+/// input/output modalities.
 pub fn cmd_cn_model(
     name: Option<&str>,
     search: Option<&str>,
@@ -1325,19 +1500,39 @@ pub fn cmd_cn_model(
     out: Option<OutFormat>,
     refresh: bool,
     updated_after: Option<&str>,
+    model_type: Option<&str>,
 ) -> Result<()> {
     let models = fetch_datalearner(refresh)?;
     let fmt = out.or(if json { Some(OutFormat::Json) } else { None });
     let date = updated_after.map(parse_date).transpose()?;
+    if let Some(t) = &model_type {
+        if dl_type_keywords(t).is_none() {
+            bail!("unsupported --model-type `{t}` (supported: text, image, audio, video, multimodal or 文本/图像/语音/视频/多模态)");
+        }
+    }
 
-    // --date alone lists every model published after that date.
+    // --date / --model-type alone lists every matching model.
     if name.is_none() && search.is_none() {
-        if date.is_none() {
+        if date.is_none() && model_type.is_none() {
             bail!("provide a model NAME or --search QUERY (data: {DL_BASE})");
         }
-        let hits = filter_dl_by_date(models, updated_after.unwrap());
+        let hits = match &updated_after {
+            Some(d) => filter_dl_by_date(models, d),
+            None => models,
+        };
+        let hits = match &model_type {
+            Some(t) => filter_dl_by_type(hits, t)?,
+            None => hits,
+        };
         if hits.is_empty() {
-            bail!("no model published after {} (source: {DL_BASE})", updated_after.unwrap());
+            let mut msg = String::from("no model matches the filter");
+            if let Some(d) = &date {
+                msg.push_str(&format!(" published after {d}"));
+            }
+            if let Some(t) = &model_type {
+                msg.push_str(&format!(" of type {t}"));
+            }
+            bail!("{msg} (source: {DL_BASE})");
         }
         return output_dl(&hits, limit.unwrap_or(20).max(1), fmt, true);
     }
@@ -1349,10 +1544,17 @@ pub fn cmd_cn_model(
         Some(d) => filter_dl_by_date(hits, d),
         None => hits,
     };
+    let hits = match &model_type {
+        Some(t) => filter_dl_by_type(hits, t)?,
+        None => hits,
+    };
     if hits.is_empty() {
         let mut msg = format!("no model matches `{query}`");
         if let Some(d) = &date {
             msg.push_str(&format!(" published after {d}"));
+        }
+        if let Some(t) = &model_type {
+            msg.push_str(&format!(" of type {t}"));
         }
         bail!("{msg} (source: {DL_BASE})");
     }
@@ -1364,7 +1566,16 @@ pub fn cmd_cn_model(
     }
 
     if hits.len() == 1 {
-        return output_dl(&hits, 1, fmt, false);
+        // Single exact hit: enrich with the detail page (best effort).
+        let mut m = hits.into_iter().next().unwrap();
+        match fetch_dl_detail(&m.url) {
+            Ok((ctx, modl)) => {
+                m.context = ctx;
+                m.modality = modl;
+            }
+            Err(e) => eprintln!("sysenv: warning: cannot fetch detail page for {}: {e:#}", m.name),
+        }
+        return output_dl(std::slice::from_ref(&m), 1, fmt, false);
     }
 
     // Several models match exactly: show the list and how to disambiguate.
@@ -1653,8 +1864,113 @@ mod tests {
         assert_eq!(cols[2], "OpenAI");
         assert_eq!(cols[3], "GPT 6.1 Sol / gpt-6.1-sol");
         assert_eq!(cols[5], "推理大模型");
-        assert_eq!(cols[6], "2026-09-29");
-        assert_eq!(cols.len(), 8);
-        assert!(DL_CSV_HEADER.split(',').count() == 8);
+        assert_eq!(cols[6], "");                 // context (empty from card)
+        assert_eq!(cols[7], "");                 // modality (empty from card)
+        assert_eq!(cols[8], "2026-09-29");
+        assert_eq!(cols.len(), 10);
+        assert!(DL_CSV_HEADER.split(',').count() == 10);
+    }
+
+    #[test]
+    fn model_type_filter_by_modalities() {
+        let data = serde_json::json!({
+            "p": {
+                "models": {
+                    "text_only": {
+                        "id": "text_only",
+                        "modalities": {"input": ["text"], "output": ["text"]}
+                    },
+                    "vision": {
+                        "id": "vision",
+                        "modalities": {"input": ["text", "image"], "output": ["text"]}
+                    },
+                    "voice": {
+                        "id": "voice",
+                        "modalities": {"input": ["text", "audio"], "output": ["text", "audio"]}
+                    },
+                    "none": {"id": "none"}
+                }
+            }
+        });
+        assert_eq!(filter_by_model_type(all_models(&data), "text").len(), 3);
+        assert_eq!(filter_by_model_type(all_models(&data), "image").len(), 1);
+        assert_eq!(filter_by_model_type(all_models(&data), "audio").len(), 1);
+        assert_eq!(filter_by_model_type(all_models(&data), "video").len(), 0);
+        // Chinese alias
+        assert_eq!(filter_by_model_type(all_models(&data), "图像").len(), 1);
+        assert_eq!(filter_by_model_type(all_models(&data), "语音").len(), 1);
+        assert!(model_has_modality(&serde_json::json!({"modalities": {"input": ["TEXT"]}}), "text"));
+    }
+
+    #[test]
+    fn dl_type_keywords_mapping() {
+        assert!(dl_type_keywords("text").is_some());
+        assert!(dl_type_keywords("文本").is_some());
+        assert!(dl_type_keywords("image").is_some());
+        assert!(dl_type_keywords("语音").is_some());
+        assert!(dl_type_keywords("multimodal").is_some());
+        assert!(dl_type_keywords("bogus").is_none());
+    }
+
+    #[test]
+    fn dl_filter_by_category_type() {
+        let models = vec![
+            DlModel {
+                id: "a".into(),
+                name: "A".into(),
+                provider: "X".into(),
+                aliases: String::new(),
+                r#type: String::new(),
+                category: "推理大模型".into(),
+                context: String::new(),
+                modality: String::new(),
+                published: String::new(),
+                url: String::new(),
+            },
+            DlModel {
+                id: "b".into(),
+                name: "B".into(),
+                provider: "X".into(),
+                aliases: String::new(),
+                r#type: String::new(),
+                category: "语音大模型".into(),
+                context: String::new(),
+                modality: String::new(),
+                published: String::new(),
+                url: String::new(),
+            },
+            DlModel {
+                id: "c".into(),
+                name: "C".into(),
+                provider: "X".into(),
+                aliases: String::new(),
+                r#type: String::new(),
+                category: "多模态大模型".into(),
+                context: String::new(),
+                modality: String::new(),
+                published: String::new(),
+                url: String::new(),
+            },
+        ];
+        let ids = |v: &[DlModel]| -> Vec<String> { v.iter().map(|m| m.id.clone()).collect() };
+        assert_eq!(ids(&filter_dl_by_type(models.clone(), "text").unwrap()), vec!["a".to_string()]);
+        assert_eq!(ids(&filter_dl_by_type(models.clone(), "语音").unwrap()), vec!["b".to_string()]);
+        assert_eq!(ids(&filter_dl_by_type(models.clone(), "image").unwrap()), vec!["c".to_string()]);
+        assert!(filter_dl_by_type(models.clone(), "nope").is_err());
+    }
+
+    #[test]
+    fn dl_detail_value_parses_labeled_rows() {
+        // Stat-card style: label inside a span, then the value div.
+        let html = r#"<span class="text-sm ...">上下文长度</span></div><div class="flex ...">1.05M</div>"#;
+        assert_eq!(dl_detail_value(html, "上下文长度").as_deref(), Some("1.05M"));
+        // Basic-info style: label directly in the header div.
+        let html = r#"</svg></span>输入/输出模态</div><div class="flex flex-wrap items-center gap-2.5 text-base ...">文本、图像 → 文本</div>"#;
+        assert_eq!(dl_detail_value(html, "输入/输出模态").as_deref(), Some("文本、图像 → 文本"));
+        // Missing label.
+        assert_eq!(dl_detail_value("<div>no label</div>", "上下文长度"), None);
+        // 暂无数据 is treated as absent.
+        let html = r#"<span>上下文长度</span></div><div class="...">暂无数据</div>"#;
+        assert_eq!(dl_detail_value(html, "上下文长度"), None);
     }
 }
