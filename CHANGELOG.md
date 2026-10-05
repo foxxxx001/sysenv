@@ -2,6 +2,18 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sysenv-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.4（2026-10-05）
+
+### 新增
+- `sysenv ai task` **任务工具执行改为纯代码 HTTP 实现，禁止本地 shell 命令**（移除 `tool:` 命令模板，删除 `run_tool_cmd`）：任务可声明两种工具，function_call 选中后由程序执行并**回填真实数据**给模型回答：
+  - **`api: <URL模板>`** —— 固定 HTTP 接口：`{key}` / `{key:默认值}` 占位符由模型 tool 参数填充（空值回退默认值），响应体原样作为工具结果；`params: [k1, k2]` 声明可选参数并加入函数 schema
+  - **`search: <源名>`** —— AI 模糊联网搜索：内置 `zhihu`（知乎日报热门）、`baidu`（百度实时热搜）、`bilibili`（B 站热门）、`github`（近 7 天新建星榜，可传 `date` 参数）、`hn`（Hacker News）五个搜索源，程序抓取头条列表回填，模型据此筛选总结
+- 自研 YAML 解析器支持内联数组 `[a, b]`（`params: [lat, lon]` 与块列表写法均可）
+- 配置示例新增 `topnews`（zhihu）与 `topshow`（baidu）任务，weather 改用 `api:` 写法
+
+### 修复
+- 模型 function_call 参数传空字符串时，URL 模板占位符回退使用默认值（此前空值会生成无效 URL）
+
 ## v0.4.3（2026-10-05）
 
 ### 新增

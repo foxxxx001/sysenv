@@ -381,6 +381,10 @@ sysenv ai chat --list-model               # 列出配置中的所有模型（含
 
 * **带用户请求（无 `-t`）**：**function_call 自动路由** —— 每个任务的 `name` 作为函数名、`desc` 作为函数描述注册为 tools，大模型用 function_call 选择最匹配的任务（参数 `input` 携带用户请求），随后**自动执行**：把该任务 `desc` + 用户请求组装成消息发给模型，输出最终回复；模型未选择任何任务时明确报错（可改用 `-t NAME` 手动指定）
 
+* **任务工具执行（function_call 选中后回填真实数据）**：任务可声明以下两种工具之一，选中后由**程序代码**（reqwest HTTP 请求，**禁止本地 shell 命令 / curl**）执行，执行结果作为"工具执行结果"回填给模型，模型再基于真实数据回答：
+  * `api: <URL模板>` —— **固定 HTTP 接口**：`{key}` / `{key:默认值}` 占位符由模型 tool 参数填充（模型未传或传空时用默认值），响应体原样作为工具结果；`params: [k1, k2]` 声明参数名（可选，会加入函数 schema，便于模型填写坐标等参数）
+  * `search: <源名>` —— **AI 模糊联网搜索**：内置搜索源由程序抓取头条列表回填，模型据此筛选总结。内置源：`zhihu`（知乎日报：今日热门新闻）、`baidu`（百度实时热搜）、`bilibili`（B 站热门视频）、`github`（近 7 天新建星榜，可选 `date` 参数如 `date:2026-01-01`）、`hn`（Hacker News 头条）
+
 * `-t <name>`：取 `name` 匹配的任务，按 `msg` 组装消息（`desc` 为任务描述）
 
 * `-t *`（**全任务打分匹配**）：把**所有任务**的 `desc` 与用户提供的聊天信息（命令行参数或 stdin）组装，调用配置的大模型按 **10 分制**打分（0=不匹配，10=完全匹配），输出 `TASK / DESC / SCORE` 表格并按分数降序排列；某个任务请求失败时其 SCORE 显示 `-` 并在 stderr 提示
@@ -391,11 +395,48 @@ sysenv ai chat --list-model               # 列出配置中的所有模型（含
 
 ```
 sysenv ai task                          # 列出任务（name / desc，最多 10 个）
-sysenv ai task 今天深圳的天气如何         # function_call 自动路由：模型选任务并自动执行
+sysenv ai task 今天深圳的天气如何         # function_call 自动路由：模型选 weather 并自动执行 api 工具（真实天气）后回答
+sysenv ai task 今天有什么热门新闻        # function_call 自动路由：模型选 topnews 并自动执行 zhihu 搜索源后回答
 sysenv ai task -t weather               # 用默认值（深圳）组装消息并聊天
 sysenv ai task -t weather country:北京   # 替换 country 为北京
 sysenv ai task -t weather country=北京   # = 号写法等价
 sysenv ai task -t "*" "帮我查今天深圳的天气"  # 对全部任务打分（TASK/DESC/SCORE，按分数排序）
+```
+
+**工具执行示例**（`~/.sysenv/config.yaml` 中 `tasks` 配置）：
+
+```yaml
+tasks:
+  # 固定 HTTP 接口：占位符 {lat}/{lon} 由模型参数填充，未传时用默认值（深圳坐标）
+  - name: weather
+    desc: 用来获取天气信息
+    msg: 我在{country:深圳},今天的天气如何，我要询问温度、湿度、下雨概率等信息
+    api: https://api.open-meteo.com/v1/forecast?latitude={lat:22.54}&longitude={lon:114.06}&current_weather=true
+    params: [lat, lon]
+  # AI 模糊联网搜索：内置 zhihu 搜索源抓取今日热门新闻头条回填，模型据此总结
+  - name: topnews
+    desc: 获取今天的热门新闻（内置知乎日报搜索源）
+    msg: 请基于工具执行结果列出今天的新闻头条，注明来源链接
+    search: zhihu
+  # AI 模糊联网搜索：内置 baidu 搜索源抓取实时热搜回填，模型筛选影视娱乐条目
+  - name: topshow
+    desc: 获取今天新开播的电视剧或热门影视娱乐话题（内置百度热搜搜索源，请筛选娱乐影视类条目）
+    msg: 请基于工具执行结果筛选出与影视剧相关的话题，列出今天新开播或热播的电视剧
+    search: baidu
+```
+
+实际输出示例（`sysenv ai task 今天深圳的天气如何`，模型选 weather → 程序请求 open-meteo → 回填后回答）：
+
+```
+[0] task: weather
+    desc: 用来获取天气信息
+    args: {"input":"今天深圳天气如何"}
+→ 执行任务 weather
+（工具执行结果：{"latitude":22.530754,"longitude":114.08714,"current_weather":{"temperature":27.2,...}}）
+根据实时天气数据，今天深圳（坐标：22.53°N, 114.09°E）的天气情况如下：
+- 温度：当前气温约为 27.2°C
+- 天气状况：大致晴朗或多云（WMO code 1）
+...
 ```
 
 ## 6. 进程管理（`task`）

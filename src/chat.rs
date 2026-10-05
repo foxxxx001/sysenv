@@ -81,6 +81,19 @@ struct Task {
     name: String,
     desc: String,
     msg: String,
+    /// Optional HTTP API URL template executed when the task is selected by
+    /// function_call. `{key}` / `{key:default}` placeholders are filled from
+    /// the model's tool arguments; the response body is fed back to the model
+    /// as the tool result. Implemented in code (no local shell commands).
+    api: Option<String>,
+    /// Optional built-in search source executed when the task is selected:
+    /// `zhihu` (daily news), `baidu` (hot search), `bilibili` (popular
+    /// videos), `github` (trending repos), `hn` (Hacker News). The extracted
+    /// headline list is fed back to the model as the tool result.
+    search: Option<String>,
+    /// Optional parameter names declared for the tool function; each becomes a
+    /// string property of the function schema.
+    params: Option<Vec<String>>,
 }
 
 /// Resolve the config path: explicit `-c` wins, otherwise `~/.sysenv/config.yaml`.
@@ -204,6 +217,25 @@ fn unquote(s: &str) -> String {
     }
 }
 
+/// Parse a scalar value, or an inline list like `[a, b, c]` into a YVal list.
+fn parse_scalar_or_list(value: &str) -> YVal {
+    let v = value.trim();
+    if v.len() >= 2 && v.starts_with('[') && v.ends_with(']') {
+        let inner = &v[1..v.len() - 1];
+        if inner.trim().is_empty() {
+            YVal::List(Vec::new())
+        } else {
+            let items = inner
+                .split(',')
+                .map(|s| YVal::Scalar(unquote(s.trim())))
+                .collect();
+            YVal::List(items)
+        }
+    } else {
+        YVal::Scalar(unquote(v))
+    }
+}
+
 fn parse_yaml(text: &str) -> Result<YVal> {
     let lines = preprocess_yaml(text);
     let (v, next) = parse_block(&lines, 0, 0)?;
@@ -240,7 +272,7 @@ fn parse_block(lines: &[Line], idx: usize, min_indent: usize) -> Result<(YVal, u
                     (YVal::Scalar(String::new()), i + 1)
                 }
             } else {
-                (YVal::Scalar(unquote(&value)), i + 1)
+                (parse_scalar_or_list(&value), i + 1)
             };
             map.push((key, val));
             i = next_i;
@@ -270,7 +302,7 @@ fn parse_list_item(lines: &[Line], idx: usize, indent: usize, rest: &str) -> Res
                     (YVal::Scalar(String::new()), i + 1)
                 }
             } else {
-                (YVal::Scalar(unquote(&v2)), i + 1)
+                (parse_scalar_or_list(&v2), i + 1)
             };
             map.push((k2, val));
             i = next_i;
@@ -375,7 +407,14 @@ fn config_from_yaml(y: &YVal) -> Result<Config> {
             let name = t.get("name").and_then(|v| v.scalar()).map(str::to_string).unwrap_or_default();
             let desc = t.get("desc").and_then(|v| v.scalar()).unwrap_or("").to_string();
             let msg = t.get("msg").and_then(|v| v.scalar()).unwrap_or("").to_string();
-            tasks.push(Task { name, desc, msg });
+            let api = t.get("api").and_then(|v| v.scalar()).map(str::to_string);
+            let search = t.get("search").and_then(|v| v.scalar()).map(str::to_string);
+            let params = t.get("params").and_then(|v| v.list()).map(|l| {
+                l.iter()
+                    .filter_map(|p| p.scalar().map(str::to_string))
+                    .collect()
+            });
+            tasks.push(Task { name, desc, msg, api, search, params });
         }
     }
     Ok(Config { model, stream, providers, tasks })
@@ -1061,8 +1100,9 @@ fn send_chat(p: &Provider, m: &Model, msg: &str, stream: bool, debug: bool) -> R
 // ---------------------------------------------------------------------------
 
 /// Every configured task becomes one tool; the task name is the function name
-/// and the task description is the function description. The only parameter is
-/// `input`, which carries the user's request.
+/// and the task description is the function description. The `input` parameter
+/// carries the user's request; an optional `params` list declares additional
+/// string parameters for the tool command.
 fn task_tools(cfg: &Config, kind: &str) -> Result<Value> {
     let mut arr = Vec::new();
     for t in &cfg.tasks {
@@ -1077,11 +1117,19 @@ fn task_tools(cfg: &Config, kind: &str) -> Result<Value> {
                 t.name
             );
         }
+        let mut props = serde_json::Map::new();
+        props.insert(
+            "input".to_string(),
+            json!({ "type": "string", "description": "用户请求的内容" }),
+        );
+        if let Some(params) = &t.params {
+            for p in params {
+                props.insert(p.clone(), json!({ "type": "string", "description": format!("参数 {p}") }));
+            }
+        }
         let schema = json!({
             "type": "object",
-            "properties": {
-                "input": { "type": "string", "description": "用户请求的内容" }
-            },
+            "properties": props,
             "required": ["input"]
         });
         if kind == "anthropic" {
@@ -1268,9 +1316,224 @@ fn try_read_stdin(timeout: Duration) -> Option<String> {
     }
 }
 
+/// Format a list of `(title, url)` pairs as a plain text list for the model.
+fn fmt_headlines(rows: &[(String, String)]) -> String {
+    rows.iter()
+        .map(|(t, u)| format!("- {t} ({u})"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Parse a zhihu daily-news response into headline rows.
+fn parse_zhihu(body: &str) -> Result<Vec<(String, String)>> {
+    let v: Value = serde_json::from_str(body).context("zhihu returned invalid JSON")?;
+    let mut rows = Vec::new();
+    if let Some(stories) = v.get("stories").and_then(|s| s.as_array()) {
+        for s in stories {
+            let title = s.get("title").and_then(|x| x.as_str());
+            let id = s
+                .get("id")
+                .and_then(|x| x.as_str())
+                .map(str::to_string)
+                .or_else(|| s.get("id").and_then(|x| x.as_u64()).map(|n| n.to_string()));
+            if let (Some(t), Some(id)) = (title, id) {
+                rows.push((t.to_string(), format!("https://daily.zhihu.com/story/{id}")));
+            }
+        }
+    }
+    Ok(rows)
+}
+
+/// Parse a baidu hot-search response into headline rows.
+fn parse_baidu(body: &str) -> Result<Vec<(String, String)>> {
+    let v: Value = serde_json::from_str(body).context("baidu returned invalid JSON")?;
+    let mut rows = Vec::new();
+    let content = v
+        .pointer("/data/cards/0/content/0/content")
+        .and_then(|c| c.as_array());
+    if let Some(items) = content {
+        for it in items {
+            if let Some(w) = it.get("word").and_then(|x| x.as_str()) {
+                let url = it
+                    .get("url")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                rows.push((w.to_string(), url));
+            }
+        }
+    }
+    Ok(rows)
+}
+
+/// Parse a bilibili popular-videos response into headline rows.
+fn parse_bilibili(body: &str) -> Result<Vec<(String, String)>> {
+    let v: Value = serde_json::from_str(body).context("bilibili returned invalid JSON")?;
+    let mut rows = Vec::new();
+    if let Some(list) = v.pointer("/data/list").and_then(|l| l.as_array()) {
+        for it in list {
+            if let (Some(t), Some(bvid)) = (
+                it.get("title").and_then(|x| x.as_str()),
+                it.get("bvid").and_then(|x| x.as_str()),
+            ) {
+                rows.push((t.to_string(), format!("https://www.bilibili.com/video/{bvid}")));
+            }
+        }
+    }
+    Ok(rows)
+}
+
+/// Parse a GitHub search response into headline rows.
+fn parse_github(body: &str) -> Result<Vec<(String, String)>> {
+    let v: Value = serde_json::from_str(body).context("github returned invalid JSON")?;
+    let mut rows = Vec::new();
+    if let Some(items) = v.get("items").and_then(|i| i.as_array()) {
+        for it in items {
+            if let (Some(name), Some(url)) = (
+                it.get("full_name").and_then(|x| x.as_str()),
+                it.get("html_url").and_then(|x| x.as_str()),
+            ) {
+                let stars = it.get("stargazers_count").and_then(|x| x.as_u64()).unwrap_or(0);
+                rows.push((format!("{name} ★{stars}"), url.to_string()));
+            }
+        }
+    }
+    Ok(rows)
+}
+
+/// Parse a Hacker News item response (title + url).
+fn parse_hn_item(body: &str) -> Result<Option<(String, String)>> {
+    let v: Value = serde_json::from_str(body).context("hacker news returned invalid JSON")?;
+    let title = v.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    if title.is_empty() {
+        return Ok(None);
+    }
+    let url = v
+        .get("url")
+        .and_then(|x| x.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            v.get("id")
+                .and_then(|x| x.as_u64())
+                .map(|id| format!("https://news.ycombinator.com/item?id={id}"))
+                .unwrap_or_default()
+        });
+    Ok(Some((title, url)))
+}
+
+/// YYYY-MM-DD for `n` days before today (UTC).
+fn days_ago(n: u64) -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        .saturating_sub(n * 86400);
+    let days = secs / 86400;
+    let (mut y, mut m, mut d) = (1970, 1, 1);
+    let mut rem = days;
+    loop {
+        let yl = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        if rem >= yl {
+            rem -= yl;
+            y += 1;
+        } else {
+            break;
+        }
+    }
+    let mdays = [31, if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    for (i, ml) in mdays.iter().enumerate() {
+        if rem >= *ml {
+            rem -= ml;
+        } else {
+            m = i + 1;
+            d = rem + 1;
+            break;
+        }
+    }
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Run a built-in search source and return a plain headline list. All sources
+/// are plain HTTP requests implemented in code (no local shell commands).
+fn builtin_search(source: &str, args: &HashMap<String, String>) -> Result<String> {
+    let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
+    let ua = "sysenv/".to_string() + env!("CARGO_PKG_VERSION");
+    let get = |url: &str| -> Result<String> {
+        let resp = client
+            .get(url)
+            .header(USER_AGENT, ua.clone())
+            .send()
+            .with_context(|| format!("search request to {url} failed"))?;
+        if !resp.status().is_success() {
+            bail!("{url} returned HTTP {}", resp.status());
+        }
+        Ok(resp.text().context("cannot read search response")?)
+    };
+    let rows: Vec<(String, String)> = match source.to_ascii_lowercase().as_str() {
+        "zhihu" => parse_zhihu(&get("https://news-at.zhihu.com/api/4/news/latest")?)?,
+        "baidu" => parse_baidu(&get("https://top.baidu.com/api/board?platform=wise&tab=realtime")?)?,
+        "bilibili" => parse_bilibili(&get("https://api.bilibili.com/x/web-interface/popular?ps=10")?)?,
+        "github" => {
+            let date = args.get("date").cloned().unwrap_or_else(|| days_ago(7));
+            let url = format!(
+                "https://api.github.com/search/repositories?q=created:%3E{date}&sort=stars&order=desc&per_page=10"
+            );
+            parse_github(&get(&url)?)?
+        }
+        "hn" => {
+            let ids: Vec<u64> = serde_json::from_str(&get("https://hacker-news.firebaseio.com/v0/topstories.json")?)
+                .context("hacker news returned invalid JSON")?;
+            let mut out = Vec::new();
+            for id in ids.iter().take(5) {
+                let body = get(&format!("https://hacker-news.firebaseio.com/v0/item/{id}.json"))?;
+                if let Some(row) = parse_hn_item(&body)? {
+                    out.push(row);
+                }
+            }
+            out
+        }
+        other => bail!("unknown search source `{other}` (available: zhihu, baidu, bilibili, github, hn)"),
+    };
+    if rows.is_empty() {
+        bail!("search source `{source}` returned no results");
+    }
+    Ok(fmt_headlines(&rows))
+}
+
+/// Execute a task's tool: either a fixed HTTP API template (`api`) or a
+/// built-in search source (`search`). `{key}` / `{key:default}` placeholders
+/// are substituted from the model's tool arguments. Returns the raw tool
+/// result text fed back to the model.
+fn run_task_tool(task: &Task, args: &HashMap<String, String>) -> Result<String> {
+    if let Some(tpl) = &task.api {
+        if !tpl.trim().is_empty() {
+            let url = substitute(tpl, args);
+            let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
+            let resp = client
+                .get(&url)
+                .header(USER_AGENT, format!("sysenv/{}", env!("CARGO_PKG_VERSION")))
+                .send()
+                .with_context(|| format!("api request to {url} failed"))?;
+            if !resp.status().is_success() {
+                bail!("{url} returned HTTP {}", resp.status());
+            }
+            return resp.text().context("cannot read api response");
+        }
+    }
+    if let Some(src) = &task.search {
+        if !src.trim().is_empty() {
+            return builtin_search(src, args);
+        }
+    }
+    bail!("task `{}` has no api/search tool configured", task.name);
+}
+
 /// Route the user's request to the configured tasks via function calls and
 /// execute the first match: the task description plus the user request are
-/// assembled into the chat message.
+/// assembled into the chat message. When the task declares an `api` URL or a
+/// `search` source, the tool is executed first (placeholders filled from the
+/// model arguments) and its result is fed back, so the model's reply is
+/// grounded in real data.
 fn route_and_execute(cfg: &mut Config, path: &Path, input: &str, debug: bool, no_stream: bool) -> Result<()> {
     let calls = route_tasks(cfg, path, input, debug)?;
     if calls.is_empty() {
@@ -1301,7 +1564,31 @@ fn route_and_execute(cfg: &mut Config, path: &Path, input: &str, debug: bool, no
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| input.to_string());
-    let exec_msg = format!("任务说明：{}\n\n用户请求：{}", task.desc, user_arg);
+
+    // Flatten the model's tool arguments into a string map for substitution.
+    let mut arg_map = HashMap::new();
+    if let Some(obj) = args.as_object() {
+        for (k, v) in obj {
+            let s = v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
+            arg_map.insert(k.clone(), s);
+        }
+    }
+
+    // Execute the task tool (fixed HTTP API or built-in search) when declared;
+    // feed its result back to the model so the final reply uses real data.
+    let tool_result = if task.api.is_some() || task.search.is_some() {
+        Some(run_task_tool(task, &arg_map)?)
+    } else {
+        None
+    };
+
+    let exec_msg = match &tool_result {
+        Some(tool_out) => format!(
+            "任务说明：{}\n\n用户请求：{}\n\n工具执行结果：\n{}\n\n请基于工具执行结果回答用户。",
+            task.desc, user_arg, tool_out
+        ),
+        None => format!("任务说明：{}\n\n用户请求：{}", task.desc, user_arg),
+    };
     println!("\n→ 执行任务 {tname}");
     chat_with(cfg, path, &exec_msg, debug, no_stream, None)
 }
@@ -1339,8 +1626,10 @@ fn substitute(template: &str, params: &HashMap<String, String>) -> String {
                     None => (inner.trim(), None),
                 };
                 match params.get(key) {
-                    Some(v) => out.push_str(v),
-                    None => match def {
+                    // An empty supplied value counts as absent so `{k:default}`
+                    // placeholders (e.g. URL parameters) fall back to their default.
+                    Some(v) if !v.is_empty() => out.push_str(v),
+                    _ => match def {
                         Some(d) => out.push_str(d),
                         None => {
                             out.push('{');
@@ -1760,6 +2049,12 @@ tasks:
   - name: weather
     desc: 用来获取天气信息
     msg: 我在{country:深圳},今天的天气如何，我要询问温度、湿度、下雨概率等信息
+    api: https://api.open-meteo.com/v1/forecast?latitude={lat:22.54}&longitude={lon:114.06}&current_weather=true
+    params: [lat, lon]
+  - name: topnews
+    desc: 获取今天的热门新闻
+    msg: 请基于搜索结果列出今天的新闻头条
+    search: zhihu
 stream: true
 "#;
 
@@ -1776,7 +2071,7 @@ stream: true
         let clients = y.get("clients").and_then(|v| v.list()).unwrap();
         assert_eq!(clients.len(), 2);
         let tasks = y.get("tasks").and_then(|v| v.list()).unwrap();
-        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].get("msg").and_then(|v| v.scalar()).unwrap(), "我在{country:深圳},今天的天气如何，我要询问温度、湿度、下雨概率等信息");
     }
 
@@ -1791,7 +2086,10 @@ stream: true
         assert_eq!(cfg.providers[0].models.len(), 1);
         assert_eq!(cfg.providers[0].models[0].name, "agnes-3.0-flash");
         assert_eq!(cfg.providers[0].models[0].weight, 1);
-        assert_eq!(cfg.tasks.len(), 1);
+        assert_eq!(cfg.tasks.len(), 2);
+        assert!(cfg.tasks[0].api.as_deref().unwrap_or("").contains("api.open-meteo.com"));
+        assert_eq!(cfg.tasks[0].params.as_deref(), Some(["lat".to_string(), "lon".to_string()].as_slice()));
+        assert_eq!(cfg.tasks[1].search.as_deref(), Some("zhihu"));
     }
 
     #[test]
@@ -1948,14 +2246,64 @@ stream: true
         assert_eq!(openai[0]["function"]["name"], "weather");
         assert_eq!(openai[0]["function"]["description"], "用来获取天气信息");
         assert_eq!(openai[0]["function"]["parameters"]["required"][0], "input");
+        // Declared params become string properties of the schema.
+        assert_eq!(openai[0]["function"]["parameters"]["properties"]["lat"]["type"], "string");
+        assert_eq!(openai[0]["function"]["parameters"]["properties"]["lon"]["type"], "string");
         let anthropic = task_tools(&cfg, "anthropic").unwrap();
         assert_eq!(anthropic[0]["name"], "weather");
         assert_eq!(anthropic[0]["description"], "用来获取天气信息");
         assert!(anthropic[0].get("input_schema").is_some());
+        assert_eq!(anthropic[0]["input_schema"]["properties"]["lat"]["type"], "string");
         // A task name with characters outside [A-Za-z0-9_-] is rejected.
         let mut cfg2 = sample_config();
         cfg2.tasks[0].name = "bad name!".to_string();
         assert!(task_tools(&cfg2, "openai").is_err());
+    }
+
+    #[test]
+    fn builtin_search_parsers_extract_headlines() {
+        // Deterministic parsing of fixed payloads (no network involved).
+        let zh = r#"{"stories":[{"title":"标题A","id":123},{"title":"标题B","id":456}]}"#;
+        let rows = parse_zhihu(zh).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "标题A");
+        assert_eq!(rows[0].1, "https://daily.zhihu.com/story/123");
+        let bd = r#"{"data":{"cards":[{"content":[{"content":[{"word":"热词一","url":"https://x/1"},{"word":"热词二","url":"https://x/2"}]}]}]}}"#;
+        let rows = parse_baidu(bd).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "热词一");
+        assert_eq!(rows[0].1, "https://x/1");
+        let bl = r#"{"data":{"list":[{"title":"视频甲","bvid":"BV1"},{"title":"视频乙","bvid":"BV2"}]}}"#;
+        let rows = parse_bilibili(bl).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].1, "https://www.bilibili.com/video/BV2");
+        let gh = r#"{"items":[{"full_name":"a/b","html_url":"https://github.com/a/b","stargazers_count":999}]}"#;
+        let rows = parse_github(gh).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "a/b ★999");
+        let hn = r#"{"title":"HN Story","url":"https://example.com","id":1}"#;
+        assert_eq!(parse_hn_item(hn).unwrap().unwrap().0, "HN Story");
+        // Headline formatting is deterministic.
+        assert_eq!(fmt_headlines(&[(String::from("x"), String::from("https://y"))]), "- x (https://y)");
+        // days_ago returns a YYYY-MM-DD string.
+        let d = days_ago(0);
+        assert_eq!(d.len(), 10);
+        assert!(d.starts_with("20"));
+    }
+
+    #[test]
+    fn unknown_search_source_rejected() {
+        assert!(builtin_search("nope", &HashMap::new()).is_err());
+        // Empty api/search on a task is rejected without a network call.
+        let task = Task {
+            name: "t".into(),
+            desc: String::new(),
+            msg: String::new(),
+            api: None,
+            search: None,
+            params: None,
+        };
+        assert!(run_task_tool(&task, &HashMap::new()).is_err());
     }
 
     #[test]
