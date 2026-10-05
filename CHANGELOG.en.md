@@ -2,6 +2,11 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sysenv-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.8 (2026-10-05)
+
+### Added
+- `sysenv ai task --list-source`: lists all built-in search sources with their **name, kind** (`api` direct HTTP API / `search` AI aggregate search with Sogou first and Bing fallback / `generic` general search engine requiring a `q`/`query` argument), **purpose and access URL** — 19 sources (zhihu/baidu/bilibili/github/hn/toutiao/tophub/oschina/smzdm/bing/sogou/dxtower/enlightent/cls/dongchedi/autohome/szhousing/penalty/company).
+
 ## v0.4.7 (2026-10-05)
 
 ### Added

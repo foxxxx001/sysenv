@@ -2,6 +2,11 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sysenv-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.8（2026-10-05）
+
+### 新增
+- `sysenv ai task --list-source`：列出全部内置搜索源的**名称、类型（api 直连数据接口 / search AI 聚合搜索 Sogou 优先 Bing 兜底 / generic 通用搜索需 q/query 参数）、用途与访问地址**，共 19 个源（zhihu/baidu/bilibili/github/hn/toutiao/tophub/oschina/smzdm/bing/sogou/dxtower/enlightent/cls/dongchedi/autohome/szhousing/penalty/company）
+
 ## v0.4.7（2026-10-05）
 
 ### 新增

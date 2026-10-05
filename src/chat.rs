@@ -2218,7 +2218,52 @@ pub fn cmd_chat(
     chat_with(&mut cfg, &path, &msg, debug, no_stream, model)
 }
 
-/// `sysenv ai task [-t NAME] [key:value...] [-c FILE] [--debug] [--no-stream]`
+/// One row of the built-in search source catalogue shown by `--list-source`.
+struct SourceRow {
+    name: &'static str,
+    kind: &'static str,
+    purpose: &'static str,
+    url: &'static str,
+}
+
+/// All built-in `search` sources of `sysenv ai task`: name, kind
+/// (`api` = direct HTTP API, `search` = aggregate search with Sogou first and
+/// Bing fallback, `generic` = general search engine requiring a `q`/`query`
+/// argument), purpose and access address.
+const SOURCES: &[SourceRow] = &[
+    SourceRow { name: "zhihu",      kind: "api",     purpose: "知乎每日热门新闻",             url: "https://news-at.zhihu.com/api/4/news/latest" },
+    SourceRow { name: "baidu",      kind: "api",     purpose: "百度实时热搜榜",               url: "https://top.baidu.com/api/board" },
+    SourceRow { name: "bilibili",   kind: "api",     purpose: "B站热门视频",                  url: "https://api.bilibili.com/x/web-interface/popular" },
+    SourceRow { name: "github",     kind: "api",     purpose: "GitHub 近期热门仓库",          url: "https://api.github.com/search/repositories" },
+    SourceRow { name: "hn",         kind: "api",     purpose: "Hacker News 热门",             url: "https://news.ycombinator.com/" },
+    SourceRow { name: "toutiao",    kind: "api",     purpose: "今日头条热榜",                 url: "https://www.toutiao.com/api/pc/feed/" },
+    SourceRow { name: "tophub",     kind: "api",     purpose: "tophub 开发者热榜",            url: "https://tophub.today/c/developer" },
+    SourceRow { name: "oschina",    kind: "api",     purpose: "开源中国技术新闻",             url: "https://www.oschina.net/news/" },
+    SourceRow { name: "smzdm",      kind: "api",     purpose: "什么值得买今日特价",           url: "https://www.smzdm.com/" },
+    SourceRow { name: "bing",       kind: "generic", purpose: "通用网页搜索（需 q/query 参数）", url: "https://www.bing.com/search" },
+    SourceRow { name: "sogou",      kind: "generic", purpose: "通用网页搜索（需 q/query 参数）", url: "https://www.sogou.com/web" },
+    SourceRow { name: "dxtower",    kind: "search",  purpose: "德塔文电视剧景气指数/榜单",     url: "https://www.dxtower.com/" },
+    SourceRow { name: "enlightent", kind: "search",  purpose: "云合数据热播剧霸屏榜",         url: "https://www.enlightent.cn/" },
+    SourceRow { name: "cls",        kind: "search",  purpose: "财联社电报/财经",              url: "https://www.cls.cn/telegraph" },
+    SourceRow { name: "dongchedi",  kind: "search",  purpose: "懂车帝汽车资讯",               url: "https://www.dongchedi.com/" },
+    SourceRow { name: "autohome",   kind: "search",  purpose: "汽车之家汽车新闻",             url: "https://www.autohome.com.cn/" },
+    SourceRow { name: "szhousing",  kind: "search",  purpose: "深圳房源销售/成交情况",         url: "https://fdc.zjj.sz.gov.cn/" },
+    SourceRow { name: "penalty",    kind: "search",  purpose: "行政处罚/失信被执行人信息（name 参数）", url: "https://www.creditchina.gov.cn/" },
+    SourceRow { name: "company",    kind: "search",  purpose: "公司工商注册信息（name 参数）", url: "https://aiqicha.baidu.com/" },
+];
+
+/// Print the built-in search source catalogue (name / kind / purpose / URL).
+pub fn list_sources() {
+    let w_name = SOURCES.iter().map(|s| s.name.chars().count()).max().unwrap_or(4).max(4);
+    let w_kind = SOURCES.iter().map(|s| s.kind.chars().count()).max().unwrap_or(4).max(4);
+    let w_purpose = SOURCES.iter().map(|s| s.purpose.chars().count()).max().unwrap_or(4).max(4);
+    println!("{:<w_name$}  {:<w_kind$}  {:<w_purpose$}  URL", "NAME", "KIND", "PURPOSE");
+    for s in SOURCES {
+        println!("{:<w_name$}  {:<w_kind$}  {:<w_purpose$}  {}", s.name, s.kind, s.purpose, s.url);
+    }
+}
+
+/// `sysenv ai task [-t NAME] [key:value...] [-c FILE] [--debug] [--no-stream] [--list-source]`
 ///
 /// Without `-t`: with a user request (arguments or piped stdin) the request is
 /// routed to the configured tasks via LLM function calls and the best match is
@@ -2229,7 +2274,12 @@ pub fn cmd_task(
     config: Option<&Path>,
     debug: bool,
     no_stream: bool,
+    list_source: bool,
 ) -> Result<()> {
+    if list_source {
+        list_sources();
+        return Ok(());
+    }
     let (mut cfg, path) = load_config(config)?;
     match sel {
         None => {

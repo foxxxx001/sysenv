@@ -318,6 +318,9 @@ struct AiTaskArgs {
     /// Template parameters like key:value or key=value (e.g. country:北京)
     #[arg(value_name = "PARAM")]
     params: Vec<String>,
+    /// List the built-in search sources (name / kind / purpose / URL) and exit
+    #[arg(long)]
+    list_source: bool,
     /// Config file path (default: ~/.sysenv/config.yaml)
     #[arg(short = 'c', long, value_name = "FILE")]
     config: Option<PathBuf>,
@@ -596,6 +599,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             t.config.as_deref(),
             t.debug,
             t.no_stream,
+            t.list_source,
         ),
     }
 }
