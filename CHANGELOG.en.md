@@ -2,6 +2,14 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sysenv-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.9 (2026-10-05)
+
+### Fixed
+- **AI aggregate-search result cleanup**: fixed results being flooded with low-value encyclopedia entries (Baidu Baike etc.) which degraded search quality.
+  - New `is_low_value_row` filter drops rows whose title contains "百度百科/搜狗百科/维基百科/互动百科" or whose URL matches `baike.baidu.com` / `zh|en.wikipedia.org` / `baike.sogou.com` / `baike.com` (the title channel covers Sogou `/link?url=` redirects where the real domain is hidden).
+  - A failed Sogou request no longer aborts the task; it falls back to Bing. When neither engine yields usable results, the raw deduplicated results are returned as a last resort so the task never fails on over-filtering.
+- New unit test `low_value_rows_are_detected` (79 tests all green).
+
 ## v0.4.8 (2026-10-05)
 
 ### Added

@@ -1590,15 +1590,56 @@ fn parse_bing(body: &str) -> Result<Vec<(String, String)>> {
     Ok(rows)
 }
 
+/// Low-value search rows that clutter the results (encyclopedia entries,
+/// wiki mirrors). Filtered from aggregate search: `title` catches Sogou rows
+/// whose URL is a `/link?url=` redirect (real domain hidden), `url` catches
+/// Bing rows with a real URL.
+fn is_low_value_row(title: &str, url: &str) -> bool {
+    let t = title.replace(' ', "");
+    ["百度百科", "搜狗百科", "维基百科", "互动百科"]
+        .iter()
+        .any(|k| t.contains(k))
+        || [
+            "baike.baidu.com",
+            "zh.wikipedia.org",
+            "en.wikipedia.org",
+            "baike.sogou.com",
+            "baike.com",
+        ]
+        .iter()
+        .any(|d| url.contains(d))
+}
+
 /// Aggregate search: try Sogou first (reliable Chinese tokenization), then
 /// fall back to Bing when Sogou serves a CAPTCHA page or an empty result set.
+/// Encyclopedia-style entries are filtered out; when both engines return
+/// nothing usable, the raw (deduplicated) results are returned as a last
+/// resort so the task never fails on an over-filtered page.
 fn aggregate_search(query: &str, get: &dyn Fn(&str) -> Result<String>) -> Result<Vec<(String, String)>> {
-    let sg = sogou_search(query, get)?;
-    if !sg.is_empty() {
-        return Ok(sg);
+    let sg = sogou_search(query, get).unwrap_or_default();
+    let sg_clean: Vec<(String, String)> = sg
+        .iter()
+        .filter(|(t, u)| !is_low_value_row(t, u))
+        .cloned()
+        .collect();
+    if !sg_clean.is_empty() {
+        return Ok(sg_clean);
     }
     let url = format!("https://www.bing.com/search?q={}&mkt=zh-CN", urlencode(query));
-    parse_bing(&get(&url)?)
+    let bg = parse_bing(&get(&url)?).unwrap_or_default();
+    let bg_clean: Vec<(String, String)> = bg
+        .iter()
+        .filter(|(t, u)| !is_low_value_row(t, u))
+        .cloned()
+        .collect();
+    if !bg_clean.is_empty() {
+        return Ok(bg_clean);
+    }
+    // Last resort: merge whatever the engines returned, deduplicated by URL.
+    let mut all = sg;
+    all.extend(bg);
+    all.dedup_by(|a, b| a.1 == b.1);
+    Ok(all)
 }
 
 /// Run a zhihu daily-news response into headline rows.
@@ -2439,6 +2480,16 @@ fn score_all_tasks(cfg: &mut Config, path: &Path, params: &[String], debug: bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn low_value_rows_are_detected() {
+        assert!(is_low_value_row("字节跳动_百度百科", "https://www.sogou.com/link?url=abc"));
+        assert!(is_low_value_row("深圳 - 搜狗百科", "https://www.sogou.com/link?url=def"));
+        assert!(is_low_value_row("北京", "https://baike.baidu.com/item/%E5%8C%97%E4%BA%AC"));
+        assert!(is_low_value_row("Shenzhen", "https://en.wikipedia.org/wiki/Shenzhen"));
+        assert!(!is_low_value_row("字节跳动 - ByteDance", "https://www.bytedance.com/zh/"));
+        assert!(!is_low_value_row("深圳 新房成交 套数", "https://www.leyoujia.com/"));
+    }
 
     const SAMPLE: &str = r#"model: agnes-3.0-flash
 clients:

@@ -387,6 +387,7 @@ sysenv ai chat --list-model               # 列出配置中的所有模型（含
     * **固定直连源**：`zhihu`（知乎日报：今日热门新闻）、`baidu`（百度实时热搜）、`bilibili`（B 站热门视频）、`github`（近 7 天新建星榜，可选 `date` 参数如 `date:2026-01-01`）、`hn`（Hacker News 头条）、`toutiao`（今日头条热榜）、`tophub`（tophub 开发者技术榜）、`oschina`（开源中国技术资讯）、`smzdm`（什么值得买今日好价，含价格）
     * **AI 聚合搜索源**（目标站点数据接口带签名/WAF，程序改用搜索引擎抓取相关结果回填，Sogou 优先、Bing 兜底，模型如实筛选总结）：`dxtower`（德塔文电视剧景气指数）、`enlightent`（云合数据霸屏榜/热播榜）、`cls`（财联社电报/财经）、`dongchedi`（懂车帝汽车资讯）、`autohome`（汽车之家汽车新闻）、`szhousing`（深圳房源销售/成交情况，深圳房地产信息平台公开数据，v0.4.6）、`penalty`（某人/某单位行政处罚、失信被执行人信息，v0.4.7）、`company`（公司工商注册信息，v0.4.7）；`bing` / `sogou` 为通用聚合源，需传 `q` / `query` 参数（如 `q:德塔文 榜单`）；`penalty` / `company` 的查询对象来自模型的 `name` 参数（`-t` 手动指定时自由文本自动作为 `name`）
     * **搜索源清单**：`sysenv ai task --list-source` 列出全部内置搜索源的名称、类型（`api` 直连数据接口 / `search` AI 聚合搜索 Sogou 优先 Bing 兜底 / `generic` 通用搜索需 `q`/`query` 参数）、用途与访问地址（v0.4.8）
+    * **结果净化**（v0.4.9）：AI 聚合搜索自动过滤百度百科、搜狗百科、维基百科、互动百科等低价值词条（标题与 URL 双通道识别），避免搜索结果被百科词条占满；Sogou 请求失败时自动降级 Bing，两引擎均无可过滤结果时合并原始结果兜底，保证任务不因过滤而失败
 
 * `-t <name>`：取 `name` 匹配的任务，按 `msg` 组装消息（`desc` 为任务描述）；任务声明了 `api`/`search` 时同样先执行工具并回填真实数据再回答
 
