@@ -467,6 +467,8 @@ sysenv http pie.dev/post X-API-Token:123 name=John  # 请求头 + JSON 字段
 sysenv http -d pie.dev/image.png              # wget 式下载
 sysenv http -o out.json pie.dev/get           # 响应体存文件（其余打到 stderr）
 sysenv http POST pie.dev/post @data.json      # 文件作为原始请求体
+sysenv http POST pie.dev/post --file data.json # --file 读取本地文件作为原始请求体（等价 @FILE）
+sysenv http POST pie.dev/post note=@note.txt   # 字段值以 @ 开头则读取本地文件（特殊字符自动转义）
 sysenv http pie.dev/post cv@resume.pdf        # multipart 文件上传
 sysenv http -a user:pass pie.dev/anything     # Basic Auth
 sysenv http -A bearer -a TOKEN pie.dev/anything   # Bearer Token
@@ -496,13 +498,13 @@ sysenv http --verify no https://self-signed.example  # 跳过证书校验
 | `key==value`                                            | URL 查询参数                             |
 | `key:value`                                             | 请求头（`key:` 空值 = 取消默认头，`key;` = 发送空头） |
 | `key@file`                                              | multipart 文件上传（`;type=mime` 可指定类型）   |
-| `key=@file` / `key:=@file` / `key==@file` / `key:@file` | 从文件读取字段 / JSON / 查询 / 头的值            |
-| `@file`                                                 | 原始请求体（也可用 `--raw` 或管道 stdin）         |
+| `key=@file` / `key:=@file` / `key==@file` / `key:@file` | 从文件读取字段 / JSON / 查询 / 头的值（内容中的引号、反斜杠等特殊字符在 JSON 序列化时自动转义；自动剥离 UTF-8 BOM 与尾部换行）            |
+| `@file`                                                 | 原始请求体（也可用 `--file FILE` 或管道 stdin）         |
 | `a[b][c]=v`、`a[]=v`、`a[1]=v`、`[]:=1`                    | 嵌套 JSON 构建                           |
 
 ### 支持的参数速查
 
-`-j/--json` `-f/--form` `--multipart` `--raw` `-p/--print` `-h/--headers` `-b/--body`
+`-j/--json` `-f/--form` `--multipart` `--raw` `--file FILE` `-p/--print` `-h/--headers` `-b/--body`
 
 `-m/--meta` `-v/--verbose` `-o/--output` `-d/--download` `-q/--quiet` `--pretty`
 

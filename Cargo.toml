@@ -1,6 +1,6 @@
 [package]
 name = "sysenv"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 description = "Cross-platform (Windows/Ubuntu) system PATH & environment manager with an httpie-compatible HTTP client"
 license = "MIT"

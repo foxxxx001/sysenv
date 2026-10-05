@@ -422,6 +422,9 @@ struct HttpArgs {
     /// Raw request body without extra processing
     #[arg(long, value_name = "DATA")]
     raw: Option<String>,
+    /// Read FILE as the raw request body (like the positional @FILE; cannot be combined with @FILE/stdin)
+    #[arg(long, value_name = "FILE", conflicts_with = "raw")]
+    file: Option<PathBuf>,
     /// What to print: H (request headers) B (request body) h (response headers) b (response body) m (response metadata)
     #[arg(short = 'p', long, value_name = "WHAT")]
     print: Option<String>,
@@ -625,6 +628,7 @@ fn run_http(h: HttpArgs) -> anyhow::Result<i32> {
         form: h.form,
         multipart: h.multipart,
         raw: h.raw,
+        file: h.file,
         print: h.print,
         headers_only: h.headers,
         body_only: h.body,

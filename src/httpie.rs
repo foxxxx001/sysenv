@@ -25,6 +25,7 @@ pub struct HttpConfig {
     pub form: bool,
     pub multipart: bool,
     pub raw: Option<String>,
+    pub file: Option<PathBuf>,
     pub print: Option<String>,
     pub headers_only: bool,
     pub body_only: bool,
@@ -157,7 +158,11 @@ fn unescape(s: &str) -> String {
 fn read_stripped(path: &Path) -> Result<String> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("cannot read file `{}`", path.display()))?;
-    Ok(content.trim_end_matches(['\n', '\r']).to_string())
+    // Drop a UTF-8 BOM if present, then trim trailing newlines.
+    Ok(content
+        .trim_start_matches('\u{feff}')
+        .trim_end_matches(['\n', '\r'])
+        .to_string())
 }
 
 fn parse_item(item: &str) -> Result<Item> {
@@ -750,6 +755,7 @@ Usage: sysenv http [flags] [METHOD] URL [ITEM...]
   -f, --form              序列化为 application/x-www-form-urlencoded
       --multipart         强制 multipart/form-data
       --raw DATA          显式原始请求体
+      --file FILE         读取本地文件内容作为原始请求体（等价 @FILE，不可与 @FILE/stdin 同用）
   -p, --print WHAT        打印内容 H B h b m 任意组合（请求头/体、响应头/体、状态行）
   -h, --headers           只打印响应头
   -b, --body              只打印响应体
@@ -782,6 +788,7 @@ Usage: sysenv http [flags] [METHOD] URL [ITEM...]
   sysenv http pie.dev/post X-API-Token:123 name=John
   sysenv http -d pie.dev/image.png
   sysenv http POST pie.dev/post @data.json
+  sysenv http POST pie.dev/post --file data.json
   sysenv http pie.dev/post cv@resume.pdf
   sysenv http -a user:pass pie.dev/anything
   sysenv http -A bearer -a TOKEN pie.dev/anything
@@ -861,6 +868,18 @@ pub fn run(cfg: &HttpConfig) -> Result<i32> {
     let stdout_tty = std::io::stdout().is_terminal();
 
     let mut spec = parse_positionals(&cfg.args, &cfg.default_scheme)?;
+
+    // --file FILE: use the file contents as the raw request body. Mutually
+    // exclusive with a positional @FILE body; stdin probing is skipped because
+    // raw_body is already set.
+    if let Some(fp) = &cfg.file {
+        if spec.raw_body.is_some() {
+            bail!("`--file` cannot be combined with a positional `@FILE` body");
+        }
+        let bytes = std::fs::read(fp)
+            .with_context(|| format!("cannot read file `{}`", fp.display()))?;
+        spec.raw_body = Some(bytes);
+    }
 
     // Probe piped stdin before deciding the default method, so a non-interactive
     // session with an idle stdin does not turn a GET into a POST or block.
@@ -1218,6 +1237,38 @@ pub fn run(cfg: &HttpConfig) -> Result<i32> {
 mod tests {
     use super::*;
 
+    fn hcfg() -> HttpConfig {
+        HttpConfig {
+            json: false,
+            form: false,
+            multipart: false,
+            raw: None,
+            file: None,
+            print: None,
+            headers_only: false,
+            body_only: false,
+            meta_only: false,
+            verbose: false,
+            output: None,
+            download: false,
+            quiet: false,
+            pretty: None,
+            auth: None,
+            auth_type: None,
+            proxies: Vec::new(),
+            follow: false,
+            max_redirects: None,
+            timeout: None,
+            check_status: false,
+            offline: false,
+            verify: None,
+            ignore_stdin: false,
+            default_scheme: "https".to_string(),
+            debug: false,
+            args: Vec::new(),
+        }
+    }
+
     #[test]
     fn item_kinds() {
         assert!(matches!(
@@ -1248,6 +1299,40 @@ mod tests {
     }
 
     #[test]
+    fn data_value_from_file_escapes_special_chars() {
+        // key=@file embeds the file content as the field value; when the file
+        // contains quotes / backslashes they must be escaped in the JSON body.
+        let path = std::env::temp_dir().join("sysenv_test_field.txt");
+        let content = "he said \"hi\" \\ and = : @";
+        std::fs::write(&path, content).unwrap();
+        let item = parse_item(&format!("note=@{}", path.display())).unwrap();
+        let (name, value, raw) = match item {
+            Item::Data { name, value, raw } => (name, value, raw),
+            _ => panic!("expected Data item"),
+        };
+        assert_eq!(name, "note");
+        assert_eq!(value, content);
+        assert!(!raw);
+        let mut spec = RequestSpec::default();
+        spec.method = "POST".into();
+        spec.url = "https://x.example".into();
+        spec.data = vec![("note".into(), value, false)];
+        let (kind, ct) = build_body(&spec, &hcfg()).unwrap();
+        assert_eq!(ct.as_deref(), Some("application/json"));
+        if let BodyKind::Bytes(b) = kind {
+            // Round-trip: JSON decodes back to the raw content, quotes intact.
+            let json: serde_json::Value = serde_json::from_slice(&b).unwrap();
+            assert_eq!(json["note"], content);
+            // The JSON text must escape the embedded quote characters.
+            let s = String::from_utf8(b).unwrap();
+            assert!(s.contains("\\\""));
+        } else {
+            panic!("expected Bytes body");
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn escaped_separator_in_key() {
         assert!(matches!(
             parse_item(r"foo\==bar").unwrap(),
@@ -1257,36 +1342,6 @@ mod tests {
 
     #[test]
     fn build_body_defaults_to_json_or_none() {
-        fn hcfg() -> HttpConfig {
-            HttpConfig {
-                json: false,
-                form: false,
-                multipart: false,
-                raw: None,
-                print: None,
-                headers_only: false,
-                body_only: false,
-                meta_only: false,
-                verbose: false,
-                output: None,
-                download: false,
-                quiet: false,
-                pretty: None,
-                auth: None,
-                auth_type: None,
-                proxies: Vec::new(),
-                follow: false,
-                max_redirects: None,
-                timeout: None,
-                check_status: false,
-                offline: false,
-                verify: None,
-                ignore_stdin: false,
-                default_scheme: "https".to_string(),
-                debug: false,
-                args: Vec::new(),
-            }
-        }
         let cfg = hcfg();
         // With data: JSON body + application/json.
         let mut spec = RequestSpec::default();
