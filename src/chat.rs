@@ -1324,7 +1324,284 @@ fn fmt_headlines(rows: &[(String, String)]) -> String {
         .join("\n")
 }
 
-/// Parse a zhihu daily-news response into headline rows.
+/// Strip HTML tags and collapse whitespace inside a text fragment.
+fn strip_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for ch in s.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Decode the common HTML entities (named + numeric) found in scraped pages.
+fn html_unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'&' {
+            if let Some(semi) = s[i..].find(';') {
+                let ent = &s[i + 1..i + semi];
+                let decoded = match ent {
+                    "amp" => Some("&".to_string()),
+                    "lt" => Some("<".to_string()),
+                    "gt" => Some(">".to_string()),
+                    "quot" => Some("\"".to_string()),
+                    "apos" | "#39" | "#x27" => Some("'".to_string()),
+                    _ => {
+                        if let Some(hex) = ent.strip_prefix("#x") {
+                            u32::from_str_radix(hex, 16).ok().and_then(|c| char::from_u32(c)).map(|c| c.to_string())
+                        } else if let Some(dec) = ent.strip_prefix('#') {
+                            dec.parse::<u32>().ok().and_then(|c| char::from_u32(c)).map(|c| c.to_string())
+                        } else {
+                            None
+                        }
+                    }
+                };
+                if let Some(d) = decoded {
+                    out.push_str(&d);
+                    i += semi + 1;
+                    continue;
+                }
+            }
+        }
+        let ch = s[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// Percent-encode a string for use in a query parameter.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Browser User-Agent used for sites that reject bare client UAs.
+const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
+
+/// Parse a toutiao hot-news feed response (`category=news_hot`) into rows.
+fn parse_toutiao(body: &str) -> Result<Vec<(String, String)>> {
+    let v: Value = serde_json::from_str(body).context("toutiao returned invalid JSON")?;
+    let mut rows = Vec::new();
+    if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
+        for it in data {
+            let t = it.get("title").and_then(|x| x.as_str());
+            let u = it.get("source_url").and_then(|x| x.as_str()).unwrap_or("");
+            if let Some(t) = t {
+                let url = if u.starts_with("http") {
+                    u.to_string()
+                } else if u.starts_with('/') {
+                    format!("https://www.toutiao.com{u}")
+                } else {
+                    "https://www.toutiao.com/".to_string()
+                };
+                rows.push((t.to_string(), url));
+            }
+        }
+    }
+    Ok(rows)
+}
+
+/// Parse a tophub.today board page into rows (`<span class="t">` titles + href).
+fn parse_tophub(body: &str) -> Result<Vec<(String, String)>> {
+    let mut rows = Vec::new();
+    let mut pos = 0;
+    while let Some(start) = body[pos..].find("cc-cd-cb-ll") {
+        // Back up to the enclosing `<a href=...>` so the URL is captured.
+        let a_pos = body[..pos + start].rfind("<a ");
+        let begin = a_pos.unwrap_or_else(|| body[..pos + start].rfind('<').unwrap_or(pos + start));
+        let end = body[pos + start..].find("</a>").map(|i| pos + start + i).unwrap_or(body.len());
+        let block = &body[begin..end];
+        if let Some(href) = block.find("href=\"") {
+            let after = &block[href + 6..];
+            if let Some(q) = after.find('"') {
+                let url = after[..q].to_string();
+                if url.starts_with("http") {
+                    if let Some(t) = block.find("class=\"t\">") {
+                        let t_rest = &block[t + 9..];
+                        if let Some(close) = t_rest.find("</span>") {
+                            let title = html_unescape(&strip_tags(&t_rest[..close]));
+                            if !title.is_empty() {
+                                rows.push((title, url));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        pos = (end + 4).min(body.len());
+    }
+    Ok(rows)
+}
+
+/// Parse an oschina.net news list page into rows (`data-url` + `title` attr).
+fn parse_oschina(body: &str) -> Result<Vec<(String, String)>> {
+    let mut urls = Vec::new();
+    let mut pos = 0;
+    while let Some(i) = body[pos..].find("data-url=\"") {
+        let after = &body[pos + i + 10..];
+        if let Some(q) = after.find('"') {
+            urls.push(after[..q].to_string());
+        }
+        pos = pos + i + 10;
+    }
+    let mut titles = Vec::new();
+    let mut pos = 0;
+    let needle = "class=\"title\" title=\"";
+    while let Some(i) = body[pos..].find(needle) {
+        let after = &body[pos + i + needle.len()..];
+        if let Some(q) = after.find('"') {
+            let t = html_unescape(&strip_tags(&after[..q]));
+            if !t.is_empty() {
+                titles.push(t);
+            }
+        }
+        pos = pos + i + needle.len();
+    }
+    let mut rows = Vec::new();
+    let n = urls.len().min(titles.len());
+    for k in 0..n {
+        rows.push((titles[k].clone(), urls[k].clone()));
+    }
+    Ok(rows)
+}
+
+/// Parse an smzdm homepage into deal rows: title + price (—— link).
+fn parse_smzdm(body: &str) -> Result<Vec<(String, String)>> {
+    let mut rows = Vec::new();
+    let mut pos = 0;
+    while let Some(start) = body[pos..].find("feed-hot-title") {
+        let begin = body[..pos + start].rfind("<a href=\"").map(|i| i).unwrap_or(pos + start);
+        // The whole `<a>` block carries the title and the price span.
+        let end = body[pos + start..].find("</a>").map(|i| pos + start + i + 4).unwrap_or(body.len());
+        let block = &body[begin..end];
+        let url = if let Some(href) = block.find("href=\"") {
+            let after = &block[href + 6..];
+            after[..after.find('"').unwrap_or(0)].to_string()
+        } else {
+            String::new()
+        };
+        if let Some(ti) = block.find("feed-hot-title\">") {
+            let t_rest = &block[ti + 16..];
+            let title = html_unescape(&strip_tags(&t_rest[..t_rest.find("</div>").unwrap_or(0)]));
+            if !title.is_empty() {
+                let price = if let Some(pi) = block.find("z-highlight\">") {
+                    let p_rest = &block[pi + 13..];
+                    html_unescape(&strip_tags(&p_rest[..p_rest.find("</span>").unwrap_or(0)]))
+                } else {
+                    String::new()
+                };
+                let display = if price.is_empty() { title } else { format!("{title} —— {price}") };
+                rows.push((display, if url.is_empty() { "https://www.smzdm.com/".to_string() } else { url }));
+            }
+        }
+        pos = end;
+    }
+    Ok(rows)
+}
+
+/// Parse a Sogou web search results page into rows: title (url).
+/// Result blocks look like `<h3 class="vr-title"><a href="...">标题</a></h3>`;
+/// `href` is a Sogou `/link?url=` redirect or a direct URL.
+fn parse_sogou(body: &str) -> Result<Vec<(String, String)>> {
+    let mut rows = Vec::new();
+    let mut pos = 0;
+    while let Some(start) = body[pos..].find("vr-title") {
+        let begin = body[..pos + start].rfind("<h3").unwrap_or(pos + start);
+        let end = body[pos + start..].find("</h3>").map(|i| pos + start + i).unwrap_or(body.len());
+        let block = &body[begin..end];
+        let mut url = String::new();
+        if let Some(href) = block.find("href=\"") {
+            let after = &block[href + 6..];
+            let q = after.find('"').unwrap_or(0);
+            url = after[..q].to_string();
+        }
+        if let Some(gt) = block.find('>') {
+            let t_rest = &block[gt + 1..];
+            if let Some(close) = t_rest.find("</a>") {
+                let title = html_unescape(&strip_tags(&t_rest[..close]));
+                if !title.is_empty() && !url.is_empty() {
+                    rows.push((title, url));
+                }
+            }
+        }
+        pos = (end + 5).min(body.len());
+    }
+    Ok(rows)
+}
+
+/// Run a Sogou web search for `query` and return the parsed headline rows.
+fn sogou_search(query: &str, get: &dyn Fn(&str) -> Result<String>) -> Result<Vec<(String, String)>> {
+    let url = format!("https://www.sogou.com/web?query={}", urlencode(query));
+    parse_sogou(&get(&url)?)
+}
+
+/// Parse a Bing search results page into rows: title (url). Used as the
+/// fallback engine when Sogou serves a CAPTCHA page or no results.
+fn parse_bing(body: &str) -> Result<Vec<(String, String)>> {
+    let mut rows = Vec::new();
+    let mut pos = 0;
+    while let Some(_start) = body[pos..].find("b_algo") {
+        let begin = body[pos..].find('<').map(|i| pos + i).unwrap_or(pos);
+        let end = body[begin..]
+            .find("</li>")
+            .map(|i| begin + i)
+            .unwrap_or(body.len());
+        let block = &body[begin..end];
+        let mut title = String::new();
+        let mut url = String::new();
+        if let Some(h2) = block.find("<h2") {
+            let rest = &block[h2..];
+            if let Some(ta) = rest.find("<a ") {
+                let a_rest = &rest[ta..];
+                if let Some(href) = a_rest.find("href=\"") {
+                    let after = &a_rest[href + 6..];
+                    if let Some(q) = after.find('"') {
+                        url = after[..q].to_string();
+                    }
+                }
+                if let Some(gt) = a_rest.find('>') {
+                    let t_rest = &a_rest[gt + 1..];
+                    if let Some(close) = t_rest.find("</a>") {
+                        title = html_unescape(&strip_tags(&t_rest[..close]));
+                    }
+                }
+            }
+        }
+        if !title.is_empty() && !url.is_empty() {
+            rows.push((title, url));
+        }
+        pos = (end + 5).min(body.len());
+    }
+    Ok(rows)
+}
+
+/// Aggregate search: try Sogou first (reliable Chinese tokenization), then
+/// fall back to Bing when Sogou serves a CAPTCHA page or an empty result set.
+fn aggregate_search(query: &str, get: &dyn Fn(&str) -> Result<String>) -> Result<Vec<(String, String)>> {
+    let sg = sogou_search(query, get)?;
+    if !sg.is_empty() {
+        return Ok(sg);
+    }
+    let url = format!("https://www.bing.com/search?q={}&mkt=zh-CN", urlencode(query));
+    parse_bing(&get(&url)?)
+}
+
+/// Run a zhihu daily-news response into headline rows.
 fn parse_zhihu(body: &str) -> Result<Vec<(String, String)>> {
     let v: Value = serde_json::from_str(body).context("zhihu returned invalid JSON")?;
     let mut rows = Vec::new();
@@ -1457,11 +1734,11 @@ fn days_ago(n: u64) -> String {
 /// are plain HTTP requests implemented in code (no local shell commands).
 fn builtin_search(source: &str, args: &HashMap<String, String>) -> Result<String> {
     let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
-    let ua = "sysenv/".to_string() + env!("CARGO_PKG_VERSION");
     let get = |url: &str| -> Result<String> {
         let resp = client
             .get(url)
-            .header(USER_AGENT, ua.clone())
+            .header(USER_AGENT, BROWSER_UA)
+            .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
             .send()
             .with_context(|| format!("search request to {url} failed"))?;
         if !resp.status().is_success() {
@@ -1492,7 +1769,28 @@ fn builtin_search(source: &str, args: &HashMap<String, String>) -> Result<String
             }
             out
         }
-        other => bail!("unknown search source `{other}` (available: zhihu, baidu, bilibili, github, hn)"),
+        // Direct sources
+        "toutiao" => parse_toutiao(&get("https://www.toutiao.com/api/pc/feed/?category=news_hot&offset=0&count=10")?)?,
+        "tophub" => parse_tophub(&get("https://tophub.today/c/developer")?)?,
+        "oschina" => parse_oschina(&get("https://www.oschina.net/news/")?)?,
+        "smzdm" => parse_smzdm(&get("https://www.smzdm.com/")?)?,
+        // Aggregate search (Sogou first, Bing fallback) for sites whose own
+        // data endpoints are signed / WAF-gated.
+        "bing" | "sogou" => {
+            let q = args.get("q").or_else(|| args.get("query")).cloned().unwrap_or_default();
+            if q.is_empty() {
+                bail!("search source `{source}` requires a query via args `q` / `query`");
+            }
+            aggregate_search(&q, &get)?
+        }
+        "dxtower" => aggregate_search("德塔文 电视剧景气指数 今日 榜单", &get)?,
+        "enlightent" => aggregate_search("云合数据 热播电视剧 霸屏榜 今日", &get)?,
+        "cls" => aggregate_search("财联社 电报 今日 财经", &get)?,
+        "dongchedi" => aggregate_search("懂车帝 汽车 资讯 新闻", &get)?,
+        "autohome" => aggregate_search("汽车之家 汽车 新闻 资讯", &get)?,
+        other => bail!(
+            "unknown search source `{other}` (available: zhihu, baidu, bilibili, github, hn, toutiao, tophub, oschina, smzdm, bing, sogou, dxtower, enlightent, cls, dongchedi, autohome)"
+        ),
     };
     if rows.is_empty() {
         bail!("search source `{source}` returned no results");
@@ -1933,7 +2231,23 @@ pub fn cmd_task(
                     anyhow::anyhow!("no task named `{name}` (available: {})", avail.join(", "))
                 })?;
             let msg = resolve_task_msg(task, params)?;
-            chat_with(&mut cfg, &path, &msg, debug, no_stream, None)
+            // Manual `-t` selection also executes the task's api/search tool
+            // when declared, so the reply is grounded in real data.
+            let map = parse_params(params);
+            let tool_result = if task.api.is_some() || task.search.is_some() {
+                Some(run_task_tool(task, &map)?)
+            } else {
+                None
+            };
+            let exec_msg = match &tool_result {
+                Some(out) => format!(
+                    "任务说明：{}\n\n用户请求：{}\n\n工具执行结果：\n{}\n\n请基于工具执行结果回答用户。",
+                    task.desc, msg, out
+                ),
+                None => msg,
+            };
+            println!("\n→ 执行任务 {}", task.name);
+            chat_with(&mut cfg, &path, &exec_msg, debug, no_stream, None)
         }
     }
 }
@@ -2289,6 +2603,54 @@ stream: true
         let d = days_ago(0);
         assert_eq!(d.len(), 10);
         assert!(d.starts_with("20"));
+        // Bing fallback parser
+        let bing = r#"<ol id="b_results"><li class="b_algo"><h2><a target="_blank" href="https://a.example/p"><strong>标</strong>题一</a></h2></li></ol>"#;
+        let rows = parse_bing(bing).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "标题一");
+        assert_eq!(rows[0].1, "https://a.example/p");
+    }
+
+    #[test]
+    fn new_search_parsers_extract_headlines() {
+        // toutiao feed JSON
+        let tt = r#"{"has_more":true,"data":[{"title":"头条热闻一","source_url":"/group/111/"},{"title":"头条热闻二","source_url":"https://abs.example/x"}]}"#;
+        let rows = parse_toutiao(tt).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "头条热闻一");
+        assert_eq!(rows[0].1, "https://www.toutiao.com/group/111/");
+        assert_eq!(rows[1].1, "https://abs.example/x");
+        // Sogou search result page (vr-title blocks)
+        let sg = r#"<div class="vrwrap"><h3 class="vr-title"><a id="sogou_snapshot_1" href="/link?url=abc123">德塔文2023年电视剧 微短剧景气指数年榜</a></h3></div><div class="vrwrap"><h3 class="vr-title"><a href="http://mp.weixin.qq.com/s?src=xyz">剧日报|2024年2月15日电视剧景气指数</a></h3></div>"#;
+        let rows = parse_sogou(sg).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "德塔文2023年电视剧 微短剧景气指数年榜");
+        assert_eq!(rows[0].1, "/link?url=abc123");
+        assert_eq!(rows[1].0, "剧日报|2024年2月15日电视剧景气指数");
+        assert_eq!(rows[1].1, "http://mp.weixin.qq.com/s?src=xyz");
+        // tophub.today board
+        let th = r#"<div class="cc-cd-cb"><a href="https://github.com/a/b" target="_blank" rel="nofollow" itemid="1"><div class="cc-cd-cb-ll"><span class="s h">1</span><span class="t">a / b</span><span class="e">1234</span></div></a></div>"#;
+        let rows = parse_tophub(th).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "a / b");
+        assert_eq!(rows[0].1, "https://github.com/a/b");
+        // oschina news list
+        let os = r#"<div class="item news-item news-item-hover" data-url="https://www.oschina.net/news/502842"><div class="content"><h3 class="header"><div class="title" title="🔥 开源项目发布新版本">🔥 开源项目发布新版本</div></h3></div></div>"#;
+        let rows = parse_oschina(os).unwrap();
+        eprintln!("DEBUG oschina rows={:?}", rows);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "🔥 开源项目发布新版本");
+        assert_eq!(rows[0].1, "https://www.oschina.net/news/502842");
+        // smzdm deals
+        let sm = r#"<a href="https://www.smzdm.com/p/183435990/" target="_blank"><div class="feed-hot-pic"></div><div class="feed-hot-title">清洁收纳、今日必买：3M 钢丝球</div><span class="z-highlight">4.9元（需用券）</span></a>"#;
+        let rows = parse_smzdm(sm).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "清洁收纳、今日必买：3M 钢丝球 —— 4.9元（需用券）");
+        assert_eq!(rows[0].1, "https://www.smzdm.com/p/183435990/");
+        // HTML helpers
+        assert_eq!(html_unescape("a&amp;b &lt;c&gt; &#39;d&#39; &#233;"), "a&b <c> 'd' é");
+        assert_eq!(strip_tags("<b>加粗</b> 与 <i>斜体</i>"), "加粗 与 斜体");
+        assert_eq!(urlencode("德塔文 榜单"), "%E5%BE%B7%E5%A1%94%E6%96%87%20%E6%A6%9C%E5%8D%95");
     }
 
     #[test]

@@ -2,6 +2,23 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sysenv-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.5（2026-10-05）
+
+### 新增
+- `sysenv ai task` 新增 **10 个内置搜索源**，覆盖用户点名的 5 组数据源：
+  - **热播电视剧**：`dxtower`（德塔文电视剧景气指数）、`enlightent`（云合数据霸屏榜/热播榜）——目标站点接口带签名/WAF，改用 AI 聚合搜索实现
+  - **热门财经及新闻媒体**：`toutiao`（今日头条热榜，JSON 直连）、`cls`（财联社电报，AI 聚合搜索）
+  - **汽车新闻**：`autohome`（汽车之家）、`dongchedi`（懂车帝）——AI 聚合搜索
+  - **技术类新闻**：`tophub`（tophub.today 开发者技术榜，SSR 直连）、`oschina`（开源中国资讯，SSR 直连）
+  - **特价商品**：`smzdm`（什么值得买今日好价，SSR 直连，标题+价格）
+- **AI 聚合搜索引擎**：Sogou 优先（中文分词可靠）、Bing 兜底（Sogou 触发验证码/空结果时自动回退），程序抓取搜索结果标题+链接回填给模型，模型如实筛选总结
+- `-t NAME` 手动指定任务时，若任务声明了 `api`/`search` 工具，同样**先执行工具并回填真实数据**再回答（此前仅 function_call 自动路由会执行工具）
+- 配置示例（`~/.sysenv/config.yaml` 与 `doc/config.yaml`）新增 `hotdrama` / `cloudrank` / `hotnews` / `finance` / `auto` / `cartech` / `technews` / `oschina` / `deals` 共 9 个任务
+
+### 实现说明
+- 所有新搜索源均为纯代码 HTTP 请求（reqwest + 浏览器 UA），**无本地 shell 命令**；HTML 页面用内置解析器提取（含标签剥离、HTML 实体解码、URL 百分号编码工具）
+- 德塔文（dxtower.com）/ 云合（enlightent.cn）官网接口经实测无法直连（WAF 拒绝连接 / 榜单数据接口签名），财联社数据接口全签名、懂车帝/汽车之家首页为 JS 异步渲染——故这些站点采用 AI 聚合搜索方式：抓取 Sogou/Bing 的相关搜索结果回填，模型基于真实结果筛选总结，数据不足时如实说明
+
 ## v0.4.4（2026-10-05）
 
 ### 新增

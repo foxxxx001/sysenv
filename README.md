@@ -383,9 +383,11 @@ sysenv ai chat --list-model               # 列出配置中的所有模型（含
 
 * **任务工具执行（function_call 选中后回填真实数据）**：任务可声明以下两种工具之一，选中后由**程序代码**（reqwest HTTP 请求，**禁止本地 shell 命令 / curl**）执行，执行结果作为"工具执行结果"回填给模型，模型再基于真实数据回答：
   * `api: <URL模板>` —— **固定 HTTP 接口**：`{key}` / `{key:默认值}` 占位符由模型 tool 参数填充（模型未传或传空时用默认值），响应体原样作为工具结果；`params: [k1, k2]` 声明参数名（可选，会加入函数 schema，便于模型填写坐标等参数）
-  * `search: <源名>` —— **AI 模糊联网搜索**：内置搜索源由程序抓取头条列表回填，模型据此筛选总结。内置源：`zhihu`（知乎日报：今日热门新闻）、`baidu`（百度实时热搜）、`bilibili`（B 站热门视频）、`github`（近 7 天新建星榜，可选 `date` 参数如 `date:2026-01-01`）、`hn`（Hacker News 头条）
+  * `search: <源名>` —— **AI 模糊联网搜索**：内置搜索源由程序抓取头条列表回填，模型据此筛选总结。
+    * **固定直连源**：`zhihu`（知乎日报：今日热门新闻）、`baidu`（百度实时热搜）、`bilibili`（B 站热门视频）、`github`（近 7 天新建星榜，可选 `date` 参数如 `date:2026-01-01`）、`hn`（Hacker News 头条）、`toutiao`（今日头条热榜）、`tophub`（tophub 开发者技术榜）、`oschina`（开源中国技术资讯）、`smzdm`（什么值得买今日好价，含价格）
+    * **AI 聚合搜索源**（目标站点数据接口带签名/WAF，程序改用搜索引擎抓取相关结果回填，Sogou 优先、Bing 兜底，模型如实筛选总结）：`dxtower`（德塔文电视剧景气指数）、`enlightent`（云合数据霸屏榜/热播榜）、`cls`（财联社电报/财经）、`dongchedi`（懂车帝汽车资讯）、`autohome`（汽车之家汽车新闻）；`bing` / `sogou` 为通用聚合源，需传 `q` / `query` 参数（如 `q:德塔文 榜单`）
 
-* `-t <name>`：取 `name` 匹配的任务，按 `msg` 组装消息（`desc` 为任务描述）
+* `-t <name>`：取 `name` 匹配的任务，按 `msg` 组装消息（`desc` 为任务描述）；任务声明了 `api`/`search` 时同样先执行工具并回填真实数据再回答
 
 * `-t *`（**全任务打分匹配**）：把**所有任务**的 `desc` 与用户提供的聊天信息（命令行参数或 stdin）组装，调用配置的大模型按 **10 分制**打分（0=不匹配，10=完全匹配），输出 `TASK / DESC / SCORE` 表格并按分数降序排列；某个任务请求失败时其 SCORE 显示 `-` 并在 stderr 提示
 
@@ -423,6 +425,45 @@ tasks:
     desc: 获取今天新开播的电视剧或热门影视娱乐话题（内置百度热搜搜索源，请筛选娱乐影视类条目）
     msg: 请基于工具执行结果筛选出与影视剧相关的话题，列出今天新开播或热播的电视剧
     search: baidu
+  # —— v0.4.5 新增搜索源 ——
+  # 固定直连源：toutiao（今日头条热榜 JSON）、tophub（开发者技术榜 SSR）、oschina（开源中国资讯 SSR）、smzdm（什么值得买好价 SSR）
+  - name: hotnews
+    desc: 获取今天的热门新闻（今日头条热榜）
+    msg: 请基于工具执行结果列出今天的头条热门新闻，注明来源链接
+    search: toutiao
+  - name: technews
+    desc: 获取开发者技术热门榜（tophub 开发者频道聚合榜单）
+    msg: 请基于工具执行结果列出今天的技术热榜条目，注明来源链接
+    search: tophub
+  - name: oschina
+    desc: 获取开源中国技术新闻资讯（oschina.net）
+    msg: 请基于工具执行结果列出今天的技术新闻，注明来源链接
+    search: oschina
+  - name: deals
+    desc: 获取今天什么值得买的特价商品（好价榜单）
+    msg: 请基于工具执行结果列出今天值得买的特价商品与价格
+    search: smzdm
+  # AI 聚合搜索源（Sogou 优先、Bing 兜底）：目标站点的数据接口带签名/WAF，程序改用搜索引擎抓取相关结果回填，模型如实筛选总结
+  - name: hotdrama
+    desc: 获取热播电视剧榜单（德塔文电视剧景气指数，AI 聚合搜索）
+    msg: 请基于工具执行结果列出热播电视剧及景气指数排名
+    search: dxtower
+  - name: cloudrank
+    desc: 获取热播电视剧榜单（云合数据霸屏榜/热播榜，AI 聚合搜索）
+    msg: 请基于工具执行结果列出云合数据的霸屏榜/热播剧排名
+    search: enlightent
+  - name: finance
+    desc: 获取今天的热门财经新闻及电报快讯（财联社，AI 聚合搜索）
+    msg: 请基于工具执行结果列出今天的重要财经新闻与电报快讯
+    search: cls
+  - name: auto
+    desc: 获取汽车新闻资讯（汽车之家，AI 聚合搜索）
+    msg: 请基于工具执行结果列出今天的汽车新闻资讯
+    search: autohome
+  - name: cartech
+    desc: 获取汽车新闻资讯（懂车帝，AI 聚合搜索）
+    msg: 请基于工具执行结果列出今天的汽车行业新闻与新车资讯
+    search: dongchedi
 ```
 
 实际输出示例（`sysenv ai task 今天深圳的天气如何`，模型选 weather → 程序请求 open-meteo → 回填后回答）：
