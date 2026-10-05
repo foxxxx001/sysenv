@@ -49,7 +49,7 @@ Commands:
 | 注册表导入导出   | `path export/import` | `.reg` / JSON / TXT 三种格式；合并或 `--replace` 整体替换；跨机迁移备份                                   |
 | 链接到 PATH  | `link`               | 硬链接 → 符号链接 → 拷贝三级自动回退；Windows `.cmd` 垫片；自定义命令名；系统目录或托管目录                               |
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
-| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai task`（任务模板聊天；`-t *` 全任务 0-10 分打分匹配） |
+| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
 | 快捷垫片      | `short`              | 一键安装六种短命令；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
@@ -379,6 +379,8 @@ sysenv ai chat --list-model               # 列出配置中的所有模型（含
 
 * **无参数**：列出 `tasks` 中每个任务的 `name / desc`（最多 10 个）
 
+* **带用户请求（无 `-t`）**：**function_call 自动路由** —— 每个任务的 `name` 作为函数名、`desc` 作为函数描述注册为 tools，大模型用 function_call 选择最匹配的任务（参数 `input` 携带用户请求），随后**自动执行**：把该任务 `desc` + 用户请求组装成消息发给模型，输出最终回复；模型未选择任何任务时明确报错（可改用 `-t NAME` 手动指定）
+
 * `-t <name>`：取 `name` 匹配的任务，按 `msg` 组装消息（`desc` 为任务描述）
 
 * `-t *`（**全任务打分匹配**）：把**所有任务**的 `desc` 与用户提供的聊天信息（命令行参数或 stdin）组装，调用配置的大模型按 **10 分制**打分（0=不匹配，10=完全匹配），输出 `TASK / DESC / SCORE` 表格并按分数降序排列；某个任务请求失败时其 SCORE 显示 `-` 并在 stderr 提示
@@ -389,6 +391,7 @@ sysenv ai chat --list-model               # 列出配置中的所有模型（含
 
 ```
 sysenv ai task                          # 列出任务（name / desc，最多 10 个）
+sysenv ai task 今天深圳的天气如何         # function_call 自动路由：模型选任务并自动执行
 sysenv ai task -t weather               # 用默认值（深圳）组装消息并聊天
 sysenv ai task -t weather country:北京   # 替换 country 为北京
 sysenv ai task -t weather country=北京   # = 号写法等价

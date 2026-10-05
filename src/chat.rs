@@ -33,6 +33,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::Duration;
 
 const DEFAULT_MAX_TOKENS: u64 = 1024;
@@ -987,11 +988,12 @@ fn stream_response(resp: reqwest::blocking::Response, kind: &str) -> Result<Stri
     Ok(full)
 }
 
-/// Send one chat request. Returns the assistant text (streaming prints as it goes).
-fn send_chat(p: &Provider, m: &Model, msg: &str, stream: bool, debug: bool) -> Result<String> {
+/// Send one chat request and return the raw response body text. When streaming
+/// is active (and not in debug mode) the deltas are printed and the full text
+/// is returned.
+fn send_chat_raw(p: &Provider, body: &Value, stream: bool, debug: bool) -> Result<String> {
     let url = chat_url(p);
-    let body = chat_body(p, m, msg, stream);
-    let body_bytes = serde_json::to_vec(&body).context("cannot serialize request body")?;
+    let body_bytes = serde_json::to_vec(body).context("cannot serialize request body")?;
 
     let mut headers = HeaderMap::new();
     headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STR));
@@ -1041,12 +1043,268 @@ fn send_chat(p: &Provider, m: &Model, msg: &str, stream: bool, debug: bool) -> R
     if debug {
         debug_print_response(status, &resp_headers, &text);
     }
+    Ok(text)
+}
+
+/// Send one chat request. Returns the assistant text (streaming prints as it goes).
+fn send_chat(p: &Provider, m: &Model, msg: &str, stream: bool, debug: bool) -> Result<String> {
+    let body = chat_body(p, m, msg, stream);
+    let text = send_chat_raw(p, &body, stream, debug)?;
+    if stream && !debug {
+        return Ok(text);
+    }
     extract_content(&text, &p.kind)
 }
 
 // ---------------------------------------------------------------------------
 // Task templates
 // ---------------------------------------------------------------------------
+
+/// Every configured task becomes one tool; the task name is the function name
+/// and the task description is the function description. The only parameter is
+/// `input`, which carries the user's request.
+fn task_tools(cfg: &Config, kind: &str) -> Result<Value> {
+    let mut arr = Vec::new();
+    for t in &cfg.tasks {
+        if t.name.is_empty()
+            || !t
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            bail!(
+                "task name `{}` is not a valid function name (use letters, digits, '_' or '-')",
+                t.name
+            );
+        }
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "input": { "type": "string", "description": "用户请求的内容" }
+            },
+            "required": ["input"]
+        });
+        if kind == "anthropic" {
+            arr.push(json!({
+                "name": t.name,
+                "description": t.desc,
+                "input_schema": schema,
+            }));
+        } else {
+            arr.push(json!({
+                "type": "function",
+                "function": { "name": t.name, "description": t.desc, "parameters": schema },
+            }));
+        }
+    }
+    Ok(json!(arr))
+}
+
+const TOOL_SYSTEM: &str = "你是任务路由助手。根据用户的请求，从提供的任务函数中选择最合适的一个并调用。每个函数的 description 说明了它的用途。调用时把用户请求的关键信息放入 input 参数。只调用与请求相关的任务，不要编造不存在的任务。";
+
+/// Chat request body with the task tools attached.
+fn tool_chat_body(p: &Provider, m: &Model, input: &str, system: &str, tools: &Value, stream: bool) -> Value {
+    let mut body = if p.kind == "anthropic" {
+        json!({
+            "model": m.name,
+            "max_tokens": m.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
+            "system": system,
+            "messages": [{"role": "user", "content": input}],
+            "tools": tools,
+        })
+    } else {
+        json!({
+            "model": m.name,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": input},
+            ],
+            "tools": tools,
+        })
+    };
+    if stream {
+        body["stream"] = json!(true);
+    }
+    if p.kind != "anthropic" {
+        if let Some(mt) = m.max_tokens {
+            body["max_tokens"] = json!(mt);
+        }
+    }
+    body
+}
+
+/// Parse the tool calls out of a non-streaming response body.
+///
+/// OpenAI: `choices[0].message.tool_calls[].function.{name,arguments}`;
+/// Anthropic: `content[]` blocks with `type == "tool_use"` (`name` / `input`).
+/// Returns an empty vector when the model replied with plain text instead.
+fn extract_tool_calls(body: &str, kind: &str) -> Result<Vec<(String, Value)>> {
+    let v: Value = serde_json::from_str(body).with_context(|| {
+        format!(
+            "provider returned invalid JSON: {}",
+            body.chars().take(200).collect::<String>()
+        )
+    })?;
+    if let Some(err) = v.get("error") {
+        let raw = err.to_string();
+        let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or(&raw);
+        bail!("provider error: {msg}");
+    }
+    let mut calls = Vec::new();
+    if kind == "anthropic" {
+        if let Some(arr) = v.get("content").and_then(|c| c.as_array()) {
+            for block in arr {
+                if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                    if let (Some(name), Some(input)) = (
+                        block.get("name").and_then(|n| n.as_str()),
+                        block.get("input"),
+                    ) {
+                        calls.push((name.to_string(), input.clone()));
+                    }
+                }
+            }
+        }
+    } else if let Some(tc) = v.pointer("/choices/0/message/tool_calls").and_then(|c| c.as_array()) {
+        for call in tc {
+            let fname = call.pointer("/function/name").and_then(|n| n.as_str());
+            let args = call.pointer("/function/arguments").and_then(|a| a.as_str());
+            if let Some(name) = fname {
+                let parsed = args
+                    .and_then(|a| serde_json::from_str::<Value>(a).ok())
+                    .unwrap_or_else(|| {
+                        args.map(|a| Value::String(a.to_string()))
+                            .unwrap_or(Value::Null)
+                    });
+                calls.push((name.to_string(), parsed));
+            }
+        }
+    }
+    Ok(calls)
+}
+
+/// Ask the configured LLM to pick the task(s) matching the user's request via
+/// function calls. Weighted fallback across models works like `chat_once`.
+fn route_tasks(cfg: &mut Config, path: &Path, input: &str, debug: bool) -> Result<Vec<(String, Value)>> {
+    let selector = cfg.model.as_deref().unwrap_or("<default>");
+    let targets = resolve_targets(cfg, selector)?;
+    if targets.is_empty() {
+        bail!("no model targets to chat with (selector `{selector}` matched nothing)");
+    }
+
+    let first = pick_weighted(cfg, &targets, selector, path)?;
+    let mut order: Vec<usize> = Vec::with_capacity(targets.len());
+    order.push(first);
+    for i in 0..targets.len() {
+        if i != first {
+            order.push(i);
+        }
+    }
+
+    let mut had_failure = false;
+    let mut errors: Vec<String> = Vec::new();
+    for ti in order {
+        let t = &targets[ti];
+        ensure_model_capabilities(cfg, path, t.provider, t.model);
+        let p = &cfg.providers[t.provider];
+        let m = &p.models[t.model];
+        eprintln!("sysenv: using {} / {} ({})", p.name, m.name, p.kind);
+        let tools = task_tools(cfg, &p.kind)?;
+        let body = tool_chat_body(p, m, input, TOOL_SYSTEM, &tools, false);
+        match send_chat_raw(p, &body, false, debug) {
+            Ok(text) => match extract_tool_calls(&text, &p.kind) {
+                Ok(calls) => {
+                    if had_failure && m.weight < 9 {
+                        if let Err(e) = update_weight_in_config(path, &p.name, &m.name, m.weight + 1) {
+                            eprintln!(
+                                "sysenv: warning: failed to persist weight bump for {} / {}: {e:#}",
+                                p.name, m.name
+                            );
+                        }
+                    }
+                    return Ok(calls);
+                }
+                Err(e) => {
+                    errors.push(format!("{} / {}: {e:#}", p.name, m.name));
+                    if m.weight > 1 {
+                        if let Err(e2) = update_weight_in_config(path, &p.name, &m.name, m.weight - 1) {
+                            eprintln!(
+                                "sysenv: warning: failed to persist weight drop for {} / {}: {e2:#}",
+                                p.name, m.name
+                            );
+                        }
+                    }
+                    had_failure = true;
+                }
+            },
+            Err(e) => {
+                errors.push(format!("{} / {}: {e:#}", p.name, m.name));
+                if m.weight > 1 {
+                    if let Err(e2) = update_weight_in_config(path, &p.name, &m.name, m.weight - 1) {
+                        eprintln!(
+                            "sysenv: warning: failed to persist weight drop for {} / {}: {e2:#}",
+                            p.name, m.name
+                        );
+                    }
+                }
+                had_failure = true;
+            }
+        }
+    }
+    bail!("all {} model(s) failed: {}", targets.len(), errors.join(" | "));
+}
+
+/// Probe stdin without hanging: wait up to `timeout` for EOF.
+fn try_read_stdin(timeout: Duration) -> Option<String> {
+    let (tx, rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = std::io::stdin().read_to_string(&mut s);
+        let _ = tx.send(s);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(s) if s.trim().is_empty() => None,
+        Ok(s) => Some(s),
+        Err(_) => None,
+    }
+}
+
+/// Route the user's request to the configured tasks via function calls and
+/// execute the first match: the task description plus the user request are
+/// assembled into the chat message.
+fn route_and_execute(cfg: &mut Config, path: &Path, input: &str, debug: bool, no_stream: bool) -> Result<()> {
+    let calls = route_tasks(cfg, path, input, debug)?;
+    if calls.is_empty() {
+        bail!(
+            "模型未选择任何任务（当前配置 {} 个任务）；可加 `-t NAME` 手动指定",
+            cfg.tasks.len()
+        );
+    }
+    for (i, (tname, args)) in calls.iter().enumerate() {
+        let desc = cfg
+            .tasks
+            .iter()
+            .find(|t| ci_eq(&t.name, tname))
+            .map(|t| t.desc.as_str())
+            .unwrap_or("");
+        println!("[{i}] task: {tname}");
+        println!("    desc: {desc}");
+        println!("    args: {args}");
+    }
+    let (tname, args) = &calls[0];
+    let task = cfg
+        .tasks
+        .iter()
+        .find(|t| ci_eq(&t.name, tname))
+        .ok_or_else(|| anyhow::anyhow!("模型返回了未配置的任务名 `{tname}`"))?;
+    let user_arg = args
+        .get("input")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| input.to_string());
+    let exec_msg = format!("任务说明：{}\n\n用户请求：{}", task.desc, user_arg);
+    println!("\n→ 执行任务 {tname}");
+    chat_with(cfg, path, &exec_msg, debug, no_stream, None)
+}
 
 fn parse_params(items: &[String]) -> HashMap<String, String> {
     let mut map = HashMap::new();
@@ -1328,6 +1586,10 @@ pub fn cmd_chat(
 }
 
 /// `sysenv ai task [-t NAME] [key:value...] [-c FILE] [--debug] [--no-stream]`
+///
+/// Without `-t`: with a user request (arguments or piped stdin) the request is
+/// routed to the configured tasks via LLM function calls and the best match is
+/// executed; without input the configured tasks are listed.
 pub fn cmd_task(
     sel: Option<&str>,
     params: &[String],
@@ -1341,6 +1603,18 @@ pub fn cmd_task(
             if cfg.tasks.is_empty() {
                 println!("(no tasks configured under `tasks` in {})", path.display());
                 return Ok(());
+            }
+            // A user request (positional words or piped stdin) triggers the
+            // function-call routing; otherwise the tasks are listed.
+            let input = if !params.is_empty() {
+                Some(params.join(" "))
+            } else if !std::io::stdin().is_terminal() {
+                try_read_stdin(Duration::from_millis(400))
+            } else {
+                None
+            };
+            if let Some(input) = input {
+                return route_and_execute(&mut cfg, &path, &input, debug, no_stream);
             }
             let shown = cfg.tasks.len().min(10);
             let w_name = cfg.tasks.iter().take(shown).map(|t| t.name.chars().count()).max().unwrap_or(4).max(4);
@@ -1664,6 +1938,64 @@ stream: true
         assert!(extract_content(err, "openai").is_err());
         let bad = r#"not json"#;
         assert!(extract_content(bad, "openai").is_err());
+    }
+
+    #[test]
+    fn task_tools_shape_openai_and_anthropic() {
+        let cfg = sample_config(); // tasks: weather / 用来获取天气信息
+        let openai = task_tools(&cfg, "openai").unwrap();
+        assert_eq!(openai[0]["type"], "function");
+        assert_eq!(openai[0]["function"]["name"], "weather");
+        assert_eq!(openai[0]["function"]["description"], "用来获取天气信息");
+        assert_eq!(openai[0]["function"]["parameters"]["required"][0], "input");
+        let anthropic = task_tools(&cfg, "anthropic").unwrap();
+        assert_eq!(anthropic[0]["name"], "weather");
+        assert_eq!(anthropic[0]["description"], "用来获取天气信息");
+        assert!(anthropic[0].get("input_schema").is_some());
+        // A task name with characters outside [A-Za-z0-9_-] is rejected.
+        let mut cfg2 = sample_config();
+        cfg2.tasks[0].name = "bad name!".to_string();
+        assert!(task_tools(&cfg2, "openai").is_err());
+    }
+
+    #[test]
+    fn tool_chat_body_openai_and_anthropic() {
+        let cfg = sample_config();
+        let tools = task_tools(&cfg, "openai").unwrap();
+        let body = tool_chat_body(&cfg.providers[0], &cfg.providers[0].models[0], "今天天气如何", TOOL_SYSTEM, &tools, false);
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["messages"][1]["content"], "今天天气如何");
+        assert_eq!(body["tools"][0]["function"]["name"], "weather");
+        assert!(body.get("stream").is_none());
+        let tools = task_tools(&cfg, "anthropic").unwrap();
+        let body = tool_chat_body(&cfg.providers[1], &cfg.providers[1].models[0], "今天天气如何", TOOL_SYSTEM, &tools, true);
+        assert_eq!(body["system"], TOOL_SYSTEM);
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["tools"][0]["name"], "weather");
+        assert_eq!(body["stream"], true);
+    }
+
+    #[test]
+    fn extract_tool_calls_openai_and_anthropic() {
+        let openai = r#"{"choices":[{"message":{"tool_calls":[
+            {"function":{"name":"weather","arguments":"{\"input\":\"深圳今天天气如何\"}"}}
+        ]}}]}"#;
+        let calls = extract_tool_calls(openai, "openai").unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "weather");
+        assert_eq!(calls[0].1["input"], "深圳今天天气如何");
+        let anthropic = r#"{"content":[{"type":"tool_use","name":"weather","input":{"input":"北京天气"}}]}"#;
+        let calls = extract_tool_calls(anthropic, "anthropic").unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "weather");
+        assert_eq!(calls[0].1["input"], "北京天气");
+        // Plain text reply (no tool calls) -> empty vector, not an error.
+        let plain = r#"{"choices":[{"message":{"content":"我不知道"}}]}"#;
+        assert!(extract_tool_calls(plain, "openai").unwrap().is_empty());
+        // Provider error propagates.
+        let err = r#"{"error":{"message":"bad key"}}"#;
+        assert!(extract_tool_calls(err, "openai").is_err());
     }
 
     #[test]

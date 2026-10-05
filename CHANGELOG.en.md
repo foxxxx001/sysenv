@@ -2,6 +2,16 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sysenv-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.3 (2026-10-05)
+
+### Added
+- `sysenv ai task` without `-t` and with a user request (arguments or stdin) now uses **function_call auto-routing**:
+  - Each task's `name` becomes the function name and `desc` the function description, registered as tools (both OpenAI and Anthropic protocols).
+  - The LLM picks the best-matching task via function calls; the user request is carried by the `input` parameter.
+  - The selected task is executed automatically: its `desc` plus the user request are assembled into the chat message and the final reply is printed.
+  - When the model selects no task, an explicit error suggests using `-t NAME` instead.
+- Backward compatible: no input still lists the tasks; `-t NAME` (template placeholder substitution) and `-t *` (0-10 scoring) keep their behavior; routing requests also use dynamic weighted fallback across models.
+
 ## v0.4.2 (2026-10-05)
 
 ### Added
