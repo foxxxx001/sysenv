@@ -2,6 +2,14 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sysenv-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.11（2026-10-05）
+
+### 变更
+- **搜索源精简**：删除 `zhihu` / `baidu` / `bing` / `dxtower` / `cls`（财联社）/ `penalty` / `company` / `tophub` 共 8 个源，保留通用聚合源 `sogou`；`ai task --list-source` 现 **11 个源**（bilibili / github / hn / toutiao / oschina / smzdm / sogou / enlightent / dongchedi / autohome / szhousing）
+- **任务精简**：删除 `penalty` / `company` / `finance` / `technews` 任务，`ai task` 现 **8 个任务**（weather / cloudrank / hotnews / auto / cartech / oschina / deals / szhousing）
+- **szhousing 重构（纯 HTTP 直连）**：移除 Chrome/CDP 浏览器方案，改为直接请求官方 API —— 实测平台 API（`/szfdcscjy/*`）不经瑞数校验（瑞数只挂 HTML 首页），带常规 Chrome UA + Origin + Referer 头 POST 即可 200；**无需浏览器、不依赖本机任何软件**，Windows/Ubuntu 完全一致；新增楼栋**备案均价**统计；单次查询由 ~5s 降至 <1s
+- `ai cn-model` 新增 `--list` 参数：列出全部 1015 个模型（`--limit` 可截断），无参报错文案改为 `provide a model NAME, --search QUERY, or --list`
+
 ## v0.4.10（2026-10-05）
 
 ### 修复

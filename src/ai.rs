@@ -1555,18 +1555,19 @@ fn output_dl(hits: &[DlModel], take: usize, fmt: Option<OutFormat>, list_mode: b
     Ok(())
 }
 
-/// `sysenv ai cn-model [NAME | -s QUERY] [--date DATE] [--model-type TYPE] [--limit N] [-o json|csv] [--refresh]`
+/// `sysenv ai cn-model [NAME | -s QUERY | --list] [--date DATE] [--model-type TYPE] [--limit N] [-o json|csv] [--refresh]`
 ///
-/// Query-only: a NAME or `--search` is required (no `--list` / bare full
-/// listing, no `--open` — DataLearner exposes no structured open-weights
-/// field). `--date YYYY-MM-DD` keeps only models published strictly after it;
-/// `--model-type` keeps only models whose category matches the given kind
-/// (text / image / audio / video / multimodal). A single exact hit fetches the
-/// detail page to enrich the output with the context length and
-/// input/output modalities.
+/// Query-only: a NAME or `--search` is required, unless `--list` (full
+/// listing) or `--date`/`--model-type` filters are given (no `--open` —
+/// DataLearner exposes no structured open-weights field). `--date YYYY-MM-DD`
+/// keeps only models published strictly after it; `--model-type` keeps only
+/// models whose category matches the given kind (text / image / audio /
+/// video / multimodal). A single exact hit fetches the detail page to enrich
+/// the output with the context length and input/output modalities.
 pub fn cmd_cn_model(
     name: Option<&str>,
     search: Option<&str>,
+    list: bool,
     limit: Option<usize>,
     json: bool,
     out: Option<OutFormat>,
@@ -1586,10 +1587,11 @@ pub fn cmd_cn_model(
         }
     }
 
-    // --date / --model-type alone lists every matching model.
-    if name.is_none() && search.is_none() {
-        if date.is_none() && model_type.is_none() {
-            bail!("provide a model NAME or --search QUERY (data: {DL_BASE})");
+    // --list shows the full catalogue; --date / --model-type alone also list
+    // every matching model.
+    if list || (name.is_none() && search.is_none()) {
+        if !list && date.is_none() && model_type.is_none() {
+            bail!("provide a model NAME, --search QUERY, or --list (data: {DL_BASE})");
         }
         let hits = match &updated_after {
             Some(d) => filter_dl_by_date(models, d),
@@ -1609,7 +1611,8 @@ pub fn cmd_cn_model(
             }
             bail!("{msg} (source: {DL_BASE})");
         }
-        return output_dl(&hits, limit.unwrap_or(20).max(1), fmt, true);
+        let take = limit.unwrap_or(if list { usize::MAX } else { 20 }).max(1);
+        return output_dl(&hits, take, fmt, true);
     }
 
     let query = name.or(search).unwrap_or_default();

@@ -2,6 +2,14 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sysenv-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.11 (2026-10-05)
+
+### Changed
+- **Search sources slimmed down**: removed `zhihu` / `baidu` / `bing` / `dxtower` / `cls` (CLS finance) / `penalty` / `company` / `tophub` — 8 sources gone, the generic aggregate source `sogou` stays; `ai task --list-source` now lists **11 sources** (bilibili / github / hn / toutiao / oschina / smzdm / sogou / enlightent / dongchedi / autohome / szhousing).
+- **Tasks slimmed down**: removed `penalty` / `company` / `finance` / `technews` tasks; `ai task` now has **8 tasks** (weather / cloudrank / hotnews / auto / cartech / oschina / deals / szhousing).
+- **szhousing rewritten (plain HTTP)**: dropped the Chrome/CDP browser approach and queries the official API directly — the platform API (`/szfdcscjy/*`) is measured to bypass the RiverSecurity challenge (it guards only the HTML page), so a POST with a regular Chrome UA + Origin + Referer headers returns 200; **no browser and no dependency on any local software**, identical on Windows/Ubuntu; added per-building **filing price average**; single query dropped from ~5s to <1s.
+- `ai cn-model` gained a `--list` flag: lists all 1015 models (`--limit` truncates), and the no-argument error now reads `provide a model NAME, --search QUERY, or --list`.
+
 ## v0.4.10 (2026-10-05)
 
 ### Fixed

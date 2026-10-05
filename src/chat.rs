@@ -87,9 +87,9 @@ struct Task {
     /// as the tool result. Implemented in code (no local shell commands).
     api: Option<String>,
     /// Optional built-in search source executed when the task is selected:
-    /// `zhihu` (daily news), `baidu` (hot search), `bilibili` (popular
-    /// videos), `github` (trending repos), `hn` (Hacker News). The extracted
-    /// headline list is fed back to the model as the tool result.
+    /// `bilibili` (popular videos), `github` (trending repos), `hn` (Hacker
+    /// News), `sogou` (web search). The extracted headline list is fed back to
+    /// the model as the tool result.
     search: Option<String>,
     /// Optional parameter names declared for the tool function; each becomes a
     /// string property of the function schema.
@@ -1416,38 +1416,6 @@ fn parse_toutiao(body: &str) -> Result<Vec<(String, String)>> {
     Ok(rows)
 }
 
-/// Parse a tophub.today board page into rows (`<span class="t">` titles + href).
-fn parse_tophub(body: &str) -> Result<Vec<(String, String)>> {
-    let mut rows = Vec::new();
-    let mut pos = 0;
-    while let Some(start) = body[pos..].find("cc-cd-cb-ll") {
-        // Back up to the enclosing `<a href=...>` so the URL is captured.
-        let a_pos = body[..pos + start].rfind("<a ");
-        let begin = a_pos.unwrap_or_else(|| body[..pos + start].rfind('<').unwrap_or(pos + start));
-        let end = body[pos + start..].find("</a>").map(|i| pos + start + i).unwrap_or(body.len());
-        let block = &body[begin..end];
-        if let Some(href) = block.find("href=\"") {
-            let after = &block[href + 6..];
-            if let Some(q) = after.find('"') {
-                let url = after[..q].to_string();
-                if url.starts_with("http") {
-                    if let Some(t) = block.find("class=\"t\">") {
-                        let t_rest = &block[t + 9..];
-                        if let Some(close) = t_rest.find("</span>") {
-                            let title = html_unescape(&strip_tags(&t_rest[..close]));
-                            if !title.is_empty() {
-                                rows.push((title, url));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        pos = (end + 4).min(body.len());
-    }
-    Ok(rows)
-}
-
 /// Parse an oschina.net news list page into rows (`data-url` + `title` attr).
 fn parse_oschina(body: &str) -> Result<Vec<(String, String)>> {
     let mut urls = Vec::new();
@@ -1642,48 +1610,6 @@ fn aggregate_search(query: &str, get: &dyn Fn(&str) -> Result<String>) -> Result
     Ok(all)
 }
 
-/// Run a zhihu daily-news response into headline rows.
-fn parse_zhihu(body: &str) -> Result<Vec<(String, String)>> {
-    let v: Value = serde_json::from_str(body).context("zhihu returned invalid JSON")?;
-    let mut rows = Vec::new();
-    if let Some(stories) = v.get("stories").and_then(|s| s.as_array()) {
-        for s in stories {
-            let title = s.get("title").and_then(|x| x.as_str());
-            let id = s
-                .get("id")
-                .and_then(|x| x.as_str())
-                .map(str::to_string)
-                .or_else(|| s.get("id").and_then(|x| x.as_u64()).map(|n| n.to_string()));
-            if let (Some(t), Some(id)) = (title, id) {
-                rows.push((t.to_string(), format!("https://daily.zhihu.com/story/{id}")));
-            }
-        }
-    }
-    Ok(rows)
-}
-
-/// Parse a baidu hot-search response into headline rows.
-fn parse_baidu(body: &str) -> Result<Vec<(String, String)>> {
-    let v: Value = serde_json::from_str(body).context("baidu returned invalid JSON")?;
-    let mut rows = Vec::new();
-    let content = v
-        .pointer("/data/cards/0/content/0/content")
-        .and_then(|c| c.as_array());
-    if let Some(items) = content {
-        for it in items {
-            if let Some(w) = it.get("word").and_then(|x| x.as_str()) {
-                let url = it
-                    .get("url")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                rows.push((w.to_string(), url));
-            }
-        }
-    }
-    Ok(rows)
-}
-
 /// Parse a bilibili popular-videos response into headline rows.
 fn parse_bilibili(body: &str) -> Result<Vec<(String, String)>> {
     let v: Value = serde_json::from_str(body).context("bilibili returned invalid JSON")?;
@@ -1788,8 +1714,6 @@ fn builtin_search(source: &str, args: &HashMap<String, String>) -> Result<String
         Ok(resp.text().context("cannot read search response")?)
     };
     let rows: Vec<(String, String)> = match source.to_ascii_lowercase().as_str() {
-        "zhihu" => parse_zhihu(&get("https://news-at.zhihu.com/api/4/news/latest")?)?,
-        "baidu" => parse_baidu(&get("https://top.baidu.com/api/board?platform=wise&tab=realtime")?)?,
         "bilibili" => parse_bilibili(&get("https://api.bilibili.com/x/web-interface/popular?ps=10")?)?,
         "github" => {
             let date = args.get("date").cloned().unwrap_or_else(|| days_ago(7));
@@ -1812,55 +1736,29 @@ fn builtin_search(source: &str, args: &HashMap<String, String>) -> Result<String
         }
         // Direct sources
         "toutiao" => parse_toutiao(&get("https://www.toutiao.com/api/pc/feed/?category=news_hot&offset=0&count=10")?)?,
-        "tophub" => parse_tophub(&get("https://tophub.today/c/developer")?)?,
         "oschina" => parse_oschina(&get("https://www.oschina.net/news/")?)?,
         "smzdm" => parse_smzdm(&get("https://www.smzdm.com/")?)?,
-        // Aggregate search (Sogou first, Bing fallback) for sites whose own
-        // data endpoints are signed / WAF-gated.
-        "bing" | "sogou" => {
+        // Generic web search (Sogou aggregate with Bing fallback).
+        "sogou" => {
             let q = args.get("q").or_else(|| args.get("query")).cloned().unwrap_or_default();
             if q.is_empty() {
                 bail!("search source `{source}` requires a query via args `q` / `query`");
             }
             aggregate_search(&q, &get)?
         }
-        // Drama-rank aggregate search. The vendors' own names (德塔文/云合) get
-        // tokenized badly by the engines (e.g. 德 → dictionary entries), so use
-        // generic heat-rank words that match Maoyan/Guduo/Dengta/EntGroup etc.
-        "dxtower" => aggregate_search("电视剧 热度 排行榜 今日", &get)?,
+        // Drama-rank aggregate search. The vendor's own name (云合) gets
+        // tokenized badly by the engines, so use a generic heat-rank word that
+        // matches Maoyan/Guduo/Dengta/EntGroup etc.
         "enlightent" => aggregate_search("电视剧 热播 榜单 今日", &get)?,
-        "cls" => aggregate_search("财联社 电报 今日 财经", &get)?,
         "dongchedi" => aggregate_search("懂车帝 汽车 资讯 新闻", &get)?,
         "autohome" => aggregate_search("汽车之家 汽车 新闻 资讯", &get)?,
-        // Shenzhen housing sales (fdc.zjj.sz.gov.cn is behind a Ruishi WAF, so
-        // use aggregate search over the public housing-market data).
-        "szhousing" => aggregate_search("深圳 新房 成交 套数 深圳房地产信息平台", &get)?,
-        // Administrative penalty / dishonest-executor records. Official
-        // portals (creditchina / court execution / gsxt) require CAPTCHA or
-        // login, so aggregate search over public disclosure pages is used.
-        // The entity name comes from the model's `name` / `input` argument.
-        "penalty" => {
-            let name = args.get("name").or_else(|| args.get("input")).cloned().unwrap_or_default();
-            let q = if name.trim().is_empty() {
-                "行政处罚 失信被执行人 公示".to_string()
-            } else {
-                format!("{name} 行政处罚 失信 公示")
-            };
-            aggregate_search(&q, &get)?
-        }
-        // Company registration info. Same approach: the name comes from the
-        // model's `name` / `input` argument.
-        "company" => {
-            let name = args.get("name").or_else(|| args.get("input")).cloned().unwrap_or_default();
-            let q = if name.trim().is_empty() {
-                "企业工商信息 查询 注册".to_string()
-            } else {
-                format!("{name} 企业工商信息")
-            };
-            aggregate_search(&q, &get)?
-        }
+        // Shenzhen housing sales: the platform's API (fdc.zjj.sz.gov.cn) is
+        // directly accessible over plain HTTP (the Ruishi WAF only guards the
+        // HTML page), so query the official API directly with a Chrome UA.
+        // `name` is the project name (optional).
+        "szhousing" => return crate::szfdc::report(args),
         other => bail!(
-            "unknown search source `{other}` (available: zhihu, baidu, bilibili, github, hn, toutiao, tophub, oschina, smzdm, bing, sogou, dxtower, enlightent, cls, dongchedi, autohome, szhousing, penalty, company)"
+            "unknown search source `{other}` (available: bilibili, github, hn, toutiao, oschina, smzdm, sogou, enlightent, dongchedi, autohome, szhousing)"
         ),
     };
     if rows.is_empty() {
@@ -2025,8 +1923,8 @@ fn substitute(template: &str, params: &HashMap<String, String>) -> String {
 /// Build the substitution map for a task's `msg`/tool template from the
 /// command-line parameters. When the user passes a bare free-text parameter
 /// (no `key:value` / `key=value`) and the task declares parameters, the free
-/// text fills the first declared parameter (e.g. `-t company 字节跳动` →
-/// `name=字节跳动`).
+/// text fills the first declared parameter (e.g. `-t weather 39.9` →
+/// `lat=39.9`).
 fn task_param_map(task: &Task, params: &[String]) -> HashMap<String, String> {
     let mut map = parse_params(params);
     if let Some(plist) = &task.params {
@@ -2275,25 +2173,17 @@ struct SourceRow {
 /// Bing fallback, `generic` = general search engine requiring a `q`/`query`
 /// argument), purpose and access address.
 const SOURCES: &[SourceRow] = &[
-    SourceRow { name: "zhihu",      kind: "api",     purpose: "知乎每日热门新闻",             url: "https://news-at.zhihu.com/api/4/news/latest" },
-    SourceRow { name: "baidu",      kind: "api",     purpose: "百度实时热搜榜",               url: "https://top.baidu.com/api/board" },
     SourceRow { name: "bilibili",   kind: "api",     purpose: "B站热门视频",                  url: "https://api.bilibili.com/x/web-interface/popular" },
     SourceRow { name: "github",     kind: "api",     purpose: "GitHub 近期热门仓库",          url: "https://api.github.com/search/repositories" },
     SourceRow { name: "hn",         kind: "api",     purpose: "Hacker News 热门",             url: "https://news.ycombinator.com/" },
     SourceRow { name: "toutiao",    kind: "api",     purpose: "今日头条热榜",                 url: "https://www.toutiao.com/api/pc/feed/" },
-    SourceRow { name: "tophub",     kind: "api",     purpose: "tophub 开发者热榜",            url: "https://tophub.today/c/developer" },
     SourceRow { name: "oschina",    kind: "api",     purpose: "开源中国技术新闻",             url: "https://www.oschina.net/news/" },
     SourceRow { name: "smzdm",      kind: "api",     purpose: "什么值得买今日特价",           url: "https://www.smzdm.com/" },
-    SourceRow { name: "bing",       kind: "generic", purpose: "通用网页搜索（需 q/query 参数）", url: "https://www.bing.com/search" },
     SourceRow { name: "sogou",      kind: "generic", purpose: "通用网页搜索（需 q/query 参数）", url: "https://www.sogou.com/web" },
-    SourceRow { name: "dxtower",    kind: "search",  purpose: "德塔文电视剧景气指数/榜单",     url: "https://www.dxtower.com/" },
     SourceRow { name: "enlightent", kind: "search",  purpose: "云合数据热播剧霸屏榜",         url: "https://www.enlightent.cn/" },
-    SourceRow { name: "cls",        kind: "search",  purpose: "财联社电报/财经",              url: "https://www.cls.cn/telegraph" },
     SourceRow { name: "dongchedi",  kind: "search",  purpose: "懂车帝汽车资讯",               url: "https://www.dongchedi.com/" },
     SourceRow { name: "autohome",   kind: "search",  purpose: "汽车之家汽车新闻",             url: "https://www.autohome.com.cn/" },
-    SourceRow { name: "szhousing",  kind: "search",  purpose: "深圳房源销售/成交情况",         url: "https://fdc.zjj.sz.gov.cn/" },
-    SourceRow { name: "penalty",    kind: "search",  purpose: "行政处罚/失信被执行人信息（name 参数）", url: "https://www.creditchina.gov.cn/" },
-    SourceRow { name: "company",    kind: "search",  purpose: "公司工商注册信息（name 参数）", url: "https://aiqicha.baidu.com/" },
+    SourceRow { name: "szhousing",  kind: "api",     purpose: "深圳楼盘销售情况（纯 HTTP 直查官方接口，无需浏览器，name 参数为楼盘名）", url: "https://fdc.zjj.sz.gov.cn/" },
 ];
 
 /// Print the built-in search source catalogue (name / kind / purpose / URL).
@@ -2518,7 +2408,7 @@ tasks:
   - name: topnews
     desc: 获取今天的热门新闻
     msg: 请基于搜索结果列出今天的新闻头条
-    search: zhihu
+    search: bilibili
 stream: true
 "#;
 
@@ -2553,7 +2443,7 @@ stream: true
         assert_eq!(cfg.tasks.len(), 2);
         assert!(cfg.tasks[0].api.as_deref().unwrap_or("").contains("api.open-meteo.com"));
         assert_eq!(cfg.tasks[0].params.as_deref(), Some(["lat".to_string(), "lon".to_string()].as_slice()));
-        assert_eq!(cfg.tasks[1].search.as_deref(), Some("zhihu"));
+        assert_eq!(cfg.tasks[1].search.as_deref(), Some("bilibili"));
     }
 
     #[test]
@@ -2727,16 +2617,6 @@ stream: true
     #[test]
     fn builtin_search_parsers_extract_headlines() {
         // Deterministic parsing of fixed payloads (no network involved).
-        let zh = r#"{"stories":[{"title":"标题A","id":123},{"title":"标题B","id":456}]}"#;
-        let rows = parse_zhihu(zh).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].0, "标题A");
-        assert_eq!(rows[0].1, "https://daily.zhihu.com/story/123");
-        let bd = r#"{"data":{"cards":[{"content":[{"content":[{"word":"热词一","url":"https://x/1"},{"word":"热词二","url":"https://x/2"}]}]}]}}"#;
-        let rows = parse_baidu(bd).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].0, "热词一");
-        assert_eq!(rows[0].1, "https://x/1");
         let bl = r#"{"data":{"list":[{"title":"视频甲","bvid":"BV1"},{"title":"视频乙","bvid":"BV2"}]}}"#;
         let rows = parse_bilibili(bl).unwrap();
         assert_eq!(rows.len(), 2);
@@ -2778,12 +2658,6 @@ stream: true
         assert_eq!(rows[0].1, "/link?url=abc123");
         assert_eq!(rows[1].0, "剧日报|2024年2月15日电视剧景气指数");
         assert_eq!(rows[1].1, "http://mp.weixin.qq.com/s?src=xyz");
-        // tophub.today board
-        let th = r#"<div class="cc-cd-cb"><a href="https://github.com/a/b" target="_blank" rel="nofollow" itemid="1"><div class="cc-cd-cb-ll"><span class="s h">1</span><span class="t">a / b</span><span class="e">1234</span></div></a></div>"#;
-        let rows = parse_tophub(th).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].0, "a / b");
-        assert_eq!(rows[0].1, "https://github.com/a/b");
         // oschina news list
         let os = r#"<div class="item news-item news-item-hover" data-url="https://www.oschina.net/news/502842"><div class="content"><h3 class="header"><div class="title" title="🔥 开源项目发布新版本">🔥 开源项目发布新版本</div></h3></div></div>"#;
         let rows = parse_oschina(os).unwrap();

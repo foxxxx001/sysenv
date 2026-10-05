@@ -6,6 +6,7 @@ mod link;
 mod path;
 mod short;
 mod store;
+mod szfdc;
 mod task;
 
 use clap::{Args, Parser, Subcommand};
@@ -268,7 +269,10 @@ struct CnModelArgs {
     /// Substring search over model names, ids and aliases
     #[arg(short = 's', long, value_name = "QUERY", conflicts_with = "name")]
     search: Option<String>,
-    /// Maximum number of entries to show for --search results (default 20)
+    /// List every model (full catalogue)
+    #[arg(long, conflicts_with_all = ["name", "search"])]
+    list: bool,
+    /// Maximum number of entries to show for --search results (default 20; --list shows all)
     #[arg(long)]
     limit: Option<usize>,
     /// Show only models whose published date is after DATE (YYYY-MM-DD)
@@ -568,6 +572,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
         AiCmd::CnModel(m) => ai::cmd_cn_model(
             m.name.as_deref(),
             m.search.as_deref(),
+            m.list,
             m.limit,
             m.json,
             m.output,

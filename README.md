@@ -384,9 +384,10 @@ sysenv ai chat --list-model               # 列出配置中的所有模型（含
 * **任务工具执行（function_call 选中后回填真实数据）**：任务可声明以下两种工具之一，选中后由**程序代码**（reqwest HTTP 请求，**禁止本地 shell 命令 / curl**）执行，执行结果作为"工具执行结果"回填给模型，模型再基于真实数据回答：
   * `api: <URL模板>` —— **固定 HTTP 接口**：`{key}` / `{key:默认值}` 占位符由模型 tool 参数填充（模型未传或传空时用默认值），响应体原样作为工具结果；`params: [k1, k2]` 声明参数名（可选，会加入函数 schema，便于模型填写坐标等参数）
   * `search: <源名>` —— **AI 模糊联网搜索**：内置搜索源由程序抓取头条列表回填，模型据此筛选总结。
-    * **固定直连源**：`zhihu`（知乎日报：今日热门新闻）、`baidu`（百度实时热搜）、`bilibili`（B 站热门视频）、`github`（近 7 天新建星榜，可选 `date` 参数如 `date:2026-01-01`）、`hn`（Hacker News 头条）、`toutiao`（今日头条热榜）、`tophub`（tophub 开发者技术榜）、`oschina`（开源中国技术资讯）、`smzdm`（什么值得买今日好价，含价格）
-    * **AI 聚合搜索源**（目标站点数据接口带签名/WAF，程序改用搜索引擎抓取相关结果回填，Sogou 优先、Bing 兜底，模型如实筛选总结）：`dxtower`（电视剧热度排行榜，v0.4.10 起用通用热度词搜索，不再依赖"德塔文"专名分词）、`enlightent`（电视剧热播榜，同 v0.4.10）、`cls`（财联社电报/财经）、`dongchedi`（懂车帝汽车资讯）、`autohome`（汽车之家汽车新闻）、`szhousing`（深圳房源销售/成交情况，深圳房地产信息平台公开数据，v0.4.6）、`penalty`（某人/某单位行政处罚、失信被执行人信息，v0.4.7）、`company`（公司工商注册信息，v0.4.7）；`bing` / `sogou` 为通用聚合源，需传 `q` / `query` 参数（如 `q:德塔文 榜单`）；`penalty` / `company` 的查询对象来自模型的 `name` 参数（`-t` 手动指定时自由文本自动作为 `name`）
-    * **搜索源清单**：`sysenv ai task --list-source` 列出全部内置搜索源的名称、类型（`api` 直连数据接口 / `search` AI 聚合搜索 Sogou 优先 Bing 兜底 / `generic` 通用搜索需 `q`/`query` 参数）、用途与访问地址（v0.4.8）
+    * **固定直连源**：`bilibili`（B 站热门视频）、`github`（近 7 天新建星榜，可选 `date` 参数如 `date:2026-01-01`）、`hn`（Hacker News 头条）、`toutiao`（今日头条热榜）、`oschina`（开源中国技术资讯）、`smzdm`（什么值得买今日好价，含价格）
+    * **AI 聚合搜索源**（目标站点数据接口带签名/WAF，程序改用搜索引擎抓取相关结果回填，Sogou 优先、Bing 兜底，模型如实筛选总结）：`enlightent`（电视剧热播榜）、`dongchedi`（懂车帝汽车资讯）、`autohome`（汽车之家汽车新闻）；`sogou` 为通用聚合源，需传 `q` / `query` 参数（如 `q:电视剧 热播 榜单`）
+    * **直连官方接口源**（v0.4.10）：`szhousing` —— 深圳楼盘销售情况。平台 API（`/szfdcscjy/*`）不经过瑞数反爬（瑞数只挂 HTML 首页），程序**纯 HTTP 直查官方接口，无需浏览器、不依赖本机任何软件**（Windows/Ubuntu 一致）。`name` 参数为楼盘名称（可选，如 `name:星悦尊府`），未提供时返回近期在售项目列表
+    * **搜索源清单**：`sysenv ai task --list-source` 列出全部内置搜索源的名称、类型（`api` 直连数据接口 / `search` AI 聚合搜索 Sogou 优先 Bing 兜底 / `generic` 通用搜索需 `q`/`query` 参数）、用途与访问地址（v0.4.10）
     * **结果净化**（v0.4.9）：AI 聚合搜索自动过滤百度百科、搜狗百科、维基百科、互动百科等低价值词条（标题与 URL 双通道识别），避免搜索结果被百科词条占满；Sogou 请求失败时自动降级 Bing，两引擎均无可过滤结果时合并原始结果兜底，保证任务不因过滤而失败
 
 * `-t <name>`：取 `name` 匹配的任务，按 `msg` 组装消息（`desc` 为任务描述）；任务声明了 `api`/`search` 时同样先执行工具并回填真实数据再回答
@@ -400,7 +401,7 @@ sysenv ai chat --list-model               # 列出配置中的所有模型（含
 ```
 sysenv ai task                          # 列出任务（name / desc，最多 10 个）
 sysenv ai task 今天深圳的天气如何         # function_call 自动路由：模型选 weather 并自动执行 api 工具（真实天气）后回答
-sysenv ai task 今天有什么热门新闻        # function_call 自动路由：模型选 topnews 并自动执行 zhihu 搜索源后回答
+sysenv ai task 今天有什么热门新闻        # function_call 自动路由：模型选 hotnews 并自动执行 toutiao 搜索源后回答
 sysenv ai task -t weather               # 用默认值（深圳）组装消息并聊天
 sysenv ai task -t weather country:北京   # 替换 country 为北京
 sysenv ai task -t weather country=北京   # = 号写法等价
@@ -417,26 +418,12 @@ tasks:
     msg: 我在{country:深圳},今天的天气如何，我要询问温度、湿度、下雨概率等信息
     api: https://api.open-meteo.com/v1/forecast?latitude={lat:22.54}&longitude={lon:114.06}&current_weather=true
     params: [lat, lon]
-  # AI 模糊联网搜索：内置 zhihu 搜索源抓取今日热门新闻头条回填，模型据此总结
-  - name: topnews
-    desc: 获取今天的热门新闻（内置知乎日报搜索源）
-    msg: 请基于工具执行结果列出今天的新闻头条，注明来源链接
-    search: zhihu
-  # AI 模糊联网搜索：内置 baidu 搜索源抓取实时热搜回填，模型筛选影视娱乐条目
-  - name: topshow
-    desc: 获取今天新开播的电视剧或热门影视娱乐话题（内置百度热搜搜索源，请筛选娱乐影视类条目）
-    msg: 请基于工具执行结果筛选出与影视剧相关的话题，列出今天新开播或热播的电视剧
-    search: baidu
   # —— v0.4.5 新增搜索源 ——
-  # 固定直连源：toutiao（今日头条热榜 JSON）、tophub（开发者技术榜 SSR）、oschina（开源中国资讯 SSR）、smzdm（什么值得买好价 SSR）
+  # 固定直连源：toutiao（今日头条热榜 JSON）、oschina（开源中国资讯 SSR）、smzdm（什么值得买好价 SSR）
   - name: hotnews
     desc: 获取今天的热门新闻（今日头条热榜）
     msg: 请基于工具执行结果列出今天的头条热门新闻，注明来源链接
     search: toutiao
-  - name: technews
-    desc: 获取开发者技术热门榜（tophub 开发者频道聚合榜单）
-    msg: 请基于工具执行结果列出今天的技术热榜条目，注明来源链接
-    search: tophub
   - name: oschina
     desc: 获取开源中国技术新闻资讯（oschina.net）
     msg: 请基于工具执行结果列出今天的技术新闻，注明来源链接
@@ -446,18 +433,10 @@ tasks:
     msg: 请基于工具执行结果列出今天值得买的特价商品与价格
     search: smzdm
   # AI 聚合搜索源（Sogou 优先、Bing 兜底）：目标站点的数据接口带签名/WAF，程序改用搜索引擎抓取相关结果回填，模型如实筛选总结
-  - name: hotdrama
-    desc: 获取热播电视剧榜单（德塔文电视剧景气指数，AI 聚合搜索）
-    msg: 请基于工具执行结果列出热播电视剧及景气指数排名
-    search: dxtower
   - name: cloudrank
     desc: 获取热播电视剧榜单（云合数据霸屏榜/热播榜，AI 聚合搜索）
     msg: 请基于工具执行结果列出云合数据的霸屏榜/热播剧排名
     search: enlightent
-  - name: finance
-    desc: 获取今天的热门财经新闻及电报快讯（财联社，AI 聚合搜索）
-    msg: 请基于工具执行结果列出今天的重要财经新闻与电报快讯
-    search: cls
   - name: auto
     desc: 获取汽车新闻资讯（汽车之家，AI 聚合搜索）
     msg: 请基于工具执行结果列出今天的汽车新闻资讯
@@ -468,19 +447,9 @@ tasks:
     search: dongchedi
   # —— v0.4.6 新增 ——
   - name: szhousing
-    desc: 获取深圳房源销售情况（新房/二手房成交套数等，深圳房地产信息平台公开数据，AI 聚合搜索）
-    msg: 请基于工具执行结果说明深圳近期的房源销售/成交情况，注明数据来源链接
+    desc: 查询深圳楼盘销售情况（深圳房地产信息平台公开数据；提供楼盘名称 name 参数可查具体项目各楼栋销售状态统计，未提供则返回在售项目列表）
+    msg: 请基于工具执行结果说明深圳楼盘的房源销售/成交情况，注明来源链接
     search: szhousing
-  # —— v0.4.7 新增 ——
-  - name: penalty
-    desc: 查询某人或某单位的行政处罚、失信被执行人信息（公开公示渠道，AI 聚合搜索；name 参数为查询对象）
-    msg: 请基于工具执行结果说明 {name} 的行政处罚或失信记录情况，注明来源链接；若无相关记录请如实说明
-    search: penalty
-    params: [name]
-  - name: company
-    desc: 查询公司工商注册信息（法定代表人、注册资本、成立日期等，公开公示渠道，AI 聚合搜索；name 参数为公司名称）
-    msg: 请基于工具执行结果说明 {name} 的工商注册信息，注明来源链接；信息不全时请如实说明
-    search: company
     params: [name]
 ```
 
