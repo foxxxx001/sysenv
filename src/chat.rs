@@ -1791,8 +1791,32 @@ fn builtin_search(source: &str, args: &HashMap<String, String>) -> Result<String
         // Shenzhen housing sales (fdc.zjj.sz.gov.cn is behind a Ruishi WAF, so
         // use aggregate search over the public housing-market data).
         "szhousing" => aggregate_search("深圳 新房 成交 套数 深圳房地产信息平台", &get)?,
+        // Administrative penalty / dishonest-executor records. Official
+        // portals (creditchina / court execution / gsxt) require CAPTCHA or
+        // login, so aggregate search over public disclosure pages is used.
+        // The entity name comes from the model's `name` / `input` argument.
+        "penalty" => {
+            let name = args.get("name").or_else(|| args.get("input")).cloned().unwrap_or_default();
+            let q = if name.trim().is_empty() {
+                "行政处罚 失信被执行人 公示".to_string()
+            } else {
+                format!("{name} 行政处罚 失信 公示")
+            };
+            aggregate_search(&q, &get)?
+        }
+        // Company registration info. Same approach: the name comes from the
+        // model's `name` / `input` argument.
+        "company" => {
+            let name = args.get("name").or_else(|| args.get("input")).cloned().unwrap_or_default();
+            let q = if name.trim().is_empty() {
+                "企业工商信息 查询 注册".to_string()
+            } else {
+                format!("{name} 企业工商信息")
+            };
+            aggregate_search(&q, &get)?
+        }
         other => bail!(
-            "unknown search source `{other}` (available: zhihu, baidu, bilibili, github, hn, toutiao, tophub, oschina, smzdm, bing, sogou, dxtower, enlightent, cls, dongchedi, autohome, szhousing)"
+            "unknown search source `{other}` (available: zhihu, baidu, bilibili, github, hn, toutiao, tophub, oschina, smzdm, bing, sogou, dxtower, enlightent, cls, dongchedi, autohome, szhousing, penalty, company)"
         ),
     };
     if rows.is_empty() {
@@ -1954,6 +1978,25 @@ fn substitute(template: &str, params: &HashMap<String, String>) -> String {
 /// Assemble the chat message of a task: `file://` reads a local file, `url:`
 /// fetches a web page, otherwise the template is used; `{key:default}`
 /// placeholders are substituted from the command-line parameters.
+/// Build the substitution map for a task's `msg`/tool template from the
+/// command-line parameters. When the user passes a bare free-text parameter
+/// (no `key:value` / `key=value`) and the task declares parameters, the free
+/// text fills the first declared parameter (e.g. `-t company 字节跳动` →
+/// `name=字节跳动`).
+fn task_param_map(task: &Task, params: &[String]) -> HashMap<String, String> {
+    let mut map = parse_params(params);
+    if let Some(plist) = &task.params {
+        if let Some(first) = plist.first() {
+            if !map.contains_key(first) {
+                if let Some(free) = params.iter().find(|p| !p.contains(':') && !p.contains('=')) {
+                    map.insert(first.clone(), free.trim().to_string());
+                }
+            }
+        }
+    }
+    map
+}
+
 fn resolve_task_msg(task: &Task, params: &[String]) -> Result<String> {
     if task.msg.is_empty() {
         bail!("task `{}` has no msg", task.name);
@@ -1972,7 +2015,7 @@ fn resolve_task_msg(task: &Task, params: &[String]) -> Result<String> {
     } else {
         task.msg.clone()
     };
-    let map = parse_params(params);
+    let map = task_param_map(task, params);
     Ok(substitute(&raw, &map))
 }
 
@@ -2236,7 +2279,7 @@ pub fn cmd_task(
             let msg = resolve_task_msg(task, params)?;
             // Manual `-t` selection also executes the task's api/search tool
             // when declared, so the reply is grounded in real data.
-            let map = parse_params(params);
+            let map = task_param_map(task, params);
             let tool_result = if task.api.is_some() || task.search.is_some() {
                 Some(run_task_tool(task, &map)?)
             } else {
