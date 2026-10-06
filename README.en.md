@@ -7,12 +7,12 @@ A cross-platform (Windows / Ubuntu) system Http client & AI model lookup & PATH 
 - **Link into PATH**: put any file into a PATH directory so it can be run from anywhere
 - **Environment variables**: read / set / unset / list system variables, optionally persisted or session-only
 - **AI model lookup**: query model & provider information from models.dev by name
-- **Web search**: `sysenv search` runs web searches through the Bocha AI API (`api.bochaai.com/v1/web-search`) with official request parameters
+- **Web search**: `sysenv search` runs web searches through the Bocha AI API (`api.bochaai.com/v1/web-search`) with official request parameters; `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards
 - **httpie-compatible HTTP client**: flags follow httpie conventions
 - **Shortcut shims**: install `spath / senv / slink / shttp / sai / ssearch / stask` short commands with one command
 
 ```
-sysenv 0.4.12 (Made by Gary-china)
+sysenv 0.4.13 (Made by Gary-china)
 
 Usage: sysenv <COMMAND>
 
@@ -22,7 +22,7 @@ Commands:
   link   Link a file into a PATH directory so it runs from anywhere
   http   httpie-compatible HTTP client: http [flags] [METHOD] URL [ITEM...]
   ai     Query the models.dev database of AI models & providers
-  search Web search via the configured Bocha AI API (api.bochaai.com/v1/web-search)
+  search Web search via the configured Bocha AI API (web-search; --ai uses ai-search)
   task   Query and kill processes (list PID/name/path; kill by PID or name)
   short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask)
 ```
@@ -39,7 +39,7 @@ Commands:
 | Environment variables | `env` | get / set / unset / list; persisted by default; `--temporary` for the current shell only; `machine` scope |
 | AI model lookup | `ai` | `ai model` (models.dev: 226 providers, 8000+ models; 24 h cache; canonical preference; no args lists all; `--date` / `--open` / `--search / --list / --json / --refresh`); `ai cn-model` (datalearner: ~1015 models; `--date` filters by published); `ai chat` (multi-provider weighted round-robin chat, OpenAI / Anthropic compatible); `ai task` (task-template chat) |
 | Process management | `task` | no args lists all processes; list (PID / name / path, fuzzy name match); `-o` shows the process using a port; kill by PID or name; `-f` force |
-| Web search | `search` | Bocha AI web search API (`POST api.bochaai.com/v1/web-search`): `--freshness` (time filter) / `--summary` (AI summaries) / `--count` (1-50) / `--page` / `--include-domains` / `--exclude-domains`, official parameters; key from the config `search` section; `--json` raw response / `--debug` request & response |
+| Web search | `search` | Bocha AI web search API (`POST api.bochaai.com/v1/web-search`): `--freshness` (time filter) / `--summary` (AI summaries) / `--count` (1-50) / `--page` / `--include-domains` / `--exclude-domains`, official parameters; key from the config `search` section; `--json` raw response / `--debug` request & response. `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards (`--no-answer` disables the AI answer) |
 | HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
 | Shortcut shims | `short` | installs seven short commands at once (spath/senv/slink/shttp/sai/ssearch/stask); Windows `.cmd` / Linux sh scripts; auto PATH registration |
 
@@ -281,7 +281,7 @@ Web search through the **Bocha AI Web Search API** (`POST https://api.bochaai.co
     - name: bochaai
       key: sk-xxxxx
   ```
-- **Parameters (official)**: `query` (positional, joined with spaces; stdin is read when piped); `--freshness` (`noLimit` default / `oneDay` / `oneWeek` / `oneMonth` / `oneYear` / `YYYY-MM-DD` / range); `--summary` (AI summary + per-result snippet / site / publish time); `--count` (1-50, default 10); `--page` (default 1); `--include-domains` / `--exclude-domains` (repeatable domain filters); `--json` (raw response); `--debug` (actual request & response)
+- **Parameters (official)**: `query` (positional, joined with spaces; stdin is read when piped); `--ai` switches to the AI Search API (`POST /v1/ai-search`) — structured modal cards plus an AI-generated answer (official `answer` param, on by default; `--no-answer` turns it off; `stream` stays off); `--freshness` (`noLimit` default / `oneDay` / `oneWeek` / `oneMonth` / `oneYear` / `YYYY-MM-DD` / range); `--summary` (AI summary + per-result snippet / site / publish time on Web Search; AI Search always shows them); `--count` (1-50, default 10); `--page` (default 1); `--include-domains` / `--exclude-domains` (repeatable domain filters); `--json` (raw response); `--debug` (actual request & response)
 
 ```
 sysenv search "2026 Nobel Prize in Physics"            # default 10 results: title + link
@@ -290,8 +290,12 @@ sysenv search "rust 2026" --freshness oneMonth
 sysenv search "cargo tutorial" --include-domains rust-lang.org docs.rs
 sysenv search "futures price" --exclude-domains baidu.com --json
 echo "today's hot news" | sysenv search                # pipe via stdin
+sysenv search "Hangzhou weather" --ai                  # AI Search: AI answer + weather card + sources
+sysenv search "housing policy" --ai --no-answer --count 5
 ssearch "holiday schedule"                              # ssearch shim == sysenv search
 ```
+
+> Note: **AI Search and Web Search are separate Bocha packages**. The key needs an AI Search package on the open platform; without it `--ai` returns 403 (`You do not have enough money or package quota`).
 
 ## 6. Process management (`task`)
 

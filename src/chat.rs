@@ -1719,30 +1719,58 @@ fn days_ago(n: u64) -> String {
 
 /// Bocha AI web search endpoint (official: `POST /v1/web-search`).
 const BOCHA_API: &str = "https://api.bochaai.com/v1/web-search";
+/// Bocha AI advanced search endpoint (official: `POST /v1/ai-search`, returns
+/// structured modal cards plus an optional AI-generated answer).
+const BOCHA_AI_API: &str = "https://api.bochaai.com/v1/ai-search";
 
-/// Send one Bocha web-search request with the official request parameters
-/// (`query` / `freshness` / `summary` / `count` / `page` / `include_domains` /
-/// `exclude_domains`) and return the parsed JSON response. `debug` prints the
-/// actual HTTP request and response.
-fn bocha_search_value(
-    key: &str,
-    query: &str,
-    freshness: Option<&str>,
-    summary: bool,
-    count: u32,
-    page: u32,
-    include_domains: &[String],
-    exclude_domains: &[String],
-    debug: bool,
-) -> Result<Value> {
-    let mut body = json!({
-        "query": query,
-    });
+/// Send one Bocha request with `body` to `endpoint` and return the parsed
+/// `data` value. The envelope is `{code, log_id, msg, data}` for both the web
+/// and the AI search endpoints; a non-200 `code` is an error even on HTTP 200.
+/// `debug` prints the actual HTTP request and response.
+fn bocha_request(endpoint: &str, key: &str, body: &Value, debug: bool) -> Result<Value> {
+    let body_bytes = serde_json::to_vec(body).context("cannot serialize bocha request body")?;
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STR));
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {key}")).context("invalid bocha api_key")?);
+    if debug {
+        debug_print_request(endpoint, &headers, &body_bytes);
+    }
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("failed to build HTTP client")?;
+    let resp = client
+        .post(endpoint)
+        .headers(headers)
+        .body(body_bytes.clone())
+        .send()
+        .with_context(|| format!("request to {endpoint} failed"))?;
+    let status = resp.status();
+    let resp_headers = resp.headers().clone();
+    let text = resp.text().context("cannot read bocha search response")?;
+    if debug {
+        debug_print_response(status, &resp_headers, &text);
+    }
+    if !status.is_success() {
+        let snippet: String = text.chars().take(500).collect();
+        bail!("{endpoint} returned HTTP {status}: {snippet}");
+    }
+    let v: Value = serde_json::from_str(&text).context("bocha search returned invalid JSON")?;
+    let code = v.get("code").and_then(|c| c.as_i64()).unwrap_or(200);
+    if code != 200 {
+        let msg = v.get("msg").and_then(|m| m.as_str()).unwrap_or("unknown error");
+        bail!("bocha search failed (code {code}): {msg}");
+    }
+    Ok(v.get("data").cloned().unwrap_or(v))
+}
+
+/// Common optional parameters of both Bocha endpoints: `freshness` / `count` /
+/// `page` / `include_domains` / `exclude_domains`.
+fn bocha_body_common(body: &mut Value, freshness: Option<&str>, count: u32, page: u32, include_domains: &[String], exclude_domains: &[String]) {
     if let Some(f) = freshness.filter(|s| !s.trim().is_empty()) {
         body["freshness"] = json!(f.trim());
-    }
-    if summary {
-        body["summary"] = json!(true);
     }
     if count > 0 {
         body["count"] = json!(count.clamp(1, 50));
@@ -1756,68 +1784,112 @@ fn bocha_search_value(
     if !exclude_domains.is_empty() {
         body["exclude_domains"] = json!(exclude_domains);
     }
-
-    let body_bytes = serde_json::to_vec(&body).context("cannot serialize bocha request body")?;
-    let mut headers = HeaderMap::new();
-    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STR));
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {key}")).context("invalid bocha api_key")?);
-    if debug {
-        debug_print_request(BOCHA_API, &headers, &body_bytes);
-    }
-
-    let client = Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .context("failed to build HTTP client")?;
-    let resp = client
-        .post(BOCHA_API)
-        .headers(headers)
-        .body(body_bytes.clone())
-        .send()
-        .with_context(|| format!("request to {BOCHA_API} failed"))?;
-    let status = resp.status();
-    let resp_headers = resp.headers().clone();
-    let text = resp.text().context("cannot read bocha search response")?;
-    if debug {
-        debug_print_response(status, &resp_headers, &text);
-    }
-    if !status.is_success() {
-        let snippet: String = text.chars().take(500).collect();
-        bail!("{BOCHA_API} returned HTTP {status}: {snippet}");
-    }
-    let v: Value = serde_json::from_str(&text).context("bocha search returned invalid JSON")?;
-    // The API envelope: `code` / `msg` / `data`. A non-200 code is an error
-    // even when the HTTP status is 200.
-    let code = v.get("code").and_then(|c| c.as_i64()).unwrap_or(200);
-    if code != 200 {
-        let msg = v.get("msg").and_then(|m| m.as_str()).unwrap_or("unknown error");
-        bail!("bocha search failed (code {code}): {msg}");
-    }
-    Ok(v.get("data").cloned().unwrap_or(v))
 }
 
-/// Parse the Bocha response `data` into headline rows: title (url). Both the
-/// current `data.webPages.value[]` shape and the legacy `data.web_results[]`
-/// shape are accepted.
+/// Send one Bocha web-search request with the official request parameters
+/// (`query` / `freshness` / `summary` / `count` / `page` / `include_domains` /
+/// `exclude_domains`) and return the parsed JSON response.
+fn bocha_search_value(
+    key: &str,
+    query: &str,
+    freshness: Option<&str>,
+    summary: bool,
+    count: u32,
+    page: u32,
+    include_domains: &[String],
+    exclude_domains: &[String],
+    debug: bool,
+) -> Result<Value> {
+    let mut body = json!({ "query": query });
+    if summary {
+        body["summary"] = json!(true);
+    }
+    bocha_body_common(&mut body, freshness, count, page, include_domains, exclude_domains);
+    bocha_request(BOCHA_API, key, &body, debug)
+}
+
+/// Send one Bocha AI-search request (official parameters `query` / `freshness`
+/// / `count` / `page` / `include_domains` / `exclude_domains` / `answer` /
+/// `stream`) and return the parsed JSON response. The answer is requested by
+/// default and stream is always off (this is a plain CLI call).
+fn bocha_ai_search_value(
+    key: &str,
+    query: &str,
+    freshness: Option<&str>,
+    count: u32,
+    page: u32,
+    include_domains: &[String],
+    exclude_domains: &[String],
+    answer: bool,
+    debug: bool,
+) -> Result<Value> {
+    let mut body = json!({ "query": query, "answer": answer, "stream": false });
+    bocha_body_common(&mut body, freshness, count, page, include_domains, exclude_domains);
+    bocha_request(BOCHA_AI_API, key, &body, debug)
+}
+
+/// Collect result-item nodes from every shape the Bocha APIs return:
+/// - AI search: `data.messages[]` entries with `type == "source"` whose
+///   `content.value` holds the webpage list;
+/// - web search: `data.webPages.value[]` (current) and `data.web_results[]`
+///   (legacy).
+fn bocha_result_items(data: &Value) -> Vec<&Value> {
+    let mut items: Vec<&Value> = Vec::new();
+    if let Some(arr) = data.get("messages").and_then(|m| m.as_array()) {
+        for m in arr {
+            let is_source = m
+                .get("type")
+                .and_then(|t| t.as_str())
+                .map(|t| t == "source")
+                .unwrap_or(false);
+            if is_source {
+                if let Some(v) = m.get("content").and_then(|c| c.get("value")).and_then(|v| v.as_array()) {
+                    items.extend(v.iter());
+                }
+            }
+        }
+    }
+    if let Some(arr) = data.get("webPages").and_then(|w| w.get("value")).and_then(|v| v.as_array()) {
+        items.extend(arr.iter());
+    }
+    if let Some(arr) = data.get("web_results").and_then(|v| v.as_array()) {
+        items.extend(arr.iter());
+    }
+    items
+}
+
+/// Extract the AI answer from a Bocha response: AI search returns it inside
+/// `data.messages[]` (`type == "answer"`, `content.text`); the web endpoint
+/// returns it as `data.answer`.
+fn bocha_ai_answer(data: &Value) -> Option<String> {
+    if let Some(arr) = data.get("messages").and_then(|m| m.as_array()) {
+        for m in arr {
+            if m.get("type").and_then(|t| t.as_str()) == Some("answer") {
+                if let Some(c) = m.get("content") {
+                    if let Some(text) = c.get("text").and_then(|x| x.as_str()).filter(|s| !s.trim().is_empty()) {
+                        return Some(text.trim().to_string());
+                    }
+                    if let Some(s) = c.as_str().filter(|s| !s.trim().is_empty()) {
+                        return Some(s.trim().to_string());
+                    }
+                }
+            }
+        }
+    }
+    data.get("answer")
+        .and_then(|a| a.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+}
+
+/// Parse a Bocha response into headline rows: title (url). Duplicate URLs are
+/// dropped and rows without a title or URL are skipped.
 fn bocha_result_rows(data: &Value) -> Vec<(String, String)> {
     let mut rows: Vec<(String, String)> = Vec::new();
-    let items: Vec<&Value> = data
-        .get("webPages")
-        .and_then(|w| w.get("value"))
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
-        .chain(
-            data.get("web_results")
-                .and_then(|v| v.as_array())
-                .into_iter()
-                .flatten(),
-        )
-        .collect();
-    for it in items {
+    for it in bocha_result_items(data) {
         let title = it
             .get("name")
+            .or_else(|| it.get("webpage"))
             .or_else(|| it.get("title"))
             .and_then(|x| x.as_str())
             .unwrap_or("")
@@ -1831,57 +1903,34 @@ fn bocha_result_rows(data: &Value) -> Vec<(String, String)> {
 }
 
 /// Format a Bocha search result into a plain text block: the AI answer (when
-/// the API returned one) plus a numbered headline list with URL / snippet /
-/// site / publish time.
+/// the API returned one) plus a numbered list with URL / snippet / site /
+/// publish time. `include_summary` adds the per-row detail lines.
 fn bocha_result_text(data: &Value, include_summary: bool) -> String {
     let mut out = String::new();
-    if let Some(ans) = data.get("answer").and_then(|a| a.as_str()).filter(|a| !a.trim().is_empty()) {
+    if let Some(ans) = bocha_ai_answer(data) {
         out.push_str("AI 摘要：\n");
-        out.push_str(ans.trim());
+        out.push_str(&ans);
         out.push_str("\n\n");
     }
-    let rows = bocha_result_rows(data);
-    if rows.is_empty() {
+    let items = bocha_result_items(data);
+    if items.is_empty() {
         out.push_str("（未返回搜索结果）");
         return out;
     }
-    for (i, (title, url)) in rows.iter().enumerate() {
-        out.push_str(&format!("[{:>2}] {title}\n    {url}\n", i + 1));
-    }
-    if include_summary {
-        // Re-fetch snippet/summary per row for the formatted (non-headline)
-        // view: bocha_result_rows collapses the details, so rebuild them here.
-        // (Kept cheap: only when `summary` was requested by the caller.)
-        out = String::new();
-        if let Some(ans) = data.get("answer").and_then(|a| a.as_str()).filter(|a| !a.trim().is_empty()) {
-            out.push_str("AI 摘要：\n");
-            out.push_str(ans.trim());
-            out.push_str("\n\n");
+    for (i, it) in items.iter().enumerate() {
+        let title = it
+            .get("name")
+            .or_else(|| it.get("webpage"))
+            .or_else(|| it.get("title"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim();
+        let url = it.get("url").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if title.is_empty() || url.is_empty() {
+            continue;
         }
-        let items: Vec<&Value> = data
-            .get("webPages")
-            .and_then(|w| w.get("value"))
-            .and_then(|v| v.as_array())
-            .into_iter()
-            .flatten()
-            .chain(
-                data.get("web_results")
-                    .and_then(|v| v.as_array())
-                    .into_iter()
-                    .flatten(),
-            )
-            .collect();
-        for (i, it) in items.iter().enumerate() {
-            let title = it
-                .get("name")
-                .or_else(|| it.get("title"))
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .trim();
-            let url = it.get("url").and_then(|x| x.as_str()).unwrap_or("").trim();
-            if title.is_empty() || url.is_empty() {
-                continue;
-            }
+        out.push_str(&format!("[{:>2}] {title}\n    {url}\n", i + 1));
+        if include_summary {
             let snippet = it
                 .get("summary")
                 .or_else(|| it.get("snippet"))
@@ -1896,11 +1945,11 @@ fn bocha_result_text(data: &Value, include_summary: bool) -> String {
                 .trim();
             let date = it
                 .get("datePublished")
+                .or_else(|| it.get("dateLastCrawled"))
                 .or_else(|| it.get("page_timestamp"))
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
                 .trim();
-            out.push_str(&format!("[{:>2}] {title}\n    {url}\n", i + 1));
             if !snippet.is_empty() {
                 out.push_str(&format!("    {snippet}\n"));
             }
@@ -1927,6 +1976,24 @@ fn bocha_search(
 ) -> Result<String> {
     let data = bocha_search_value(key, query, freshness, summary, count, page, include_domains, exclude_domains, debug)?;
     Ok(bocha_result_text(&data, summary))
+}
+
+/// Run one Bocha AI search and return the formatted result text (AI answer
+/// plus the source rows with snippet / site / publish time).
+#[allow(clippy::too_many_arguments)]
+fn bocha_ai_search(
+    key: &str,
+    query: &str,
+    freshness: Option<&str>,
+    count: u32,
+    page: u32,
+    include_domains: &[String],
+    exclude_domains: &[String],
+    answer: bool,
+    debug: bool,
+) -> Result<String> {
+    let data = bocha_ai_search_value(key, query, freshness, count, page, include_domains, exclude_domains, answer, debug)?;
+    Ok(bocha_result_text(&data, true))
 }
 
 /// Run a built-in search source and return a plain headline list. All sources
@@ -2476,15 +2543,20 @@ pub fn cmd_chat(
     chat_with(&mut cfg, &path, &msg, debug, no_stream, model)
 }
 
-/// `sysenv search QUERY [-c FILE] [--freshness VALUE] [--summary] [--count N]`
-/// `[--page N] [--include-domains D]... [--exclude-domains D]... [--json] [--debug]`
+/// `sysenv search QUERY [-c FILE] [--ai] [--no-answer] [--freshness VALUE]`
+/// `[--summary] [--count N] [--page N] [--include-domains D]...`
+/// `[--exclude-domains D]... [--json] [--debug]`
 ///
-/// Web search via the configured Bocha AI API (`POST https://api.bochaai.com/v1/web-search`).
-/// The API key is read from the top-level `search` section of the config
-/// (e.g. `- name: bochaai, key: sk-...`); `-c/--config` overrides the default
-/// `~/.sysenv/config.yaml`. All request parameters follow the official Bocha
-/// interface: `query` / `freshness` / `summary` / `count` / `page` /
-/// `include_domains` / `exclude_domains`.
+/// Web search via the configured Bocha AI API. The API key is read from the
+/// top-level `search` section of the config (e.g. `- name: bochaai, key:
+/// sk-...`); `-c/--config` overrides the default `~/.sysenv/config.yaml`. All
+/// request parameters follow the official Bocha interface.
+///
+/// Default endpoint: `POST /v1/web-search` (query / freshness / summary /
+/// count / page / include_domains / exclude_domains). With `--ai` the request
+/// goes to `POST /v1/ai-search` (advanced search: structured modal cards plus
+/// an AI-generated answer; `answer` is on by default, `--no-answer` turns it
+/// off; stream stays off).
 pub fn cmd_search(
     words: &[String],
     freshness: Option<&str>,
@@ -2496,6 +2568,8 @@ pub fn cmd_search(
     config: Option<&Path>,
     json: bool,
     debug: bool,
+    ai: bool,
+    no_answer: bool,
 ) -> Result<()> {
     let (cfg, path) = load_config(config)?;
     let key = cfg
@@ -2524,11 +2598,19 @@ pub fn cmd_search(
         bail!("empty search query");
     }
     if json {
-        let data = bocha_search_value(key, &query, freshness, summary, count, page, include_domains, exclude_domains, debug)?;
+        let data = if ai {
+            bocha_ai_search_value(key, &query, freshness, count, page, include_domains, exclude_domains, !no_answer, debug)?
+        } else {
+            bocha_search_value(key, &query, freshness, summary, count, page, include_domains, exclude_domains, debug)?
+        };
         println!("{}", serde_json::to_string_pretty(&data).context("cannot serialize bocha response")?);
         return Ok(());
     }
-    let text = bocha_search(key, &query, freshness, summary, count, page, include_domains, exclude_domains, debug)?;
+    let text = if ai {
+        bocha_ai_search(key, &query, freshness, count, page, include_domains, exclude_domains, !no_answer, debug)?
+    } else {
+        bocha_search(key, &query, freshness, summary, count, page, include_domains, exclude_domains, debug)?
+    };
     println!("{text}");
     Ok(())
 }
@@ -3465,5 +3547,83 @@ clients:
         let text = bocha_result_text(&v2, true);
         assert!(text.contains("摘要A"));
         assert!(text.contains("站点A · 2026-10-01T00:00:00+08:00"));
+    }
+
+    #[test]
+    fn bocha_ai_parses_messages_answer_and_source() {
+        // AI-search response shape: `data.messages[]` with `type: source`
+        // (content.value = webpages) and `type: answer` (content.text).
+        let v: Value = serde_json::from_str(
+            r#"{
+  "messages": [
+    {
+      "role": "assistant", "type": "source", "content_type": "webpage",
+      "content": {
+        "webSearchUrl": "https://bochaai.com/search?q=x",
+        "value": [
+          {"id": "0", "name": "杭州天气", "url": "https://a.example/1", "snippet": "摘要1", "siteName": "站点A", "dateLastCrawled": "2026-01-01T00:00:00Z"}
+        ]
+      }
+    },
+    {
+      "role": "assistant", "type": "answer", "content_type": "text",
+      "content": {"text": "AI 生成的回答文本"}
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+        assert_eq!(bocha_ai_answer(&v).as_deref(), Some("AI 生成的回答文本"));
+        let rows = bocha_result_rows(&v);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0], ("杭州天气".to_string(), "https://a.example/1".to_string()));
+        let text = bocha_result_text(&v, true);
+        assert!(text.starts_with("AI 摘要：\nAI 生成的回答文本"));
+        assert!(text.contains("[ 1] 杭州天气\n    https://a.example/1\n    摘要1\n    站点A · 2026-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn bocha_ai_source_uses_webpage_title_field() {
+        // Some AI-search items carry the title in `webpage` instead of `name`.
+        let v: Value = serde_json::from_str(
+            r#"{
+  "messages": [
+    {"role": "assistant", "type": "source", "content": {"value": [
+      {"id": "0", "webpage": "微博热搜", "url": "https://weibo.example/1", "snippet": "s"}
+    ]}}
+  ]
+}"#,
+        )
+        .unwrap();
+        let rows = bocha_result_rows(&v);
+        assert_eq!(rows[0].0, "微博热搜");
+    }
+
+    #[test]
+    fn bocha_result_items_covers_messages_and_webpages() {
+        // Rows are gathered from messages-source, webPages.value and legacy
+        // web_results alike, with duplicate URLs dropped.
+        let v: Value = serde_json::from_str(
+            r#"{
+  "messages": [
+    {"role": "assistant", "type": "source", "content": {"value": [
+      {"name": "消息源A", "url": "https://x.example/a"}
+    ]}}
+  ],
+  "webPages": {"value": [
+    {"name": "网页B", "url": "https://x.example/b"}
+  ]},
+  "web_results": [
+    {"title": "旧格式C", "url": "https://x.example/c"},
+    {"title": "重复A", "url": "https://x.example/a"}
+  ]
+}"#,
+        )
+        .unwrap();
+        let rows = bocha_result_rows(&v);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].1, "https://x.example/a");
+        assert_eq!(rows[1].1, "https://x.example/b");
+        assert_eq!(rows[2].1, "https://x.example/c");
     }
 }

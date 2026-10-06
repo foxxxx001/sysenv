@@ -14,7 +14,7 @@
 
 * **AI 模型查询**：从 models.dev 按名称爬取模型 / Provider 信息
 
-* **联网搜索**：`sysenv search` 接入博查 AI 网页搜索 API（`api.bochaai.com/v1/web-search`），参数与官网接口一致
+* **联网搜索**：`sysenv search` 接入博查 AI 网页搜索 API（`api.bochaai.com/v1/web-search`），参数与官网接口一致；`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡
 
 * **httpie 兼容 HTTP 客户端**：参数与 httpie 保持一致
 
@@ -23,7 +23,7 @@
 
 
 ```
-sysenv 0.4.12 (Made by Gary-china)
+sysenv 0.4.13 (Made by Gary-china)
 
 Usage: sysenv <COMMAND>
 
@@ -33,7 +33,7 @@ Commands:
   link   Link a file into a PATH directory so it runs from anywhere
   http   httpie-compatible HTTP client: http [flags] [METHOD] URL [ITEM...]
   ai     Query the models.dev database of AI models & providers
-  search Web search via the configured Bocha AI API (api.bochaai.com/v1/web-search)
+  search Web search via the configured Bocha AI API (web-search; --ai uses ai-search)
   task   Query and kill processes (list PID/name/path; kill by PID or name)
   short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask)
 ```
@@ -54,7 +54,7 @@ Commands:
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
 | AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
-| 联网搜索      | `search`             | 博查 AI 网页搜索 API（`POST api.bochaai.com/v1/web-search`）：`--freshness`（时间过滤）/ `--summary`（AI 摘要）/ `--count`（1-50）/ `--page` / `--include-domains` / `--exclude-domains`（域名白黑名单），参数与官网接口一致；key 取自配置 `search` 段；`--json` 原始响应 / `--debug` 请求与响应 |
+| 联网搜索      | `search`             | 博查 AI 网页搜索 API（`POST api.bochaai.com/v1/web-search`）：`--freshness`（时间过滤）/ `--summary`（AI 摘要）/ `--count`（1-50）/ `--page` / `--include-domains` / `--exclude-domains`（域名白黑名单），参数与官网接口一致；key 取自配置 `search` 段；`--json` 原始响应 / `--debug` 请求与响应。`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡（`--no-answer` 关闭 AI 答案） |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
 | 快捷垫片      | `short`              | 一键安装七种短命令（spath/senv/slink/shttp/sai/ssearch/stask）；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
 
@@ -511,13 +511,14 @@ sysenv ai image --list-provider --list-model             # 列出配置中的 Pr
 
 * **参数（与官网一致）**：
   * `query`：搜索词（位置参数，多词自动空格连接；无参数且 stdin 为管道时读取 stdin）
+  * `--ai`：切换到 **AI Search API**（`POST /v1/ai-search`）——在网页搜索基础上额外返回垂域结构化模态卡（天气/百科/日历/股票等）与 **AI 实时生成的答案**（`answer` 默认开启；`--no-answer` 关闭，仅可与 `--ai` 同用；`stream` 固定关闭）
   * `--freshness <VALUE>`：时间过滤 —— `noLimit`（默认）/ `oneDay` / `oneWeek` / `oneMonth` / `oneYear` / `YYYY-MM-DD` / `YYYY-MM-DD..YYYY-MM-DD`
-  * `--summary`：返回 AI 摘要（`answer`）并附带每条结果的摘要 / 站点 / 发布时间
+  * `--summary`：Web Search 模式下返回 AI 摘要并附带每条结果的摘要 / 站点 / 发布时间（AI Search 默认附带）
   * `--count <N>`：返回条数（1-50，默认 10）
   * `--page <N>`：页码（默认 1）
   * `--include-domains <D>`：只返回这些域名的结果（可重复）
   * `--exclude-domains <D>`：排除这些域名的结果（可重复）
-  * `--json`：打印原始 JSON 响应（含 `answer` 与 `pagination`）；`--debug`：打印实际 HTTP 请求与响应
+  * `--json`：打印原始 JSON 响应；`--debug`：打印实际 HTTP 请求与响应
 
 ```
 sysenv search "2026年诺贝尔物理学奖"                     # 默认 10 条，标题 + 链接
@@ -526,8 +527,12 @@ sysenv search "rust 2026" --freshness oneMonth          # 只搜最近一个月
 sysenv search "cargo 教程" --include-domains rust-lang.org docs.rs   # 只从指定站点搜
 sysenv search "期货 行情" --exclude-domains baidu.com --json          # 排除站点 + 原始 JSON
 echo "今天有什么热门新闻" | sysenv search               # stdin 管道查询
+sysenv search "杭州天气" --ai                           # AI Search：AI 答案 + 天气卡 + 参考网页
+sysenv search "深圳 买房 政策" --ai --no-answer --count 5   # AI Search 但不要 AI 答案
 ssearch "五一 放假 安排"                                 # ssearch 垫片等价于 sysenv search
 ```
+
+> 注意：**AI Search 与 Web Search 是博查的独立套餐**，key 需在开放平台分别开通；未开通 AI Search 包时 `--ai` 会返回 403（`You do not have enough money or package quota`）。
 
 ## 6. 进程管理（`task`）
 

@@ -2,6 +2,16 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sysenv-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.13（2026-10-06）
+
+### 新增
+- **`sysenv search --ai`**：接入博查 **AI Search API**（`POST https://api.bochaai.com/v1/ai-search`）高级搜索
+  - `--ai` 切换端点：在网页搜索基础上额外返回垂域结构化模态卡（天气/百科/日历/股票等）与 **AI 实时生成的答案**（`answer` 默认开启；`--no-answer` 关闭，仅可与 `--ai` 同用）；`stream` 固定关闭（纯 CLI 调用）
+  - 请求参数与官网接口一致：`query` / `freshness` / `count` / `page` / `include_domains` / `exclude_domains` / `answer` / `stream`；输出默认含 AI 答案 + 逐条摘要/站点/发布时间；`--json` 原始响应、`--debug` 打印实际请求与响应
+  - 客户端重构：共用 `bocha_request`（POST + 信封校验），响应解析兼容 `data.messages[]`（source 结果 / answer 答案）、`data.webPages.value[]`、`data.web_results[]` 三种形态，标题兼容 `name`/`webpage`/`title` 字段、时间兼容 `datePublished`/`dateLastCrawled`/`page_timestamp`
+  - 注意：**AI Search 与 Web Search 是独立套餐**。当前配置 key 仅有 Web Search 套餐，`--ai` 请求会得到 403（`You do not have enough money or package quota`），需在博查开放平台为 key 开通 AI Search 包；请求构造与响应解析已通过确定性测试覆盖（真实响应结构参照官网文档）
+- 版本 0.4.12 -> 0.4.13
+
 ## v0.4.12（2026-10-06）
 
 ### 新增

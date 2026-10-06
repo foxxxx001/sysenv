@@ -80,7 +80,7 @@ Use `sysenv help http` for help (in http subcommand, -h means response headers).
     Http(HttpArgs),
     /// Query AI model info (DataLearner), provider info (models.dev), chat with configured providers
     Ai(AiArgs),
-    /// Web search via the configured Bocha AI API (api.bochaai.com/v1/web-search)
+    /// Web search via the configured Bocha AI API (web-search; --ai uses ai-search)
     Search(SearchArgs),
     /// Query and kill processes (list PID/name/path; kill by PID or name; no args lists all)
     Task(TaskArgs),
@@ -473,6 +473,12 @@ struct SearchArgs {
     /// Exclude results from these domains (official `exclude_domains` param, repeatable)
     #[arg(long = "exclude-domains", value_name = "DOMAIN")]
     exclude_domains: Vec<String>,
+    /// Use the advanced AI search endpoint (official `POST /v1/ai-search`): structured modal cards plus an AI-generated answer
+    #[arg(long)]
+    ai: bool,
+    /// Do not request the AI-generated answer (official `answer: false`; only with --ai)
+    #[arg(long, requires = "ai")]
+    no_answer: bool,
     /// Config file path (default: ~/.sysenv/config.yaml)
     #[arg(short = 'c', long, value_name = "FILE")]
     config: Option<PathBuf>,
@@ -713,6 +719,8 @@ fn run_search(s: SearchArgs) -> anyhow::Result<()> {
         s.config.as_deref(),
         s.json,
         s.debug,
+        s.ai,
+        s.no_answer,
     )
 }
 
