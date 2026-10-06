@@ -98,12 +98,24 @@ fn looks_like_url(arg: &str) -> bool {
     false
 }
 
+/// Standard HTTP methods, matched case-insensitively (so `post` / `Put` work).
+const KNOWN_METHODS: &[&str] = &[
+    "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE", "CONNECT",
+];
+
+/// A positional token is a METHOD when it is an all-uppercase word (custom
+/// verbs like `AHOY` included) or a known HTTP method in any casing
+/// (`post`/`Post`); otherwise it is treated as a URL / request item.
 fn is_method_token(arg: &str) -> bool {
-    !arg.is_empty()
+    if !arg.is_empty()
         && arg
             .chars()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_' || c == '-')
         && arg.chars().any(|c| c.is_ascii_uppercase())
+    {
+        return true;
+    }
+    KNOWN_METHODS.iter().any(|m| arg.eq_ignore_ascii_case(m))
 }
 
 /// Scan left to right (honouring backslash escapes); at each position try the
@@ -502,12 +514,15 @@ enum BodyKind {
 /// Build the request body; returns the body and an optional Content-Type
 /// to apply when the user did not set one.
 fn build_body(spec: &RequestSpec, cfg: &HttpConfig) -> Result<(BodyKind, Option<String>)> {
+    // JSON is the default content type for every request unless --form /
+    // --multipart is requested (raw bodies included, matching run()'s json_mode).
+    let json_default = cfg.json || (!cfg.form && !cfg.multipart);
     // Raw body wins: --raw, then @file/stdin body.
     if let Some(raw) = &cfg.raw {
         if !spec.data.is_empty() || !spec.uploads.is_empty() {
             bail!("--raw cannot be combined with request data items");
         }
-        let ct = if cfg.json {
+        let ct = if json_default {
             Some("application/json".to_string())
         } else {
             Some("text/plain; charset=utf-8".to_string())
@@ -519,7 +534,7 @@ fn build_body(spec: &RequestSpec, cfg: &HttpConfig) -> Result<(BodyKind, Option<
         if !spec.data.is_empty() || !spec.uploads.is_empty() {
             bail!("cannot mix raw request body with data items");
         }
-        let ct = if cfg.json {
+        let ct = if json_default {
             Some("application/json".to_string())
         } else {
             Some("text/plain; charset=utf-8".to_string())
@@ -751,7 +766,7 @@ Usage: sysenv http [flags] [METHOD] URL [ITEM...]
   @file           以文件内容作为原始请求体（管道 stdin 亦可）
 
 参数 / Flags:
-  -j, --json              JSON 模式（默认；无数据项时请求也默认 Content-Type: application/json）
+  -j, --json              JSON 模式（默认）：所有请求默认携带 Content-Type: application/json（含无 body 请求与 --raw/@file/stdin 原始体）；-f/--multipart 或显式 Content-Type 除外
   -f, --form              序列化为 application/x-www-form-urlencoded
       --multipart         强制 multipart/form-data
       --raw DATA          显式原始请求体
@@ -1372,6 +1387,34 @@ mod tests {
     }
 
     #[test]
+    fn raw_body_defaults_to_json_content_type() {
+        // --raw 原始体在默认模式（非 -f/--multipart）下 Content-Type 应为
+        // application/json，与无 body / JSON 数据请求的默认保持一致。
+        let mut cfg = hcfg();
+        cfg.raw = Some("{\"a\":1}".to_string());
+        let spec = RequestSpec {
+            method: "POST".to_string(),
+            url: "https://x.example".to_string(),
+            ..Default::default()
+        };
+        let (_kind, ct) = build_body(&spec, &cfg).unwrap();
+        assert_eq!(ct.as_deref(), Some("application/json"));
+        // @file / stdin 原始体同规则
+        let spec2 = RequestSpec {
+            method: "POST".to_string(),
+            url: "https://x.example".to_string(),
+            raw_body: Some(b"[1,2]".to_vec()),
+            ..Default::default()
+        };
+        let (_kind, ct) = build_body(&spec2, &cfg).unwrap();
+        assert_eq!(ct.as_deref(), Some("application/json"));
+        // form 模式下 raw 保持 text/plain
+        cfg.form = true;
+        let (_kind, ct) = build_body(&spec, &cfg).unwrap();
+        assert_eq!(ct.as_deref(), Some("text/plain; charset=utf-8"));
+    }
+
+    #[test]
     fn json_path_simple() {
         let mut root = Value::Null;
         json_apply(&mut root, &parse_path("name").unwrap(), Value::String("J".into())).unwrap();
@@ -1411,8 +1454,44 @@ mod tests {
     fn method_token() {
         assert!(is_method_token("GET"));
         assert!(is_method_token("AHOY"));
-        assert!(!is_method_token("get"));
+        // 小写/混合大小写的已知方法也要识别（shttp post URL）
+        assert!(is_method_token("post"));
+        assert!(is_method_token("Put"));
+        assert!(!is_method_token("getx"));
         assert!(!is_method_token("name=John"));
+    }
+
+    #[test]
+    fn known_methods_case_insensitive() {
+        // 全部已知 HTTP 方法的小写与混合大小写形式都必须识别为方法
+        for m in KNOWN_METHODS {
+            let lower = m.to_ascii_lowercase();
+            assert!(is_method_token(&lower), "lowercase `{lower}` must be a method");
+            let mixed = format!(
+                "{}{}",
+                &m[..1],
+                m[1..].to_ascii_lowercase()
+            );
+            assert!(is_method_token(&mixed), "mixed-case `{mixed}` must be a method");
+        }
+    }
+
+    #[test]
+    fn lowercase_method_in_positionals() {
+        // 回归：`shttp post https://api.example.com/v1/models Authorization:...`
+        // 不得把 `post` 当成 URL 发到 http://post/
+        let spec = parse_positionals(
+            &[
+                "post".to_string(),
+                "https://api.example.com/v1/models".to_string(),
+                "Authorization:Bearer x".to_string(),
+            ],
+            "https",
+        )
+        .unwrap();
+        assert_eq!(spec.method, "POST");
+        assert_eq!(spec.url, "https://api.example.com/v1/models");
+        assert!(spec.headers.iter().any(|(n, _)| n == "Authorization"));
     }
 
     #[test]

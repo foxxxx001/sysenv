@@ -2,6 +2,7 @@ mod ai;
 mod chat;
 mod env;
 mod httpie;
+mod image;
 mod link;
 mod path;
 mod short;
@@ -18,7 +19,7 @@ use std::process::ExitCode;
     name = "sysenv",
     version = concat!(env!("CARGO_PKG_VERSION"), " (Made by Gary-china)"),
     about = "System PATH & environment manager + httpie-compatible HTTP client (Windows / Ubuntu)",
-    long_about = "sysenv manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, installs command shims (spath/senv/slink/shttp/sai), and ships an httpie-compatible HTTP client.
+    long_about = "sysenv manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, runs web searches through the Bocha AI API (config `search` section), installs command shims (spath/senv/slink/shttp/sai/stask/ssearch), and ships an httpie-compatible HTTP client.
 
 Examples:
   sysenv path list
@@ -29,8 +30,10 @@ Examples:
   sysenv ai model gpt-4.1
   sysenv ai cn-model gpt-6.1-sol
   sysenv ai chat \"你好\"
+  sysenv ai image \"a red fox in the snow\"
   sysenv ai task -t weather country:北京
   sysenv ai provider openai
+  sysenv search \"今天的头条新闻\"
   sysenv task list
   sysenv task kill 1234
   sysenv short
@@ -77,6 +80,8 @@ Use `sysenv help http` for help (in http subcommand, -h means response headers).
     Http(HttpArgs),
     /// Query AI model info (DataLearner), provider info (models.dev), chat with configured providers
     Ai(AiArgs),
+    /// Web search via the configured Bocha AI API (api.bochaai.com/v1/web-search)
+    Search(SearchArgs),
     /// Query and kill processes (list PID/name/path; kill by PID or name; no args lists all)
     Task(TaskArgs),
     /// Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask)
@@ -228,6 +233,8 @@ enum AiCmd {
     Provider(AiProviderArgs),
     /// Chat with an LLM configured in ~/.sysenv/config.yaml (OpenAI / Anthropic compatible)
     Chat(ChatArgs),
+    /// Generate images via an OpenAI-compatible Images API (/v1/images/generations)
+    Image(ImageArgs),
     /// Run a chat task template from the config (no -t lists the tasks)
     Task(AiTaskArgs),
 }
@@ -315,12 +322,46 @@ struct ChatArgs {
 }
 
 #[derive(Args)]
+struct ImageArgs {
+    /// The prompt describing the image (multiple words are joined with spaces; when omitted, stdin is read when piped)
+    #[arg(value_name = "PROMPT")]
+    prompt: Vec<String>,
+    /// Override the top-level model from the config; accepts {provider}:{model}, {model} or comma-separated (half/full-width) model lists
+    #[arg(short = 'm', long, value_name = "MODEL")]
+    model: Option<String>,
+    /// List every model configured under `clients` (grouped by provider) and exit
+    #[arg(long)]
+    list_model: bool,
+    /// List every provider configured under `clients` and exit
+    #[arg(long)]
+    list_provider: bool,
+    /// Config file path (default: ~/.sysenv/config.yaml)
+    #[arg(short = 'c', long, value_name = "FILE")]
+    config: Option<PathBuf>,
+    /// Print the actual HTTP request (method/URL/headers/body) and response (status/headers/body)
+    #[arg(long)]
+    debug: bool,
+    /// Save the generated images into this directory (default: current directory)
+    #[arg(short = 'o', long, value_name = "DIR")]
+    output: Option<PathBuf>,
+    /// Number of images to generate (default 1)
+    #[arg(short = 'n', long, value_name = "N", default_value_t = 1)]
+    count: u32,
+    /// Image size passed to the API (default 1024x1024; e.g. 512x512, 1024x1024, 1792x1024)
+    #[arg(short = 's', long, value_name = "SIZE", default_value = image::DEFAULT_SIZE)]
+    size: String,
+    /// Request image URLs instead of base64 data (the URLs are downloaded and saved)
+    #[arg(long)]
+    url: bool,
+}
+
+#[derive(Args)]
 struct AiTaskArgs {
     /// Task name from the config (e.g. -t weather); omit to list the available tasks
     #[arg(short = 't', long, value_name = "NAME")]
     task: Option<String>,
-    /// Template parameters like key:value or key=value (e.g. country:北京)
-    #[arg(value_name = "PARAM")]
+    /// Template parameters like key:value / key=value / -key value (e.g. area:龙华 or -area 龙华)
+    #[arg(value_name = "PARAM", allow_hyphen_values = true)]
     params: Vec<String>,
     /// List the built-in search sources (name / kind / purpose / URL) and exit
     #[arg(long)]
@@ -407,6 +448,40 @@ struct ShortArgs {
     /// Do not persist the PATH addition; print a snippet instead
     #[arg(long)]
     temporary: bool,
+}
+
+#[derive(Args)]
+struct SearchArgs {
+    /// The search query (multiple words are joined with spaces; when omitted, stdin is read when piped)
+    #[arg(value_name = "QUERY")]
+    query: Vec<String>,
+    /// Time filter: noLimit (default) | oneDay | oneWeek | oneMonth | oneYear | YYYY-MM-DD | YYYY-MM-DD..YYYY-MM-DD (official `freshness` param)
+    #[arg(long, value_name = "VALUE")]
+    freshness: Option<String>,
+    /// Include AI-generated summaries in each result (official `summary` param)
+    #[arg(long)]
+    summary: bool,
+    /// Number of results to return (official `count` param, 1-50, default 10)
+    #[arg(long, value_name = "N", default_value_t = 10)]
+    count: u32,
+    /// Page number of the results (official `page` param, default 1)
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    page: u32,
+    /// Only return results from these domains (official `include_domains` param, repeatable)
+    #[arg(long = "include-domains", value_name = "DOMAIN")]
+    include_domains: Vec<String>,
+    /// Exclude results from these domains (official `exclude_domains` param, repeatable)
+    #[arg(long = "exclude-domains", value_name = "DOMAIN")]
+    exclude_domains: Vec<String>,
+    /// Config file path (default: ~/.sysenv/config.yaml)
+    #[arg(short = 'c', long, value_name = "FILE")]
+    config: Option<PathBuf>,
+    /// Print the raw JSON response instead of the formatted view
+    #[arg(long)]
+    json: bool,
+    /// Print the actual HTTP request (method/URL/headers/body) and response (status/headers/body)
+    #[arg(long)]
+    debug: bool,
 }
 
 #[derive(Args)]
@@ -505,6 +580,7 @@ fn main() -> ExitCode {
         Cmd::Link(l) => run_link(l).map(|_| 0),
         Cmd::Http(h) => run_http(h),
         Cmd::Ai(a) => run_ai(a).map(|_| 0),
+        Cmd::Search(s) => run_search(s).map(|_| 0),
         Cmd::Task(t) => run_task(t).map(|_| 0),
         Cmd::Short(s) => run_short(s).map(|_| 0),
     };
@@ -598,6 +674,18 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             c.list_model,
             c.list_provider,
         ),
+        AiCmd::Image(i) => image::cmd_image(
+            &i.prompt,
+            i.config.as_deref(),
+            i.debug,
+            i.model.as_deref(),
+            i.list_model,
+            i.list_provider,
+            i.output,
+            i.count,
+            &i.size,
+            i.url,
+        ),
         AiCmd::Task(t) => chat::cmd_task(
             t.task.as_deref(),
             &t.params,
@@ -611,6 +699,21 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
 
 fn run_short(s: ShortArgs) -> anyhow::Result<()> {
     short::cmd_short(s.dir, s.force, s.temporary)
+}
+
+fn run_search(s: SearchArgs) -> anyhow::Result<()> {
+    chat::cmd_search(
+        &s.query,
+        s.freshness.as_deref(),
+        s.summary,
+        s.count,
+        s.page,
+        &s.include_domains,
+        &s.exclude_domains,
+        s.config.as_deref(),
+        s.json,
+        s.debug,
+    )
 }
 
 fn run_task(t: TaskArgs) -> anyhow::Result<()> {

@@ -14,14 +14,16 @@
 
 * **AI 模型查询**：从 models.dev 按名称爬取模型 / Provider 信息
 
+* **联网搜索**：`sysenv search` 接入博查 AI 网页搜索 API（`api.bochaai.com/v1/web-search`），参数与官网接口一致
+
 * **httpie 兼容 HTTP 客户端**：参数与 httpie 保持一致
 
-* **快捷命令垫片**：一键生成 `spath / senv / slink / shttp / sai` 短命令
+* **快捷命令垫片**：一键生成 `spath / senv / slink / shttp / sai / ssearch / stask` 短命令
 
 
 
 ```
-sysenv 0.2.8 (Made by Gary-china)
+sysenv 0.4.12 (Made by Gary-china)
 
 Usage: sysenv <COMMAND>
 
@@ -31,8 +33,9 @@ Commands:
   link   Link a file into a PATH directory so it runs from anywhere
   http   httpie-compatible HTTP client: http [flags] [METHOD] URL [ITEM...]
   ai     Query the models.dev database of AI models & providers
+  search Web search via the configured Bocha AI API (api.bochaai.com/v1/web-search)
   task   Query and kill processes (list PID/name/path; kill by PID or name)
-  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask)
+  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask)
 ```
 
 
@@ -49,10 +52,11 @@ Commands:
 | 注册表导入导出   | `path export/import` | `.reg` / JSON / TXT 三种格式；合并或 `--replace` 整体替换；跨机迁移备份                                   |
 | 链接到 PATH  | `link`               | 硬链接 → 符号链接 → 拷贝三级自动回退；Windows `.cmd` 垫片；自定义命令名；系统目录或托管目录                               |
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
-| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
+| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
+| 联网搜索      | `search`             | 博查 AI 网页搜索 API（`POST api.bochaai.com/v1/web-search`）：`--freshness`（时间过滤）/ `--summary`（AI 摘要）/ `--count`（1-50）/ `--page` / `--include-domains` / `--exclude-domains`（域名白黑名单），参数与官网接口一致；key 取自配置 `search` 段；`--json` 原始响应 / `--debug` 请求与响应 |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
-| 快捷垫片      | `short`              | 一键安装六种短命令；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
+| 快捷垫片      | `short`              | 一键安装七种短命令（spath/senv/slink/shttp/sai/ssearch/stask）；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
 
 
 
@@ -386,7 +390,8 @@ sysenv ai chat --list-model               # 列出配置中的所有模型（含
   * `search: <源名>` —— **AI 模糊联网搜索**：内置搜索源由程序抓取头条列表回填，模型据此筛选总结。
     * **固定直连源**：`bilibili`（B 站热门视频）、`github`（近 7 天新建星榜，可选 `date` 参数如 `date:2026-01-01`）、`hn`（Hacker News 头条）、`toutiao`（今日头条热榜）、`oschina`（开源中国技术资讯）、`smzdm`（什么值得买今日好价，含价格）
     * **AI 聚合搜索源**（目标站点数据接口带签名/WAF，程序改用搜索引擎抓取相关结果回填，Sogou 优先、Bing 兜底，模型如实筛选总结）：`enlightent`（电视剧热播榜）、`dongchedi`（懂车帝汽车资讯）、`autohome`（汽车之家汽车新闻）；`sogou` 为通用聚合源，需传 `q` / `query` 参数（如 `q:电视剧 热播 榜单`）
-    * **直连官方接口源**（v0.4.10）：`szhousing` —— 深圳楼盘销售情况。平台 API（`/szfdcscjy/*`）不经过瑞数反爬（瑞数只挂 HTML 首页），程序**纯 HTTP 直查官方接口，无需浏览器、不依赖本机任何软件**（Windows/Ubuntu 一致）。`name` 参数为楼盘名称（可选，如 `name:星悦尊府`），未提供时返回近期在售项目列表
+    * **直连官方接口源**（v0.4.10）：`szhousing` —— 深圳楼盘销售情况。平台 API（`/szfdcscjy/*`）不经过瑞数反爬（瑞数只挂 HTML 首页），程序**纯 HTTP 直查官方接口，无需浏览器、不依赖本机任何软件**（Windows/Ubuntu 一致）。`name` 参数为楼盘名称（可选，如 `name:星悦尊府`），`area` 参数按区域查询（可选，如 `area:龙华` 或 `-area 龙华`），均未提供时返回近期在售项目列表
+    * **博查 API 搜索源**（v0.4.12）：`bochaai` —— 博查 AI 网页搜索（`POST api.bochaai.com/v1/web-search`）。key 取自配置顶层 `search:` 段（如 `- name: bochaai, key: sk-...`）；`q` / `query` 为查询词（必填），可选参数与官网接口一致：`freshness`（`oneDay`/`oneWeek`/`oneMonth`/`oneYear`/`noLimit`/日期/区间）、`summary`（`true`/`false`）、`count`（1-50）、`page`、`include_domains` / `exclude_domains`（逗号分隔多域名）
     * **搜索源清单**：`sysenv ai task --list-source` 列出全部内置搜索源的名称、类型（`api` 直连数据接口 / `search` AI 聚合搜索 Sogou 优先 Bing 兜底 / `generic` 通用搜索需 `q`/`query` 参数）、用途与访问地址（v0.4.10）
     * **结果净化**（v0.4.9）：AI 聚合搜索自动过滤百度百科、搜狗百科、维基百科、互动百科等低价值词条（标题与 URL 双通道识别），避免搜索结果被百科词条占满；Sogou 请求失败时自动降级 Bing，两引擎均无可过滤结果时合并原始结果兜底，保证任务不因过滤而失败
 
@@ -447,10 +452,10 @@ tasks:
     search: dongchedi
   # —— v0.4.6 新增 ——
   - name: szhousing
-    desc: 查询深圳楼盘销售情况（深圳房地产信息平台公开数据；提供楼盘名称 name 参数可查具体项目各楼栋销售状态统计，未提供则返回在售项目列表）
+    desc: 查询深圳楼盘销售情况（深圳房地产信息平台公开数据；提供楼盘名称 name 参数可查具体项目各楼栋销售状态统计，area 参数按区域查询如 area:龙华，未提供则返回在售项目列表）
     msg: 请基于工具执行结果说明深圳楼盘的房源销售/成交情况，注明来源链接
     search: szhousing
-    params: [name]
+    params: [name, area]
 ```
 
 实际输出示例（`sysenv ai task 今天深圳的天气如何`，模型选 weather → 程序请求 open-meteo → 回填后回答）：
@@ -465,6 +470,63 @@ tasks:
 - 温度：当前气温约为 27.2°C
 - 天气状况：大致晴朗或多云（WMO code 1）
 ...
+```
+
+#### 5.4 AI 图片生成（`ai image`）
+
+通过 Provider 的 OpenAI 兼容 **Images API**（`POST {api_base}/images/generations`，Bearer 鉴权）生成图片并保存到本地。
+
+* 配置文件与 `ai chat` 完全一致（默认 `~/.sysenv/config.yaml`，`-c/--config` 覆盖），只支持 **OpenAI 兼容 Provider（`type: openai`）**；`type: anthropic` 目标在发请求前明确报错（Anthropic 没有 Images API）
+
+* **模型选择与 `ai chat` 同一套规则**：顶层 `model` 或 `-m/--model`（`{provider}:{model}` / `{model}` / `provider:*` / 逗号分隔多选），多目标按 `weight` 加权轮询，失败自动降权并尝试下一个模型，替补成功升权，权重写回配置文件
+
+* **参数**：`-o/--output DIR` 保存目录（默认当前目录，自动创建）；`-n/--count N` 生成数量（默认 1）；`-s/--size SIZE` 尺寸（默认 `1024x1024`，原样传给 API，如 `512x512` / `1792x1024`）；`--url` 请求图片 URL 并下载保存（默认请求 `b64_json`，本地解码保存，无需二次网络请求）
+
+* **保存**：文件名 `sysenv-ai-image-<YYYYMMDD-HHMMSS>-<序号>.<扩展名>`，扩展名按文件头魔数识别（png / jpg / gif / webp），重名自动追加 `-1`、`-2` 后缀不覆盖；每张图片的保存路径打印到 stdout
+
+* 提示词来源：命令行参数（多段自动拼接）；无参数时若 stdin 非终端则读取管道内容；`--debug` 打印实际 HTTP 请求与响应到 stderr
+
+```
+sysenv ai image "a red fox in the snow"                  # 默认配置 + 默认模型，保存到当前目录
+sysenv ai image 一只 雪地里的 红色狐狸                   # 多参数自动拼接（空格分隔）
+echo "赛博朋克风格的城市夜景" | sysenv ai image          # stdin 管道
+sysenv ai image "樱花树下的小猫" -o pics -n 2 -s 512x512 # 2 张 512x512，保存到 pics/
+sysenv ai image "海报主视觉" -m bigmodel:cogview-4       # 覆盖顶层 model，只用 bigmodel 的该模型
+sysenv ai image "风景" -m "agnes:*,bigmodel:cogview-4"   # 多模型逗号分隔，加权轮询
+sysenv ai image "风景" --url -o pics                     # 请求 URL 版并下载保存
+sysenv ai image --list-provider --list-model             # 列出配置中的 Provider / 模型
+```
+
+#### 5.5 网络搜索（`search`）
+
+通过**博查 AI 网页搜索 API**（`POST https://api.bochaai.com/v1/web-search`，Bearer 鉴权）提供联网搜索能力，**请求参数与官网接口完全一致**。
+
+* **API key**：读取配置顶层 `search:` 段（默认 `~/.sysenv/config.yaml`，`-c/--config` 覆盖），首个 `name: bochaai` 条目生效，未配置时明确报错。示例：
+
+  ```yaml
+  search:
+    - name: bochaai
+      key: sk-xxxxx
+  ```
+
+* **参数（与官网一致）**：
+  * `query`：搜索词（位置参数，多词自动空格连接；无参数且 stdin 为管道时读取 stdin）
+  * `--freshness <VALUE>`：时间过滤 —— `noLimit`（默认）/ `oneDay` / `oneWeek` / `oneMonth` / `oneYear` / `YYYY-MM-DD` / `YYYY-MM-DD..YYYY-MM-DD`
+  * `--summary`：返回 AI 摘要（`answer`）并附带每条结果的摘要 / 站点 / 发布时间
+  * `--count <N>`：返回条数（1-50，默认 10）
+  * `--page <N>`：页码（默认 1）
+  * `--include-domains <D>`：只返回这些域名的结果（可重复）
+  * `--exclude-domains <D>`：排除这些域名的结果（可重复）
+  * `--json`：打印原始 JSON 响应（含 `answer` 与 `pagination`）；`--debug`：打印实际 HTTP 请求与响应
+
+```
+sysenv search "2026年诺贝尔物理学奖"                     # 默认 10 条，标题 + 链接
+sysenv search 深圳 今天 天气 --summary --count 5        # 5 条并带 AI 摘要 / 站点 / 时间
+sysenv search "rust 2026" --freshness oneMonth          # 只搜最近一个月
+sysenv search "cargo 教程" --include-domains rust-lang.org docs.rs   # 只从指定站点搜
+sysenv search "期货 行情" --exclude-domains baidu.com --json          # 排除站点 + 原始 JSON
+echo "今天有什么热门新闻" | sysenv search               # stdin 管道查询
+ssearch "五一 放假 安排"                                 # ssearch 垫片等价于 sysenv search
 ```
 
 ## 6. 进程管理（`task`）
@@ -502,7 +564,7 @@ sysenv task kill -f 1234          # 强制终止（Linux 发送 SIGKILL）
 
 * 方法自动推导：URL 项中不含方法时自动 GET；含数据项时自动 POST
 
-* **默认 JSON**：`key=value` 自动构造成 JSON 对象；**所有请求默认带 `Content-Type: application/json`**（即使无数据项；可用 `-f/--form`、`--multipart` 或显式 `Content-Type:xxx` 头覆盖）；`-f` 切换表单、`--multipart` 文件上传
+* **默认 JSON**：`key=value` 自动构造成 JSON 对象；**所有请求默认带 `Content-Type: application/json`**（即使无数据项；`--raw` / `@file` / `--file` / stdin 原始体亦同；可用 `-f/--form`、`--multipart` 或显式 `Content-Type:xxx` 头覆盖）；`-f` 切换表单、`--multipart` 文件上传
 
 * 完整请求项语法（与 httpie 一致）：数据字段、原始 JSON、查询参数、请求头、multipart 文件、`@file` 原始体、嵌套 JSON 构建（`a[b][c]=v`、`a[]=v`、`a[1]=v`）
 

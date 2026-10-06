@@ -64,14 +64,34 @@ struct Project {
     passdate: String,
 }
 
-/// 按楼盘名称搜索一手预售项目
-fn search_projects(client: &reqwest::blocking::Client, name: &str) -> Result<Vec<Project>> {
+/// 区域参数规范化：`龙华区` → `龙华`，`大鹏新区` → `大鹏`（平台接口 zone 值为不带「区」的区域名）
+fn normalize_zone(raw: &str) -> String {
+    let mut z = raw.trim().to_string();
+    if let Some(s) = z.strip_suffix("区") {
+        z = s.to_string();
+    }
+    if let Some(s) = z.strip_suffix("新") {
+        z = s.to_string();
+    }
+    z
+}
+
+/// 从任务参数读取区域（支持 `area` / `zone` 两种键名），规范化后返回
+fn arg_zone(args: &HashMap<String, String>) -> Option<String> {
+    args.get("area")
+        .or_else(|| args.get("zone"))
+        .map(|s| normalize_zone(s))
+        .filter(|s| !s.is_empty())
+}
+
+/// 按楼盘名称（可选）与区域（可选，`zone` 字段，空串表示不限）搜索一手预售项目
+fn search_projects(client: &reqwest::blocking::Client, name: &str, zone: &str) -> Result<Vec<Project>> {
     let body = serde_json::json!({
         "project": name,
         "pageIndex": 1,
         "pageSize": 50,
         "total": 0,
-        "zone": ""
+        "zone": zone
     });
     let data = post_json(client, "/szfdcscjy/ysf/publicity/getYsfYsPublicity", &body)?;
     let list = data["list"].as_array().cloned().unwrap_or_default();
@@ -160,8 +180,11 @@ fn house_status(
 
 /// szhousing 任务入口：纯 HTTP 直查平台官方接口，返回文本报表。
 ///
-/// `args["name"]`（或 `input`）为楼盘名称（模糊匹配）；未提供时返回近期在售
-/// 预售项目列表（第一页）。
+/// - `args["name"]`（或 `input`）为楼盘名称（模糊匹配）
+/// - `args["area"]`（或 `zone`）为区域名（如 `龙华`），支持 `龙华区` 等带「区」写法
+///
+/// name + area：查该区域内匹配楼盘；仅 area：列出该区域在售预售项目；
+/// 仅 name：全区域匹配楼盘；均未提供：近期在售预售项目列表（第一页）。
 pub fn report(args: &HashMap<String, String>) -> Result<String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -173,17 +196,21 @@ pub fn report(args: &HashMap<String, String>) -> Result<String> {
         .or_else(|| args.get("input"))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    let zone = arg_zone(args);
     match name {
-        Some(name) => project_report(&client, &name),
-        None => recent_projects_report(&client),
+        Some(name) => project_report(&client, &name, zone.as_deref()),
+        None => recent_projects_report(&client, zone.as_deref()),
     }
 }
 
-/// 指定楼盘：项目信息 + 各楼栋销售状态统计
-fn project_report(client: &reqwest::blocking::Client, name: &str) -> Result<String> {
-    let projects = search_projects(client, name)?;
+/// 指定楼盘：项目信息 + 各楼栋销售状态统计；`zone` 非空时限定在该区域匹配
+fn project_report(client: &reqwest::blocking::Client, name: &str, zone: Option<&str>) -> Result<String> {
+    let projects = search_projects(client, name, zone.unwrap_or(""))?;
     if projects.is_empty() {
-        bail!("未找到名称包含「{name}」的在售预售项目");
+        match zone {
+            Some(z) => bail!("未找到名称包含「{name}」且在「{z}」的在售预售项目"),
+            None => bail!("未找到名称包含「{name}」的在售预售项目"),
+        }
     }
     let pick = projects
         .iter()
@@ -226,21 +253,32 @@ fn project_report(client: &reqwest::blocking::Client, name: &str) -> Result<Stri
     Ok(out)
 }
 
-/// 未指定楼盘：返回近期在售预售项目列表（第一页）
-fn recent_projects_report(client: &reqwest::blocking::Client) -> Result<String> {
-    let projects = search_projects(client, "")
-        .with_context(|| "未提供楼盘名称且获取在售项目列表失败；可传 name 参数指定楼盘（如 name:星悦尊府）")?;
-    if projects.is_empty() {
-        bail!("未获取到在售预售项目列表；可传 name 参数指定楼盘（如 name:星悦尊府）");
+/// 未指定楼盘：返回在售预售项目列表（第一页）；`zone` 非空时限定区域
+fn recent_projects_report(client: &reqwest::blocking::Client, zone: Option<&str>) -> Result<String> {
+    let projects = search_projects(client, "", zone.unwrap_or(""))?;
+    match zone {
+        Some(z) => {
+            if projects.is_empty() {
+                bail!("未获取到「{z}」的在售预售项目；可换区域或提供 name 参数指定楼盘（如 name:星悦尊府）");
+            }
+        }
+        None => {
+            if projects.is_empty() {
+                bail!("未获取到在售预售项目列表；可传 name 参数指定楼盘（如 name:星悦尊府），或 area 参数按区域查询（如 area:龙华）");
+            }
+        }
     }
-    let mut out = format!("近期在售预售项目（前 {} 个）：\n", projects.len());
+    let mut out = match zone {
+        Some(z) => format!("「{z}」在售预售项目（前 {} 个）：\n", projects.len()),
+        None => format!("近期在售预售项目（前 {} 个）：\n", projects.len()),
+    };
     for p in &projects {
         out.push_str(&format!(
             "  - {} [{}] 预售证 {} 开发商 {} 批准时间 {}\n",
             p.name, p.zone, p.license, p.developer, p.passdate
         ));
     }
-    out.push_str("\n查询具体楼盘销售统计请提供 name 参数（如 name:星悦尊府）。");
+    out.push_str("\n查询具体楼盘销售统计请提供 name 参数（如 name:星悦尊府），或 area 参数按区域查询（如 area:龙华）。");
     out.push_str("\n数据来源：深圳市房地产信息平台 https://fdc.zjj.sz.gov.cn/");
     Ok(out)
 }

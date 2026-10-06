@@ -7,11 +7,12 @@ A cross-platform (Windows / Ubuntu) system Http client & AI model lookup & PATH 
 - **Link into PATH**: put any file into a PATH directory so it can be run from anywhere
 - **Environment variables**: read / set / unset / list system variables, optionally persisted or session-only
 - **AI model lookup**: query model & provider information from models.dev by name
+- **Web search**: `sysenv search` runs web searches through the Bocha AI API (`api.bochaai.com/v1/web-search`) with official request parameters
 - **httpie-compatible HTTP client**: flags follow httpie conventions
-- **Shortcut shims**: install `spath / senv / slink / shttp / sai` short commands with one command
+- **Shortcut shims**: install `spath / senv / slink / shttp / sai / ssearch / stask` short commands with one command
 
 ```
-sysenv 0.2.8 (Made by Gary-china)
+sysenv 0.4.12 (Made by Gary-china)
 
 Usage: sysenv <COMMAND>
 
@@ -21,8 +22,9 @@ Commands:
   link   Link a file into a PATH directory so it runs from anywhere
   http   httpie-compatible HTTP client: http [flags] [METHOD] URL [ITEM...]
   ai     Query the models.dev database of AI models & providers
+  search Web search via the configured Bocha AI API (api.bochaai.com/v1/web-search)
   task   Query and kill processes (list PID/name/path; kill by PID or name)
-  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask)
+  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask)
 ```
 
 ---
@@ -37,8 +39,9 @@ Commands:
 | Environment variables | `env` | get / set / unset / list; persisted by default; `--temporary` for the current shell only; `machine` scope |
 | AI model lookup | `ai` | `ai model` (models.dev: 226 providers, 8000+ models; 24 h cache; canonical preference; no args lists all; `--date` / `--open` / `--search / --list / --json / --refresh`); `ai cn-model` (datalearner: ~1015 models; `--date` filters by published); `ai chat` (multi-provider weighted round-robin chat, OpenAI / Anthropic compatible); `ai task` (task-template chat) |
 | Process management | `task` | no args lists all processes; list (PID / name / path, fuzzy name match); `-o` shows the process using a port; kill by PID or name; `-f` force |
+| Web search | `search` | Bocha AI web search API (`POST api.bochaai.com/v1/web-search`): `--freshness` (time filter) / `--summary` (AI summaries) / `--count` (1-50) / `--page` / `--include-domains` / `--exclude-domains`, official parameters; key from the config `search` section; `--json` raw response / `--debug` request & response |
 | HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
-| Shortcut shims | `short` | installs six short commands at once; Windows `.cmd` / Linux sh scripts; auto PATH registration |
+| Shortcut shims | `short` | installs seven short commands at once (spath/senv/slink/shttp/sai/ssearch/stask); Windows `.cmd` / Linux sh scripts; auto PATH registration |
 
 ---
 
@@ -256,12 +259,38 @@ Assembles a chat message from a predefined `tasks` template, then sends it throu
 - `-t <name>`: picks the task whose `name` matches and builds the message from its `msg` (`desc` is the task description)
 - `msg` placeholders `{key:default}`: pass `key:value` or `key=value` on the command line to substitute, otherwise the default is used (e.g. `{country:深圳}` + `country:北京` → 北京)
 - `msg` prefixes: `file://` reads a local **relative-path** file as the message; `url:` fetches a web page as the message
+- Tasks may declare a tool executed by the program (no local shell commands) and fed back to the model as real data:
+  - `api: <URL template>` — fixed HTTP API: `{key}` / `{key:default}` placeholders are filled from the model tool arguments
+  - `search: <source>` — built-in search source: `bilibili` / `github` / `hn` / `toutiao` / `oschina` / `smzdm` (direct data APIs), `sogou` / `enlightent` / `dongchedi` / `autohome` (aggregate search, Sogou first with Bing fallback), `szhousing` (Shenzhen housing official API), `bochaai` (Bocha AI web search API, key from the config `search` section; args: `q`/`query`, optional `freshness` / `summary` / `count` / `page` / `include_domains` / `exclude_domains`)
+- `sysenv ai task --list-source` prints the full source catalogue (name / kind / purpose / URL)
 
 ```
 sysenv ai task                          # list the tasks (name / desc, at most 10)
 sysenv ai task -t weather               # build the message with defaults and chat
 sysenv ai task -t weather country:北京   # substitute country with 北京
 sysenv ai task -t weather country=北京   # '=' syntax is equivalent
+```
+
+#### 5.4 Web search (`search`)
+
+Web search through the **Bocha AI Web Search API** (`POST https://api.bochaai.com/v1/web-search`, Bearer auth). All request parameters follow the official interface.
+
+- **API key**: read from the top-level `search` section of the config (default `~/.sysenv/config.yaml`, `-c/--config` overrides); the first `name: bochaai` entry wins:
+  ```yaml
+  search:
+    - name: bochaai
+      key: sk-xxxxx
+  ```
+- **Parameters (official)**: `query` (positional, joined with spaces; stdin is read when piped); `--freshness` (`noLimit` default / `oneDay` / `oneWeek` / `oneMonth` / `oneYear` / `YYYY-MM-DD` / range); `--summary` (AI summary + per-result snippet / site / publish time); `--count` (1-50, default 10); `--page` (default 1); `--include-domains` / `--exclude-domains` (repeatable domain filters); `--json` (raw response); `--debug` (actual request & response)
+
+```
+sysenv search "2026 Nobel Prize in Physics"            # default 10 results: title + link
+sysenv search Shenzhen weather today --summary --count 5
+sysenv search "rust 2026" --freshness oneMonth
+sysenv search "cargo tutorial" --include-domains rust-lang.org docs.rs
+sysenv search "futures price" --exclude-domains baidu.com --json
+echo "today's hot news" | sysenv search                # pipe via stdin
+ssearch "holiday schedule"                              # ssearch shim == sysenv search
 ```
 
 ## 6. Process management (`task`)
