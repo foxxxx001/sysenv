@@ -1,6 +1,7 @@
 mod ai;
 mod chat;
 mod env;
+mod file;
 mod httpie;
 mod image;
 mod link;
@@ -89,6 +90,8 @@ Use `sysenv help http` for help (in http subcommand, -h means response headers).
     Search(SearchArgs),
     /// Query and kill processes (list PID/name/path; kill by PID or name; no args lists all)
     Task(TaskArgs),
+    /// fd/sd-style text search and replacement: search stdin or a directory tree, or replace a string in place
+    File(FileArgs),
     /// Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask)
     Short(ShortArgs),
 }
@@ -474,6 +477,28 @@ enum TaskCmd {
 }
 
 #[derive(Args)]
+struct FileArgs {
+    /// PATTERN, or PATTERN PATH, or OLD NEW PATH (path = file or directory)
+    #[arg(value_name = "ARGS")]
+    args: Vec<String>,
+    /// Only search files with this extension (repeatable; leading dot optional, e.g. -e py -e md)
+    #[arg(short = 'e', long, value_name = "EXT")]
+    ext: Vec<String>,
+    /// Case-insensitive matching
+    #[arg(short = 'i', long)]
+    ignore_case: bool,
+    /// Only search plain-text files (txt/md/log/...); by default source-code files are searched too
+    #[arg(short = 't', long)]
+    text_only: bool,
+    /// Match whole words only
+    #[arg(short = 'w', long)]
+    word: bool,
+    /// Show NUM lines of context around every match
+    #[arg(short = 'c', long, value_name = "NUM")]
+    context: Option<usize>,
+}
+
+#[derive(Args)]
 struct ShortArgs {
     /// Install the shims into this directory instead of the managed bin directory
     #[arg(long, value_name = "DIR")]
@@ -623,6 +648,7 @@ fn main() -> ExitCode {
         Cmd::Http(h) => run_http(h),
         Cmd::Ai(a) => run_ai(a).map(|_| 0),
         Cmd::Search(s) => run_search(s).map(|_| 0),
+        Cmd::File(f) => file::cmd_file(&f.args, &f.ext, f.ignore_case, f.text_only, f.word, f.context).map(|_| 0),
         Cmd::Task(t) => run_task(t).map(|_| 0),
         Cmd::Short(s) => run_short(s).map(|_| 0),
     };

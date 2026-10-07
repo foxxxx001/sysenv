@@ -40,6 +40,7 @@ Commands:
 | AI model lookup | `ai` | `ai model` (models.dev: 226 providers, 8000+ models; 24 h cache; canonical preference; no args lists all; `--date` / `--open` / `--search / --list / --json / --refresh`); `ai cn-model` (datalearner: ~1015 models; `--date` filters by published); `ai info` (local config lookup: `info provider` name/api_base/api_key, `info model` `{provider}:{name}` list, `info price` models.dev prices, `info balance` official balance via api_key, `info sale-price` official pricing page scrape); `ai chat` (multi-provider weighted round-robin chat, OpenAI / Anthropic compatible); `ai task` (task-template chat) |
 | Process management | `task` | no args lists all processes; list (PID / name / path, fuzzy name match); `-o` shows the process using a port; kill by PID or name; `-f` force |
 | Web search | `search` | Bocha AI web search API (`POST api.bochaai.com/v1/web-search`): `--freshness` (time filter) / `--summary` (AI summaries) / `--count` (1-50) / `--page` / `--include-domains` / `--exclude-domains`, official parameters; key from the config `search` section; `--json` raw response / `--debug` request & response. `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards (`--no-answer` disables the AI answer) |
+| Text search & replace | `file` | fd/sd-style: 1 arg searches stdin; 2 args search a directory tree of text/source files (`-e` extension filter / `-i` case-insensitive / `-t` plain text only / `-w` whole words / `-c` context); 3 args OLD NEW PATH replace in place |
 | HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
 | Shortcut shims | `short` | installs seven short commands at once (spath/senv/slink/shttp/sai/ssearch/stask); Windows `.cmd` / Linux sh scripts; auto PATH registration |
 
@@ -323,6 +324,35 @@ sysenv ai info price "openai，deepseek"     # full-width commas work too
 sysenv ai info balance minimax              # query MiniMax's official balance with its api_key
 sysenv ai info balance alibaba-cn           # Alibaba Bailian: official limits + console hint
 sysenv ai info sale-price agnes             # scrape agnes' official pricing page (all models)
+```
+
+#### 5.6 Text search & replacement (`file`)
+
+fd/sd-style: search stdin or a directory tree of text/source files, or replace a string in place. Matching runs on the Unicode char level (`-i` folds case per char, so non-ASCII text works too).
+
+* `file PATTERN` — read stdin and print matching lines (piping: `type a.txt | sysenv file hello`)
+* `file PATTERN PATH` — search PATH (a file or a directory tree) over all known text and source files (txt/md/py/java/c/...), printing `path:line:content`
+* `file OLD NEW PATH` — replace OLD with NEW in place under PATH, printing per-file counts and a summary
+
+Options:
+
+* `-e EXT` — only search files with this extension (repeatable, leading dot optional, e.g. `-e py -e md`)
+* `-i` — case-insensitive matching (search and replacement)
+* `-t` — only plain-text files (txt/md/log/csv/json/...), excluding source code
+* `-w` — match whole words only (not preceded/followed by a letter, digit or `_`)
+* `-c NUM` — show NUM lines of context around every match (`--` separates groups)
+
+Traversal: hidden entries (`.` prefix) and common noise directories (`.git` / `node_modules` / `target` / `dist` / `build` / `__pycache__` ...) are skipped; binary files (NUL bytes) are skipped; replacement honors `-e` / `-t` / `-i` / `-w` too.
+
+```
+sysenv file hello                              # search stdin (type a.txt | sysenv file hello)
+sysenv file hello D:\projects                  # search the D:\projects tree
+sysenv file hello D:\projects -e py -e md      # only .py and .md
+sysenv file HELLO D:\projects -i               # case-insensitive
+sysenv file hello D:\projects -t               # plain text only (no source code)
+sysenv file hello D:\projects -w -c 2          # whole words + 2 lines of context
+sysenv file hello hi D:\projects               # replace hello -> hi in place
+sysenv file HELLO hi D:\projects -i            # case-insensitive replacement
 ```
 
 ## 6. Process management (`task`)
