@@ -41,6 +41,7 @@ Commands:
 | Process management | `task` | no args lists all processes; list (PID / name / path, fuzzy name match); `-o` shows the process using a port; kill by PID or name; `-f` force |
 | Web search | `search` | Bocha AI web search API (`POST api.bochaai.com/v1/web-search`): `--freshness` (time filter) / `--summary` (AI summaries) / `--count` (1-50) / `--page` / `--include-domains` / `--exclude-domains`, official parameters; key from the config `search` section; `--json` raw response / `--debug` request & response. `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards (`--no-answer` disables the AI answer) |
 | Text search & replace | `file` | fd/sd-style: 1 arg searches stdin; 2 args search a directory tree of text/source files (`-e` extension filter / `-i` case-insensitive / `-t` plain text only / `-w` whole words / `-c` context); 3 args OLD NEW PATH replace in place |
+| Format conversion | `con` | json / csv / md / yaml interconversion: stdin by default (`cat a.json | sysenv con`), `-file` reads a file, `-i` input format, `-o` output format, `-out` writes a file; tables map to/from object arrays (type inference + escaping) |
 | HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
 | Shortcut shims | `short` | installs seven short commands at once (spath/senv/slink/shttp/sai/ssearch/stask); Windows `.cmd` / Linux sh scripts; auto PATH registration |
 
@@ -353,6 +354,26 @@ sysenv file hello D:\projects -t               # plain text only (no source code
 sysenv file hello D:\projects -w -c 2          # whole words + 2 lines of context
 sysenv file hello hi D:\projects               # replace hello -> hi in place
 sysenv file HELLO hi D:\projects -i            # case-insensitive replacement
+```
+
+#### 5.7 Format conversion (`con`)
+
+Interconvert json / csv / md / yaml. Reads stdin by default (piping: `cat a.json | sysenv con`) and prints to stdout; `-out` writes to a file instead.
+
+* `-file F` — read from file F (stdin when omitted; a json/csv/md/yaml extension also infers the input format)
+* `-i FMT` — input format `json | csv | md | yaml` (auto-detected from content when omitted)
+* `-o FMT` — output format `json | csv | md | yaml` (defaults to the input format, i.e. format-only display)
+* `-out F` — write the result to file F (stdout by default)
+
+Table conversions (csv / md) map to/from arrays of objects: the CSV first row is the header; Markdown tables parse header + data rows. Cells are type-inferred (null / bool / int / float / string); commas, quotes, newlines and `|` are escaped on output (`\|`). YAML parsing falls back to a tab-tolerant parser when serde_yaml fails, so real configs with tab indentation work.
+
+```
+cat a.json | sysenv con                        # stdin, auto-detect, print (defaults to the input format)
+sysenv con -file a.json -o csv                 # json -> csv (stdout)
+sysenv con -i csv -o json < a.csv              # csv -> json
+sysenv con -file a.yaml -o md -out out.md      # yaml -> markdown, write to out.md
+sysenv con -file config.yaml -o json           # real config (tab indentation) -> json
+type a.csv | sysenv con -o md                  # csv -> markdown table
 ```
 
 ## 6. Process management (`task`)

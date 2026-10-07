@@ -1,5 +1,6 @@
 mod ai;
 mod chat;
+mod convert;
 mod env;
 mod file;
 mod httpie;
@@ -92,6 +93,8 @@ Use `sysenv help http` for help (in http subcommand, -h means response headers).
     Task(TaskArgs),
     /// fd/sd-style text search and replacement: search stdin or a directory tree, or replace a string in place
     File(FileArgs),
+    /// Convert between json / csv / md / yaml (stdin or -file; -i input; -o output; -out writes a file)
+    Con(ConArgs),
     /// Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask)
     Short(ShortArgs),
 }
@@ -499,6 +502,13 @@ struct FileArgs {
 }
 
 #[derive(Args)]
+struct ConArgs {
+    /// Raw tokens, custom-parsed for single-dash long flags: -file F / -i FMT / -o FMT / -out F
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    raw: Vec<String>,
+}
+
+#[derive(Args)]
 struct ShortArgs {
     /// Install the shims into this directory instead of the managed bin directory
     #[arg(long, value_name = "DIR")]
@@ -649,6 +659,7 @@ fn main() -> ExitCode {
         Cmd::Ai(a) => run_ai(a).map(|_| 0),
         Cmd::Search(s) => run_search(s).map(|_| 0),
         Cmd::File(f) => file::cmd_file(&f.args, &f.ext, f.ignore_case, f.text_only, f.word, f.context).map(|_| 0),
+        Cmd::Con(c) => convert::cmd_con(&c.raw).map(|_| 0),
         Cmd::Task(t) => run_task(t).map(|_| 0),
         Cmd::Short(s) => run_short(s).map(|_| 0),
     };

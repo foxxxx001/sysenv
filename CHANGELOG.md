@@ -2,6 +2,19 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sysenv-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.20（2026-10-07）
+
+### 新增
+- **`sysenv con`（json / csv / md / yaml 四种格式互转）**：
+  - 默认从 stdin 管道读取（`cat a.json | sysenv con`）；`-file F` 改从文件读取（也可按扩展名推断输入格式）
+  - `-i FMT` 指定输入格式：json | csv | md | yaml（省略时自动检测内容格式）
+  - `-o FMT` 指定输出格式：json | csv | md | yaml（省略时按输入格式输出，即只格式化显示）
+  - `-out F` 把结果写到文件，默认只输出到 stdout
+  - 表格类转换（csv / md ↔ json / yaml）映射为对象数组：CSV 首行为表头，Markdown 表格转对象数组；单元格做 null / bool / int / float 类型推断；字段含逗号、引号、换行、`|` 时正确转义（`\|`）
+  - YAML 解析先走 serde_yaml，失败时回退到项目内置 tab-tolerant 解析器（兼容真实配置中的 tab 缩进）
+  - 新增依赖 serde_yaml 0.9；serde_json 开启 preserve_order 保持键序
+- 版本 0.4.19 -> 0.4.20
+
 ## v0.4.19（2026-10-07）
 
 ### 新增

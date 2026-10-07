@@ -147,7 +147,7 @@ pub(crate) fn load_config(path: Option<&Path>) -> Result<(Config, PathBuf)> {
 // --- minimal block-YAML parser (scalars / lists / maps, tab-tolerant) ------
 
 #[derive(Debug, Clone, PartialEq)]
-enum YVal {
+pub(crate) enum YVal {
     Scalar(String),
     List(Vec<YVal>),
     Map(Vec<(String, YVal)>),
@@ -246,7 +246,7 @@ fn parse_scalar_or_list(value: &str) -> YVal {
     }
 }
 
-fn parse_yaml(text: &str) -> Result<YVal> {
+pub(crate) fn parse_yaml(text: &str) -> Result<YVal> {
     let lines = preprocess_yaml(text);
     let (v, next) = parse_block(&lines, 0, 0)?;
     if next != lines.len() {
