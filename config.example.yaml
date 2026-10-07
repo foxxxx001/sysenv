@@ -1,0 +1,51 @@
+# sysenv ai chat / ai task 配置文件示例（脱敏模板）
+# 真实使用时请复制为 ~/.sysenv/config.yaml 并填入你自己的 api_key。
+# 默认路径：~/.sysenv/config.yaml；也可用 `sysenv ai chat -c FILE` / `sysenv ai task -c FILE` 覆盖。
+
+# 顶层 model：选择聊天模型（可省略；`ai chat -m/--model` 可临时覆盖它）
+#   - 缺失           -> 第一个 provider 的第 1 个 model
+#   - provider:model -> 指定 provider 下名称匹配的 model
+#   - provider:*     -> 该 provider 下所有 model，按 weight 加权轮询
+#   - model（裸名）  -> 所有 provider 中名称匹配的 model，按 weight 加权轮询
+#   - 以上可用半角逗号 , 或全角逗号 ，分隔多个选择，按权重轮询使用（如 "agnes:*,claude:claude-3-5-sonnet"）
+model: agnes-3.0-flash
+
+# clients：provider（供应商）配置列表
+clients:
+  # type: openai（默认，兼容 "open"）| anthropic
+  # 必填：name / api_base / api_key / models
+  - type: openai
+    name: agnes
+    api_base: https://apihub.example-ai.cn/v1
+    api_key: sk-REPLACE-WITH-YOUR-KEY
+    models:
+      - name: agnes-3.0-flash
+        weight: 1          # 轮询权重，取值范围 0-9，缺省 1；请求失败自动 -1（最低 1），替补成功自动 +1（最高 9），并写回本配置
+        # max_input_tokens / type 可手动填写；缺失时发送请求前自动从 models.dev 按模型名查询并写回（max_input_tokens=context，type=模态并集）
+        # max_input_tokens: 524288
+        # type: text,image
+  # Anthropic 示例（Claude API 标准：/v1/messages，x-api-key）
+  - type: anthropic
+    name: claude
+    api_base: https://api.anthropic.com
+    api_key: sk-ant-REPLACE-WITH-YOUR-KEY
+    models:
+      - name: claude-3-5-sonnet
+
+# search：联网搜索 API key（`sysenv search` 与 ai task 的 bochaai 搜索源共用）
+# 首个 name 为 bochaai 的条目生效；key 在博查开放平台（open.bochaai.com）申请
+search:
+  - name: bochaai
+    key: sk-REPLACE-WITH-YOUR-KEY
+
+# tasks：ai task 任务模板（name 必填，desc 描述，msg 聊天消息）
+# `ai task -t * "用户需求"`：对全部任务打分（0-10 分匹配度，0 不匹配 / 10 完全匹配），输出 TASK / DESC / SCORE 并按分数排序
+tasks:
+  - name: weather
+    desc: 用来获取天气信息
+    # {key:默认值} 占位符：命令行传 country:北京 则替换，否则用默认值 深圳
+    # msg 以 file:// 开头读取本地相对路径文件；以 url: 开头抓取网络内容
+    msg: 我在{country:深圳},今天的天气如何，我要询问温度、湿度、下雨概率等信息
+
+# 顶层 stream：true 时 ai chat / ai task 默认 SSE 流式输出（--no-stream 关闭；--debug 时自动非流式）
+stream: true
