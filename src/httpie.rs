@@ -1,4 +1,4 @@
-//! `sysenv http` — an httpie-compatible HTTP client.
+//! `sys http` — an httpie-compatible HTTP client.
 //!
 //! Mirrors httpie's syntax: `http [flags] [METHOD] URL [ITEM...]`
 //! with `key=value` (JSON/form data), `key:=json` (raw JSON),
@@ -18,7 +18,7 @@ use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub const USER_AGENT_STR: &str = "HTTPie/3.2.4 (sysenv/0.1.0)";
+pub const USER_AGENT_STR: &str = "HTTPie/3.2.4 (sys/0.1.0)";
 
 pub struct HttpConfig {
     pub json: bool,
@@ -456,7 +456,7 @@ fn parse_positionals(args: &[String], default_scheme: &str) -> Result<RequestSpe
     if let Some(i) = url_idx {
         spec.url = normalize_url(&args.remove(i), default_scheme)?;
     } else {
-        bail!("missing URL argument (e.g. `sysenv http example.org`)");
+        bail!("missing URL argument (e.g. `sys http example.org`)");
     }
 
     for arg in args {
@@ -544,7 +544,7 @@ fn build_body(spec: &RequestSpec, cfg: &HttpConfig) -> Result<(BodyKind, Option<
 
     let has_uploads = !spec.uploads.is_empty();
     if has_uploads && !cfg.form && !cfg.multipart {
-        eprintln!("sysenv: warning: file upload fields force multipart/form-data");
+        eprintln!("sys: warning: file upload fields force multipart/form-data");
     }
 
     if has_uploads || cfg.multipart {
@@ -744,12 +744,12 @@ fn guess_download_name(headers: &HeaderMap, url: &str) -> String {
 // Help & debug output
 // ---------------------------------------------------------------------------
 
-/// Print the `sysenv http --help` text (parameter descriptions + examples).
+/// Print the `sys http --help` text (parameter descriptions + examples).
 pub fn print_help() {
     println!(
-        r#"sysenv http - httpie-compatible HTTP client
+        r#"sys http - httpie-compatible HTTP client
 
-Usage: sysenv http [flags] [METHOD] URL [ITEM...]
+Usage: sys http [flags] [METHOD] URL [ITEM...]
 
 位置参数 / Positional:
   METHOD       请求方法 GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS（缺省：有请求体时 POST，否则 GET）
@@ -795,22 +795,22 @@ Usage: sysenv http [flags] [METHOD] URL [ITEM...]
       --help              显示本帮助（注意：http 子命令的 -h 是“只打印响应头”）
 
 示例 / Examples:
-  sysenv http pie.dev/get
-  sysenv http pie.dev/post name=John age:=29
-  sysenv http -f POST pie.dev/post name='John Smith'
-  sysenv http -v pie.dev/get
-  sysenv http GET pie.dev/get q==httpie per_page==1
-  sysenv http pie.dev/post X-API-Token:123 name=John
-  sysenv http -d pie.dev/image.png
-  sysenv http POST pie.dev/post @data.json
-  sysenv http POST pie.dev/post --file data.json
-  sysenv http pie.dev/post cv@resume.pdf
-  sysenv http -a user:pass pie.dev/anything
-  sysenv http -A bearer -a TOKEN pie.dev/anything
-  sysenv http --check-status pie.dev/404
-  sysenv http --offline pie.dev/post a=1
-  sysenv http --debug pie.dev/get
-  echo '{{"a":1}}' | sysenv http POST pie.dev/post
+  sys http pie.dev/get
+  sys http pie.dev/post name=John age:=29
+  sys http -f POST pie.dev/post name='John Smith'
+  sys http -v pie.dev/get
+  sys http GET pie.dev/get q==httpie per_page==1
+  sys http pie.dev/post X-API-Token:123 name=John
+  sys http -d pie.dev/image.png
+  sys http POST pie.dev/post @data.json
+  sys http POST pie.dev/post --file data.json
+  sys http pie.dev/post cv@resume.pdf
+  sys http -a user:pass pie.dev/anything
+  sys http -A bearer -a TOKEN pie.dev/anything
+  sys http --check-status pie.dev/404
+  sys http --offline pie.dev/post a=1
+  sys http --debug pie.dev/get
+  echo '{{"a":1}}' | sys http POST pie.dev/post
 "#
     );
 }
@@ -1048,7 +1048,7 @@ pub fn run(cfg: &HttpConfig) -> Result<i32> {
             "bearer" => {
                 req_builder = req_builder.bearer_auth(auth);
             }
-            "digest" => bail!("auth type `digest` is not supported by sysenv"),
+            "digest" => bail!("auth type `digest` is not supported by sys"),
             other => bail!("unsupported auth type `{other}` (use basic or bearer)"),
         }
     }
@@ -1317,7 +1317,7 @@ mod tests {
     fn data_value_from_file_escapes_special_chars() {
         // key=@file embeds the file content as the field value; when the file
         // contains quotes / backslashes they must be escaped in the JSON body.
-        let path = std::env::temp_dir().join("sysenv_test_field.txt");
+        let path = std::env::temp_dir().join("sys_test_field.txt");
         let content = "he said \"hi\" \\ and = : @";
         std::fs::write(&path, content).unwrap();
         let item = parse_item(&format!("note=@{}", path.display())).unwrap();

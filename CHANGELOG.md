@@ -1,11 +1,19 @@
-# sysenv 更新日志（CHANGELOG）
+# sys 更新日志（CHANGELOG）
 
-版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sysenv-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
+版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
+
+## v0.4.23（2026-10-07）
+
+### 变更
+- **项目全面改名 `sysenv` → `sys`**：可执行文件名（`sysenv.exe` → `sys.exe`）、命令输出（`sysenv: ...` 错误/警告前缀）、`--version`/`--help` 显示、User-Agent、垫片生成注释、文档命令示例与产物命名规范（`sysenv-windows-...` → `sys-windows-...`）全部改为 `sys`。
+- **用户数据目录保留**：`~/.sysenv/config.yaml` 配置、`~/.sysenv/bin` 托管目录、`~/.sysenv/cache` 缓存路径均**不迁移**，改名后继续读写既有数据。
+- **产物缓存目录已改**：Windows `%LOCALAPPDATA%\sysenv\` → `%LOCALAPPDATA%\sys\`，Linux `~/.cache/sysenv/` → `~/.cache/sys/`（缓存可再生，首次运行自动重新抓取）。
+- 版本 0.4.22 -> 0.4.23
 
 ## v0.4.22（2026-10-07）
 
 ### 新增
-- **`sysenv file` 单参数智能分派**：
+- **`sys file` 单参数智能分派**：
   - 参数带扩展名（如 `me.txt`）→ **显示文件内容**（cat 风格，二进制安全显示；文件不存在时明确报错）
   - 参数被引号包裹（`"me.txt"` / `'me.txt'`）→ 剥掉引号按原 stdin 字符串搜索（引号作为"强制搜索"信号）
   - 参数无扩展名（如 `hello`）→ 保持原 stdin 搜索行为不变
@@ -15,7 +23,7 @@
 ## v0.4.21（2026-10-07）
 
 ### 新增
-- **`sysenv file` 文件搜索功能（fd 风格属性筛选）**：
+- **`sys file` 文件搜索功能（fd 风格属性筛选）**：
   - `-S` / `--size SIZE`：只列/搜索大小达到指定值的文件。纯数字按字节；`2k`/`2m`/`2g`/`2t`（及 kb/mb/gb/tb）按 1024 进制换算，支持小数（`1.5m`），大小写不敏感
   - `--newer TIME`：只列/搜索修改时间不早于 TIME 的文件（mtime >= TIME）
   - `--older TIME`：只列/搜索修改时间早于 TIME 的文件（mtime < TIME）
@@ -28,8 +36,8 @@
 ## v0.4.20（2026-10-07）
 
 ### 新增
-- **`sysenv con`（json / csv / md / yaml 四种格式互转）**：
-  - 默认从 stdin 管道读取（`cat a.json | sysenv con`）；`-file F` 改从文件读取（也可按扩展名推断输入格式）
+- **`sys con`（json / csv / md / yaml 四种格式互转）**：
+  - 默认从 stdin 管道读取（`cat a.json | sys con`）；`-file F` 改从文件读取（也可按扩展名推断输入格式）
   - `-i FMT` 指定输入格式：json | csv | md | yaml（省略时自动检测内容格式）
   - `-o FMT` 指定输出格式：json | csv | md | yaml（省略时按输入格式输出，即只格式化显示）
   - `-out F` 把结果写到文件，默认只输出到 stdout
@@ -41,8 +49,8 @@
 ## v0.4.19（2026-10-07）
 
 ### 新增
-- **`sysenv file`（fd/sd 风格文本搜索与替换）**：
-  - `file PATTERN`：从标准输入读取并输出匹配行（`type a.txt | sysenv file hello`）
+- **`sys file`（fd/sd 风格文本搜索与替换）**：
+  - `file PATTERN`：从标准输入读取并输出匹配行（`type a.txt | sys file hello`）
   - `file PATTERN PATH`：在 PATH（文件或目录树）的已知文本与源码文件（txt/md/py/java/c/...）中搜索，输出 `路径:行号:内容`
   - `file OLD NEW PATH`：把 OLD 就地替换为 NEW，输出每个文件替换数与汇总
   - `-e EXT`（可多次，前导点可省略）扩展名过滤；`-i` 忽略大小写（搜索/替换均生效）；`-t` 仅纯文本（排除源码）；`-w` 整词匹配；`-c NUM` 上下文行（组间 `--`）
@@ -52,7 +60,7 @@
 ## v0.4.18（2026-10-07）
 
 ### 新增
-- **`sysenv ai info provider` 增加 DOCS / CONSOLE 列**：按 provider 名称匹配官方帮助文档与控制台地址（agnes / alibaba-cn / minimax / modelscope / anspire / sensenova / bigmodel / amd 已收录，URL 均已实测可达；未收录的 provider 显示 `-`）
+- **`sys ai info provider` 增加 DOCS / CONSOLE 列**：按 provider 名称匹配官方帮助文档与控制台地址（agnes / alibaba-cn / minimax / modelscope / anspire / sensenova / bigmodel / amd 已收录，URL 均已实测可达；未收录的 provider 显示 `-`）
   - 文本输出新增 `DOCS`、`CONSOLE` 两列（API_KEY 移至末列）
   - `-o json` 每条增加 `docs` / `console` 字段；`-o csv` 增加 `docs,console` 列
 - 版本 0.4.17 -> 0.4.18
@@ -60,7 +68,7 @@
 ## v0.4.17（2026-10-07）
 
 ### 新增
-- **`sysenv ai info provider` / `info model` 支持机器可读输出**：
+- **`sys ai info provider` / `info model` 支持机器可读输出**：
   - `-o json` / `--output-format json`（或 `--json`）：输出 JSON 数组（provider 为 `{"name","api_base","api_key"}`，model 为 `{"provider","name"}`，`to_string_pretty` 格式化）
   - `-o csv` / `--output-format csv`：输出 CSV 表（provider：`name,api_base,api_key`；model：`provider,name`）
   - 与 `info provider [KEYWORD]` 过滤共用；`price` / `balance` / `sale-price` 传入 `-o/--json` 时明确报错提示
@@ -69,7 +77,7 @@
 ## v0.4.16（2026-10-07）
 
 ### 新增
-- **`sysenv ai info` 支持阿里云百炼（`alibaba-cn`）**：
+- **`sys ai info` 支持阿里云百炼（`alibaba-cn`）**：
   - `info balance alibaba-cn`：调用官方 `GET /api/v1/models/limits` 验证 Key 并列出各模型用量限额（限流配额，非现金余额）；官方无 Key 级余额接口，明确提示到百炼控制台查看账户余额/费用
   - `info sale-price alibaba-cn`：给出百炼官方模型列表与计费说明页地址（未接入自动抓取）
   - `info price alibaba-cn`：models.dev 已有 `alibaba-cn`（Alibaba (China)，91 个模型）条目，直接命中
@@ -78,7 +86,7 @@
 ## v0.4.15（2026-10-07）
 
 ### 新增
-- **`sysenv ai info` 新增两个参数**（`sai info`）：
+- **`sys ai info` 新增两个参数**（`sai info`）：
   - `info balance PROVIDER`：用该 provider 的 `api_key` 到官方接口查询余额。minimax 走官方 `token_plan/remains`（Token Plan 剩余额度；非订阅用户给出按量付费余额入口）；agnes 走 OpenAI 兼容 billing 探测（credit_grants / subscription / usage，无余额字段时提示控制台）；modelscope / sensenova / bigmodel / amd / anspire 官方未开放 Key 级余额接口，命令给出对应控制台地址。余额查询实时进行，不走缓存
   - `info sale-price PROVIDER`：抓取官网定价页并列出全部模型销售价。agnes 抓取 `wiki.agnes-ai.cn` 定价页（文本/图片/视频模型，刊例价+现价，人民币）；minimax 抓取 `platform.minimaxi.com` 定价页（语言模型输入/输出/缓存价格，元/百万 tokens）；其余 provider 给出官网定价页地址。定价页 24h 缓存，`--refresh` 强制重抓
 - 版本 0.4.14 -> 0.4.15
@@ -86,7 +94,7 @@
 ## v0.4.14（2026-10-07）
 
 ### 新增
-- **`sysenv ai info`（`sai info`）**：检查本地配置与模型价格
+- **`sys ai info`（`sai info`）**：检查本地配置与模型价格
   - `info provider [KEYWORD]`：列出配置文件 `clients` 中全部 provider（`name` / `api_base` / `api_key`）；带 KEYWORD 时只保留名称包含该词的 provider（大小写不敏感），无匹配则报错并列出可用名称
   - `info model [KEYWORD]`：列出全部 provider 下的 model，格式为 `{provider}:{name}`；带 KEYWORD 时按 provider 名称包含匹配（支持 `provider:model` / `provider:*` 精确选择）；无 provider 命中时回退按 model 名称匹配
   - `info price P1,P2,...`：按逗号分隔的 provider 名称（models.dev id/名称，支持中英文逗号）查询模型价格列表，输出 input / output / cache_read 每 1M token 价格，数据源 models.dev（复用 24h 缓存，`--refresh` 强制刷新；`-c/--config` 可覆盖配置文件路径）
@@ -95,7 +103,7 @@
 ## v0.4.13（2026-10-06）
 
 ### 新增
-- **`sysenv search --ai`**：接入博查 **AI Search API**（`POST https://api.bochaai.com/v1/ai-search`）高级搜索
+- **`sys search --ai`**：接入博查 **AI Search API**（`POST https://api.bochaai.com/v1/ai-search`）高级搜索
   - `--ai` 切换端点：在网页搜索基础上额外返回垂域结构化模态卡（天气/百科/日历/股票等）与 **AI 实时生成的答案**（`answer` 默认开启；`--no-answer` 关闭，仅可与 `--ai` 同用）；`stream` 固定关闭（纯 CLI 调用）
   - 请求参数与官网接口一致：`query` / `freshness` / `count` / `page` / `include_domains` / `exclude_domains` / `answer` / `stream`；输出默认含 AI 答案 + 逐条摘要/站点/发布时间；`--json` 原始响应、`--debug` 打印实际请求与响应
   - 客户端重构：共用 `bocha_request`（POST + 信封校验），响应解析兼容 `data.messages[]`（source 结果 / answer 答案）、`data.webPages.value[]`、`data.web_results[]` 三种形态，标题兼容 `name`/`webpage`/`title` 字段、时间兼容 `datePublished`/`dateLastCrawled`/`page_timestamp`
@@ -105,14 +113,14 @@
 ## v0.4.12（2026-10-06）
 
 ### 新增
-- **`sysenv ai image`（`sai image`）**：通过 Provider 的 OpenAI 兼容 **Images API（`POST {api_base}/images/generations`）** 生成图片
-  - 与 `ai chat` 共用 `~/.sysenv/config.yaml` 的 `clients` 配置与模型选择规则：`-m/--model` 支持 `{provider}:{model}` / `{model}` / 逗号分隔多选，多模型目标按 `weight` 加权轮询，失败自动降权并尝试下一个模型（成功替补升权，写回配置文件）
+- **`sys ai image`（`sai image`）**：通过 Provider 的 OpenAI 兼容 **Images API（`POST {api_base}/images/generations`）** 生成图片
+  - 与 `ai chat` 共用 `~/.sys/config.yaml` 的 `clients` 配置与模型选择规则：`-m/--model` 支持 `{provider}:{model}` / `{model}` / 逗号分隔多选，多模型目标按 `weight` 加权轮询，失败自动降权并尝试下一个模型（成功替补升权，写回配置文件）
   - `-o/--output DIR` 指定保存目录（默认当前目录）；`-n/--count N` 数量（默认 1）；`-s/--size SIZE` 尺寸（默认 `1024x1024`，原样传给 API）；`--url` 改为请求图片 URL 并下载保存（默认请求 `b64_json` 本地解码保存）
-  - 图片保存为 `sysenv-ai-image-<时间戳>-<序号>.<格式>`，扩展名按文件头魔数识别（png / jpg / gif / webp），文件名冲突自动加 `-1`、`-2` 后缀；每张图片的保存路径打印到 stdout
+  - 图片保存为 `sys-ai-image-<时间戳>-<序号>.<格式>`，扩展名按文件头魔数识别（png / jpg / gif / webp），文件名冲突自动加 `-1`、`-2` 后缀；每张图片的保存路径打印到 stdout
   - 仅支持 OpenAI 兼容 Provider（`type: openai`）；`type: anthropic` 目标在发请求前明确报错；`--list-provider / --list-model` 与 `ai chat` 一致
   - 冒烟验证：请求正确到达智谱 `/images/generations`（429 余额不足系账号余额问题，接口与错误透传正常）；agnes 对话模型返回 400 并提示"Use /v1/chat/completions"
-- **`sysenv search`（`ssearch`）**：接入**博查 AI 网页搜索 API**（`POST https://api.bochaai.com/v1/web-search`）提供联网搜索
-  - API key 读取配置顶层 `search:` 段（如 `- name: bochaai, key: sk-...`），`-c/--config` 可覆盖默认 `~/.sysenv/config.yaml`
+- **`sys search`（`ssearch`）**：接入**博查 AI 网页搜索 API**（`POST https://api.bochaai.com/v1/web-search`）提供联网搜索
+  - API key 读取配置顶层 `search:` 段（如 `- name: bochaai, key: sk-...`），`-c/--config` 可覆盖默认 `~/.sys/config.yaml`
   - **参数与官网接口一致**：`query`（位置参数，多词自动空格连接，支持 stdin 管道）、`--freshness`（`noLimit`/`oneDay`/`oneWeek`/`oneMonth`/`oneYear`/`YYYY-MM-DD`/区间）、`--summary`（返回 AI 摘要与逐条摘要）、`--count`（1-50，默认 10）、`--page`（默认 1）、`--include-domains` / `--exclude-domains`（域名白/黑名单，可重复）
   - 默认输出标题+链接行；`--summary` 追加摘要/站点/发布时间；`--json` 输出原始响应（含 AI 摘要与分页）；`--debug` 打印实际请求与响应
   - 同时注册为内置搜索源 `bochaai`（`ai task --list-source` 可查）：任务可用 `search: bochaai` 联网搜索，`q`/`query` 为查询词，`freshness`/`count`/`page`/`summary`/`include_domains`/`exclude_domains` 为可选参数；`short` 新增 `ssearch` shim
@@ -146,29 +154,29 @@
 ## v0.4.8（2026-10-05）
 
 ### 新增
-- `sysenv ai task --list-source`：列出全部内置搜索源的**名称、类型（api 直连数据接口 / search AI 聚合搜索 Sogou 优先 Bing 兜底 / generic 通用搜索需 q/query 参数）、用途与访问地址**，共 19 个源（zhihu/baidu/bilibili/github/hn/toutiao/tophub/oschina/smzdm/bing/sogou/dxtower/enlightent/cls/dongchedi/autohome/szhousing/penalty/company）
+- `sys ai task --list-source`：列出全部内置搜索源的**名称、类型（api 直连数据接口 / search AI 聚合搜索 Sogou 优先 Bing 兜底 / generic 通用搜索需 q/query 参数）、用途与访问地址**，共 19 个源（zhihu/baidu/bilibili/github/hn/toutiao/tophub/oschina/smzdm/bing/sogou/dxtower/enlightent/cls/dongchedi/autohome/szhousing/penalty/company）
 
 ## v0.4.7（2026-10-05）
 
 ### 新增
-- `sysenv ai task` 新增两个搜索源：
+- `sys ai task` 新增两个搜索源：
   - `penalty`：查询**某人/某单位的行政处罚、失信被执行人信息**（公开公示渠道，AI 聚合搜索）
   - `company`：查询**公司工商注册信息**（法定代表人、注册资本、成立日期等，公开公示渠道，AI 聚合搜索）
 - 实现说明：实测信用中国（creditchina.gov.cn）无响应、国家企业信用信息公示系统（gsxt.gov.cn）521、中国执行信息公开网/裁判文书网/爱企查均需验证码或 JS 渲染、无法程序直连 → 采用 AI 聚合搜索（Sogou 优先、Bing 兜底）抓取公开公示页面（企查查/爱企查/百科/政府公示等）回填，模型如实总结；查询对象由模型的 `name` 参数指定，无相关记录时模型如实说明
 - **`-t` 手动指定任务时自由文本参数自动填充任务的第一个声明参数**（如 `-t company 字节跳动` → `name=字节跳动`，msg 中 `{name}` 占位符与工具 query 均被替换），`weather` 等既有任务不受影响
-- 配置示例新增 `penalty` / `company` 任务（`~/.sysenv/config.yaml` 与 `doc/config.yaml`）
+- 配置示例新增 `penalty` / `company` 任务（`~/.sys/config.yaml` 与 `doc/config.yaml`）
 
 ## v0.4.6（2026-10-05）
 
 ### 新增
-- `sysenv ai task` 新增搜索源 `szhousing`：获取**深圳房源销售情况**（新房/二手房成交套数等，深圳房地产信息平台公开数据）
+- `sys ai task` 新增搜索源 `szhousing`：获取**深圳房源销售情况**（新房/二手房成交套数等，深圳房地产信息平台公开数据）
 - 实现说明：`fdc.zjj.sz.gov.cn` 经实测部署瑞数动态 WAF（curl 全量浏览器头仍返回 HTTP 412 验证页），无法程序直连；改用 AI 聚合搜索（Sogou 优先、Bing 兜底）抓取公开渠道（乐有家/中原/住建局官网等）的成交数据报道回填，模型如实总结并注明来源
-- 配置示例新增任务 `szhousing`（`~/.sysenv/config.yaml` 与 `doc/config.yaml`）
+- 配置示例新增任务 `szhousing`（`~/.sys/config.yaml` 与 `doc/config.yaml`）
 
 ## v0.4.5（2026-10-05）
 
 ### 新增
-- `sysenv ai task` 新增 **10 个内置搜索源**，覆盖用户点名的 5 组数据源：
+- `sys ai task` 新增 **10 个内置搜索源**，覆盖用户点名的 5 组数据源：
   - **热播电视剧**：`dxtower`（德塔文电视剧景气指数）、`enlightent`（云合数据霸屏榜/热播榜）——目标站点接口带签名/WAF，改用 AI 聚合搜索实现
   - **热门财经及新闻媒体**：`toutiao`（今日头条热榜，JSON 直连）、`cls`（财联社电报，AI 聚合搜索）
   - **汽车新闻**：`autohome`（汽车之家）、`dongchedi`（懂车帝）——AI 聚合搜索
@@ -176,7 +184,7 @@
   - **特价商品**：`smzdm`（什么值得买今日好价，SSR 直连，标题+价格）
 - **AI 聚合搜索引擎**：Sogou 优先（中文分词可靠）、Bing 兜底（Sogou 触发验证码/空结果时自动回退），程序抓取搜索结果标题+链接回填给模型，模型如实筛选总结
 - `-t NAME` 手动指定任务时，若任务声明了 `api`/`search` 工具，同样**先执行工具并回填真实数据**再回答（此前仅 function_call 自动路由会执行工具）
-- 配置示例（`~/.sysenv/config.yaml` 与 `doc/config.yaml`）新增 `hotdrama` / `cloudrank` / `hotnews` / `finance` / `auto` / `cartech` / `technews` / `oschina` / `deals` 共 9 个任务
+- 配置示例（`~/.sys/config.yaml` 与 `doc/config.yaml`）新增 `hotdrama` / `cloudrank` / `hotnews` / `finance` / `auto` / `cartech` / `technews` / `oschina` / `deals` 共 9 个任务
 
 ### 实现说明
 - 所有新搜索源均为纯代码 HTTP 请求（reqwest + 浏览器 UA），**无本地 shell 命令**；HTML 页面用内置解析器提取（含标签剥离、HTML 实体解码、URL 百分号编码工具）
@@ -185,7 +193,7 @@
 ## v0.4.4（2026-10-05）
 
 ### 新增
-- `sysenv ai task` **任务工具执行改为纯代码 HTTP 实现，禁止本地 shell 命令**（移除 `tool:` 命令模板，删除 `run_tool_cmd`）：任务可声明两种工具，function_call 选中后由程序执行并**回填真实数据**给模型回答：
+- `sys ai task` **任务工具执行改为纯代码 HTTP 实现，禁止本地 shell 命令**（移除 `tool:` 命令模板，删除 `run_tool_cmd`）：任务可声明两种工具，function_call 选中后由程序执行并**回填真实数据**给模型回答：
   - **`api: <URL模板>`** —— 固定 HTTP 接口：`{key}` / `{key:默认值}` 占位符由模型 tool 参数填充（空值回退默认值），响应体原样作为工具结果；`params: [k1, k2]` 声明可选参数并加入函数 schema
   - **`search: <源名>`** —— AI 模糊联网搜索：内置 `zhihu`（知乎日报热门）、`baidu`（百度实时热搜）、`bilibili`（B 站热门）、`github`（近 7 天新建星榜，可传 `date` 参数）、`hn`（Hacker News）五个搜索源，程序抓取头条列表回填，模型据此筛选总结
 - 自研 YAML 解析器支持内联数组 `[a, b]`（`params: [lat, lon]` 与块列表写法均可）
@@ -197,7 +205,7 @@
 ## v0.4.3（2026-10-05）
 
 ### 新增
-- `sysenv ai task` 无 `-t` 且带用户请求（参数或 stdin）时改为 **function_call 自动路由**：
+- `sys ai task` 无 `-t` 且带用户请求（参数或 stdin）时改为 **function_call 自动路由**：
   - 每个任务的 `name` 作为函数名、`desc` 作为函数描述注册为 tools（OpenAI / Anthropic 双协议）
   - 大模型用 function_call 选择最匹配的任务，用户请求通过 `input` 参数传入
   - 自动执行选中的任务：把任务 `desc` + 用户请求组装成消息发给模型，输出最终回复
@@ -207,21 +215,21 @@
 ## v0.4.2（2026-10-05）
 
 ### 新增
-- `sysenv http` 新增 **`--file FILE`** 参数：读取本地文件内容作为原始请求体（等价位置参数 `@FILE`），自动判定为 POST；与 `@FILE` 位置参数/`--raw` 互斥并明确报错
-- `sysenv http` 请求项字段值以 `@` 开头（`key=@file`、`key:=@file`、`key==@file`、`key:@file`）读取本地文件作为该字段值：**自动剥离 UTF-8 BOM 与尾部换行**，文件内容中的引号、反斜杠等特殊符号在 JSON 序列化时**自动转义**
+- `sys http` 新增 **`--file FILE`** 参数：读取本地文件内容作为原始请求体（等价位置参数 `@FILE`），自动判定为 POST；与 `@FILE` 位置参数/`--raw` 互斥并明确报错
+- `sys http` 请求项字段值以 `@` 开头（`key=@file`、`key:=@file`、`key==@file`、`key:@file`）读取本地文件作为该字段值：**自动剥离 UTF-8 BOM 与尾部换行**，文件内容中的引号、反斜杠等特殊符号在 JSON 序列化时**自动转义**
 
 ## v0.4.1（2026-10-05）
 
 ### 变更
-- `sysenv http` **默认采用 `application/json`**：所有请求默认携带 `Content-Type: application/json`（包括无数据项、GET/POST 等任何方法），`Accept` 默认 `application/json, */*;q=0.5`；可用 `-f/--form`、`--multipart` 或显式 `Content-Type:xxx` 请求头覆盖
+- `sys http` **默认采用 `application/json`**：所有请求默认携带 `Content-Type: application/json`（包括无数据项、GET/POST 等任何方法），`Accept` 默认 `application/json, */*;q=0.5`；可用 `-f/--form`、`--multipart` 或显式 `Content-Type:xxx` 请求头覆盖
 
 ## v0.4.0（2026-10-05）
 
 ### 新增
-- `sysenv ai model` / `ai cn-model` 的 `--model-type` 支持**半角 `,` / 全角 `，` 逗号分隔的多个类型**，取**交集**：只显示同时包含全部指定模态的模型（如 `--model-type text,image` 只显示既能文本又能图像的模型；中文别名 `文本，图像` 同样可用）
-- `sysenv ai chat` / `ai task` 发送 HTTP 请求前自动补齐模型能力字段：模型项缺少 `max_input_tokens` 或 `type` 时，从 models.dev 按模型名称查询匹配的第 1 个模型，用其 `context` 填充 `max_input_tokens`、用其输入/输出模态并集填充 `type`，并**写回配置文件**（下次直接使用）；查询失败或无匹配时静默跳过
+- `sys ai model` / `ai cn-model` 的 `--model-type` 支持**半角 `,` / 全角 `，` 逗号分隔的多个类型**，取**交集**：只显示同时包含全部指定模态的模型（如 `--model-type text,image` 只显示既能文本又能图像的模型；中文别名 `文本，图像` 同样可用）
+- `sys ai chat` / `ai task` 发送 HTTP 请求前自动补齐模型能力字段：模型项缺少 `max_input_tokens` 或 `type` 时，从 models.dev 按模型名称查询匹配的第 1 个模型，用其 `context` 填充 `max_input_tokens`、用其输入/输出模态并集填充 `type`，并**写回配置文件**（下次直接使用）；查询失败或无匹配时静默跳过
 - **消息长度截断**：发送前检查消息字符数是否超过该模型 `max_input_tokens`，超过则截取到限制内并在 stderr 提示，防止超出上下文窗口
-- `sysenv ai task -t *`：**全任务打分匹配**——把所有任务的 `desc` 与用户提供的聊天信息组装，调用配置的大模型按 10 分制打分（0=不匹配，10=完全匹配），输出 `TASK / DESC / SCORE` 表格并按分数降序；单任务失败时 SCORE 显示 `-`
+- `sys ai task -t *`：**全任务打分匹配**——把所有任务的 `desc` 与用户提供的聊天信息组装，调用配置的大模型按 10 分制打分（0=不匹配，10=完全匹配），输出 `TASK / DESC / SCORE` 表格并按分数降序；单任务失败时 SCORE 显示 `-`
 
 ### 说明
 - 配置文件模型项新增可选字段 `max_input_tokens`（字符上限）与 `type`（模态并集，如 `text,image`），也可手动预填
@@ -230,12 +238,12 @@
 ## v0.3.0（2026-10-05）
 
 ### 新增
-- `sysenv ai chat` 新增 `--list-model`：列出配置文件 `clients` 下**所有模型名称**（按 Provider 分组，含权重）；新增 `--list-provider`：列出所有 Provider（名称 / type / 模型数）；两者可同时使用，无需消息
-- `sysenv ai chat` 新增 `-m/--model MODEL`：**临时覆盖**顶层 `model`，规则与配置完全一致（`{provider}:{model}` / `{provider}:*` / 裸 `{model}` / 逗号分隔多选）
+- `sys ai chat` 新增 `--list-model`：列出配置文件 `clients` 下**所有模型名称**（按 Provider 分组，含权重）；新增 `--list-provider`：列出所有 Provider（名称 / type / 模型数）；两者可同时使用，无需消息
+- `sys ai chat` 新增 `-m/--model MODEL`：**临时覆盖**顶层 `model`，规则与配置完全一致（`{provider}:{model}` / `{provider}:*` / 裸 `{model}` / 逗号分隔多选）
 - 顶层 `model` 与 `-m` 均支持**半角逗号 `,` / 全角逗号 `，` 分隔的多个模型选择**，按权重轮询使用（如 `agnes:*,claude:claude-3-5-sonnet`）
 - **动态权重轮询**：模型 `weight` 取值范围 0-9（缺省 1）；请求失败时若 `weight > 1` 则 `-1` 并**写回配置文件**，自动尝试下一个模型；替补模型成功且 `weight < 9` 则 `+1` 并写回（同时兼容 `- name: X` 下常规 `weight:` 子键与 mangled 独立 `- weight: N` 两种写法，保留注释与缩进）
-- `sysenv ai model` 文本列表新增 `CONTEXT`（上下文长度）与 `TYPE`（模态类型）列；新增 `--model-type TYPE` 筛选：`text / image / audio / video / pdf`（支持中文 `文本 / 图像 / 语音 / 视频`），按 `modalities.input/output` 判定
-- `sysenv ai cn-model` 列表新增 `TYPE`（分类）列；新增 `--model-type TYPE` 筛选：`text / image / audio / video / multimodal`（支持中文），按卡片分类匹配（如 `audio` → 语音大模型，`image` → 视觉 / 多模态类）；**精确命中单模型时抓取详情页**，输出附带 `context`（上下文长度，如 `1.05M`）与 `modality`（输入/输出模态，如 `文本、图像 → 文本`），失败静默降级；CSV 扩展为 10 列（新增 `context,modality`）
+- `sys ai model` 文本列表新增 `CONTEXT`（上下文长度）与 `TYPE`（模态类型）列；新增 `--model-type TYPE` 筛选：`text / image / audio / video / pdf`（支持中文 `文本 / 图像 / 语音 / 视频`），按 `modalities.input/output` 判定
+- `sys ai cn-model` 列表新增 `TYPE`（分类）列；新增 `--model-type TYPE` 筛选：`text / image / audio / video / multimodal`（支持中文），按卡片分类匹配（如 `audio` → 语音大模型，`image` → 视觉 / 多模态类）；**精确命中单模型时抓取详情页**，输出附带 `context`（上下文长度，如 `1.05M`）与 `modality`（输入/输出模态，如 `文本、图像 → 文本`），失败静默降级；CSV 扩展为 10 列（新增 `context,modality`）
 - 健壮性：配置文件解析自动剥离 UTF-8 BOM，避免顶层 `model` 字段静默丢失
 
 ### 说明

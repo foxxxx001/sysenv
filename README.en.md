@@ -1,4 +1,4 @@
-# sysenv
+# sys
 **English** | [简体中文](./README.md)
 A cross-platform (Windows / Ubuntu) system Http client & AI model lookup & PATH & environment manager in a single binary 
 
@@ -7,14 +7,14 @@ A cross-platform (Windows / Ubuntu) system Http client & AI model lookup & PATH 
 - **Link into PATH**: put any file into a PATH directory so it can be run from anywhere
 - **Environment variables**: read / set / unset / list system variables, optionally persisted or session-only
 - **AI model lookup**: query model & provider information from models.dev by name
-- **Web search**: `sysenv search` runs web searches through the Bocha AI API (`api.bochaai.com/v1/web-search`) with official request parameters; `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards
+- **Web search**: `sys search` runs web searches through the Bocha AI API (`api.bochaai.com/v1/web-search`) with official request parameters; `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards
 - **httpie-compatible HTTP client**: flags follow httpie conventions
 - **Shortcut shims**: install `spath / senv / slink / shttp / sai / ssearch / stask` short commands with one command
 
 ```
-sysenv 0.4.13 (Made by Gary-china)
+sys 0.4.13 (Made by Gary-china)
 
-Usage: sysenv <COMMAND>
+Usage: sys <COMMAND>
 
 Commands:
   path   Manage PATH entries: list / add / remove / has / export / import
@@ -41,7 +41,7 @@ Commands:
 | Process management | `task` | no args lists all processes; list (PID / name / path, fuzzy name match); `-o` shows the process using a port; kill by PID or name; `-f` force |
 | Web search | `search` | Bocha AI web search API (`POST api.bochaai.com/v1/web-search`): `--freshness` (time filter) / `--summary` (AI summaries) / `--count` (1-50) / `--page` / `--include-domains` / `--exclude-domains`, official parameters; key from the config `search` section; `--json` raw response / `--debug` request & response. `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards (`--no-answer` disables the AI answer) |
 | Text search & replace | `file` | fd/sd-style: 1 arg searches stdin (an extension like `me.txt` displays that file; quotes force search); 2 args search a directory tree of text/source files (`-e` / `-i` / `-t` / `-w` / `-c`); 3 args OLD NEW PATH replace in place; `-S` size / `--newer` / `--older` time / `-d` depth filters; lists files when no PATTERN is given |
-| Format conversion | `con` | json / csv / md / yaml interconversion: stdin by default (`cat a.json | sysenv con`), `-file` reads a file, `-i` input format, `-o` output format, `-out` writes a file; tables map to/from object arrays (type inference + escaping) |
+| Format conversion | `con` | json / csv / md / yaml interconversion: stdin by default (`cat a.json | sys con`), `-file` reads a file, `-i` input format, `-o` output format, `-out` writes a file; tables map to/from object arrays (type inference + escaping) |
 | HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
 | Shortcut shims | `short` | installs seven short commands at once (spath/senv/slink/shttp/sai/ssearch/stask); Windows `.cmd` / Linux sh scripts; auto PATH registration |
 
@@ -53,22 +53,22 @@ Requires Rust 1.79+ (`rustup` / `cargo`).
 
 ```
 cargo build --release
-# artifact: target/release/sysenv(.exe)
+# artifact: target/release/sys(.exe)
 ```
 
 ### Release artifacts
 
 - Release binaries are **UPX-compressed** and placed in `dist/`
-- File names carry platform + architecture + version: `sysenv-<platform>-<arch>_v<version>`
-  - Windows: `sysenv-windows-x86_64_v0.2.8.exe`
-  - Ubuntu: `sysenv-linux-x86_64_v0.2.8`
+- File names carry platform + architecture + version: `sys-<platform>-<arch>_v<version>`
+  - Windows: `sys-windows-x86_64_v0.2.8.exe`
+  - Ubuntu: `sys-linux-x86_64_v0.2.8`
 - One-shot release scripts (recommended): **temp build artifacts (`target/`) are cleaned automatically after every successful build**, only the `dist/` deliverables remain
   - Windows: `powershell -File build.ps1` (build → UPX → smoke → auto cleanup)
   - Ubuntu: `./build.sh` (same flow; downloads a static UPX when the system has none)
 - Manual flow (Windows example):
   ```
   cargo build --release
-  upx --best -o dist/sysenv-windows-x86_64_v0.2.8.exe target/release/sysenv.exe
+  upx --best -o dist/sys-windows-x86_64_v0.2.8.exe target/release/sys.exe
   cargo clean
   ```
 - Every version bump with its added / fixed features is recorded in `patch.md`
@@ -76,7 +76,7 @@ cargo build --release
 ## Platform & persistence model
 
 - **Windows**: writes the user-scope registry key `HKCU\Environment` by default (inherited by every new process); `--scope machine` writes `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment` (administrator required).
-- **Ubuntu**: writes managed files under `~/.config/sysenv/` and auto-injects them into shell startup scripts so persisted variables/PATH take effect in new shells; the `machine` scope writes `/etc/environment` (root required).
+- **Ubuntu**: writes managed files under `~/.config/sys/` and auto-injects them into shell startup scripts so persisted variables/PATH take effect in new shells; the `machine` scope writes `/etc/environment` (root required).
 - On both platforms, `path add` and `env set` also **update the current process environment** (export snippet for the parent shell on Linux, registry broadcast on Windows) — both persistence and immediate effect are satisfied.
 - All write operations persist by default; adding `--temporary` prints a paste-ready shell snippet (`export` / `$env:`) instead of writing anything.
 
@@ -97,13 +97,13 @@ cargo build --release
 ### Examples
 
 ```
-sysenv path list                      # list the effective PATH
-sysenv path add D:\tools              # append (normalized, deduped)
-sysenv path add D:\tools -p           # prepend
-sysenv path add /opt/bin --scope machine   # machine scope (admin/root)
-sysenv path add D:\tools --temporary # current session only (print snippet)
-sysenv path remove D:\tools
-sysenv path has D:\tools              # checks process + persisted scopes
+sys path list                      # list the effective PATH
+sys path add D:\tools              # append (normalized, deduped)
+sys path add D:\tools -p           # prepend
+sys path add /opt/bin --scope machine   # machine scope (admin/root)
+sys path add D:\tools --temporary # current session only (print snippet)
+sys path remove D:\tools
+sys path has D:\tools              # checks process + persisted scopes
 ```
 
 ## 2. PATH import / export (`path export/import`)
@@ -117,11 +117,11 @@ sysenv path has D:\tools              # checks process + persisted scopes
 ### Examples
 
 ```
-sysenv path export backup.reg         # Windows Registry Editor format, double-click to import
-sysenv path export paths.json
-sysenv path import backup.reg         # merge into user PATH (deduped)
-sysenv path import backup.reg --replace   # full replace
-sysenv path export paths.txt          # exchange/backup on Ubuntu
+sys path export backup.reg         # Windows Registry Editor format, double-click to import
+sys path export paths.json
+sys path import backup.reg         # merge into user PATH (deduped)
+sys path import backup.reg --replace   # full replace
+sys path export paths.txt          # exchange/backup on Ubuntu
 ```
 
 ## 3. Link into PATH (`link`)
@@ -138,12 +138,12 @@ sysenv path export paths.txt          # exchange/backup on Ubuntu
 ### Examples
 
 ```
-sysenv link mytool.exe                # into the managed bin dir; auto PATH registration
-sysenv link ./script.py               # Windows generates script.cmd shim
-sysenv link tool --name t             # rename the command
-sysenv link tool --method copy        # force copy (auto fallback across drives)
-sysenv link tool --system             # system directory
-sysenv link tool -f                   # overwrite an existing link
+sys link mytool.exe                # into the managed bin dir; auto PATH registration
+sys link ./script.py               # Windows generates script.cmd shim
+sys link tool --name t             # rename the command
+sys link tool --method copy        # force copy (auto fallback across drives)
+sys link tool --system             # system directory
+sys link tool -f                   # overwrite an existing link
 ```
 
 ## 4. Environment variables (`env`)
@@ -159,12 +159,12 @@ sysenv link tool -f                   # overwrite an existing link
 ### Examples
 
 ```
-sysenv env get FOO
-sysenv env set FOO bar                # persisted (default)
-sysenv env set FOO bar --temporary    # current shell only (print export / $env: snippet)
-sysenv env set FOO bar --scope machine
-sysenv env unset FOO
-sysenv env list
+sys env get FOO
+sys env set FOO bar                # persisted (default)
+sys env set FOO bar --temporary    # current shell only (print export / $env: snippet)
+sys env set FOO bar --scope machine
+sys env unset FOO
+sys env list
 ```
 
 ## 5. AI model / provider lookup (`ai`)
@@ -172,12 +172,12 @@ sysenv env list
 ### Features
 
 - Data source: the official public data of [models.dev](https://models.dev), `https://models.dev/api.json` (~5.3 MB, **226 providers, 8000+ models**); the `/models/` and `/providers/` pages render from this same data
-- **24 h local cache**: Windows `%LOCALAPPDATA%\sysenv\`, Linux `$XDG_CACHE_HOME` or `~/.cache/sysenv/`; `--refresh` forces a re-fetch
+- **24 h local cache**: Windows `%LOCALAPPDATA%\sys\`, Linux `$XDG_CACHE_HOME` or `~/.cache/sys/`; `--refresh` forces a re-fetch
 - Matching: case-insensitive exact match on model `id` / `canonical_model_id` / `name`, with substring fallback
 - **Canonical preference**: when several providers expose the same model name, the primary entry is chosen by majority vote on the `canonical_model_id` provider prefix (e.g. `gpt-4.1` → OpenAI), its detail is printed and the remaining providers are summarized; full ids (`openai/gpt-4.1-mini`) pin down one entry exactly
 - `-s/--search`: substring-search list output; `--limit` controls the count (default 20)
 - `--list`: paginated browsing of all models / providers
-- **No args lists all**: `sysenv ai model` with no arguments lists every model (`--limit N` still caps the output)
+- **No args lists all**: `sys ai model` with no arguments lists every model (`--limit N` still caps the output)
 - **Text lists have a header row**: the default output of no-arg / `--list` / `--search` is an aligned table headed `ID  NAME  FAMILY  LAST UPDATED` (id / name / family / last updated)
 - `--date YYYY-MM-DD`: show only models whose `last_updated` is **strictly after** the given date; combines with no-arg / `--list` / `--search` / name lookups (the date filter is applied before matching); a malformed date is rejected with an error
 - `--open`: show only models with `open_weights: yes`; combines with `--date` and the other filters (date first, then open weights)
@@ -187,23 +187,23 @@ sysenv env list
 ### Examples
 
 ```
-sysenv ai model                          # no args: list every model (same as `sai model`)
-sysenv ai model --date 2026-10-01        # only models last updated after 2026-10-01
-sysenv ai model --date 2026-10-01 --limit 10   # above + first 10 entries
-sysenv ai model --open --limit 10        # only models with open_weights: yes
-sysenv ai model --open --date 2025-01-01 # combined filters: updated after 2025 and open weights
-sysenv ai model gpt-4.1                  # exact lookup; picks the canonical entry when several providers match
-sysenv ai model openai/gpt-4.1-mini      # full id pins one entry
-sysenv ai model -s qwen --limit 10       # substring search (grep-style list)
-sysenv ai model --list --limit 5         # list models (8000+ total)
-sysenv ai model gpt-4.1 --json           # JSON array output (same as -o json)
-sysenv ai model gpt-4.1 -o csv           # CSV table output (24 columns)
-sysenv ai model -s qwen -o csv           # CSV output for search results
-sysenv ai provider openai -o csv         # provider CSV (6 columns)
-sysenv ai model gpt-4.1 --refresh        # force re-fetch (--refresh lives on `ai`; `ai --refresh model gpt-4.1` also works)
-sysenv ai provider openai                # provider detail (api / npm / model count & list)
-sysenv ai provider -s groq               # provider substring search
-sysenv ai provider --list                # list all providers
+sys ai model                          # no args: list every model (same as `sai model`)
+sys ai model --date 2026-10-01        # only models last updated after 2026-10-01
+sys ai model --date 2026-10-01 --limit 10   # above + first 10 entries
+sys ai model --open --limit 10        # only models with open_weights: yes
+sys ai model --open --date 2025-01-01 # combined filters: updated after 2025 and open weights
+sys ai model gpt-4.1                  # exact lookup; picks the canonical entry when several providers match
+sys ai model openai/gpt-4.1-mini      # full id pins one entry
+sys ai model -s qwen --limit 10       # substring search (grep-style list)
+sys ai model --list --limit 5         # list models (8000+ total)
+sys ai model gpt-4.1 --json           # JSON array output (same as -o json)
+sys ai model gpt-4.1 -o csv           # CSV table output (24 columns)
+sys ai model -s qwen -o csv           # CSV output for search results
+sys ai provider openai -o csv         # provider CSV (6 columns)
+sys ai model gpt-4.1 --refresh        # force re-fetch (--refresh lives on `ai`; `ai --refresh model gpt-4.1` also works)
+sys ai provider openai                # provider detail (api / npm / model count & list)
+sys ai provider -s groq               # provider substring search
+sys ai provider --list                # list all providers
 ```
 
 CSV columns: models `id,name,provider,family,status,knowledge_cutoff,description,context,input_limit,output_limit,cost_input,cost_output,cost_cache_read,modalities_input,modalities_output,reasoning,tool_call,structured_output,temperature,attachment,open_weights,release_date,last_updated,canonical_model_id`; providers `id,name,api,env,npm,models_count`.
@@ -219,20 +219,20 @@ Data source: the [datalearner](https://www.datalearner.com/ai-models/pretrained-
 - `--limit N` caps the list (default 20); `--json` / `-o json` print a JSON array; `-o csv` prints an 8-column CSV (`id,name,provider,aliases,type,category,published,url`)
 
 ```
-sysenv ai cn-model gpt-6-1-sol            # exact lookup (case-insensitive)
-sysenv ai cn-model -s ernie --limit 10    # substring search (aliases match too)
-sysenv ai cn-model --date 2026-09-28      # list every model published after that date
-sysenv ai cn-model -s qwen --date 2026-01-01   # search + date filter
-sysenv ai cn-model gpt-6-1-sol --json     # JSON array output
-sysenv ai cn-model -s ernie -o csv        # CSV output
-sysenv ai cn-model gpt-6-1-sol --refresh  # force re-fetch (--refresh lives on `ai`)
+sys ai cn-model gpt-6-1-sol            # exact lookup (case-insensitive)
+sys ai cn-model -s ernie --limit 10    # substring search (aliases match too)
+sys ai cn-model --date 2026-09-28      # list every model published after that date
+sys ai cn-model -s qwen --date 2026-01-01   # search + date filter
+sys ai cn-model gpt-6-1-sol --json     # JSON array output
+sys ai cn-model -s ernie -o csv        # CSV output
+sys ai cn-model gpt-6-1-sol --refresh  # force re-fetch (--refresh lives on `ai`)
 ```
 
 #### 5.2 AI chat (`ai chat`)
 
 Chats with the configured providers using the OpenAI `/v1/chat/completions` or the Anthropic Messages API standard.
 
-- Config file defaults to **`~/.sysenv/config.yaml`** (a clear message is shown when missing); `-c/--config FILE` overrides it. The format is documented in `doc/config.yaml`; the sanitized template is `doc/config.example.yaml`
+- Config file defaults to **`~/.sys/config.yaml`** (a clear message is shown when missing); `-c/--config FILE` overrides it. The format is documented in `doc/config.yaml`; the sanitized template is `doc/config.example.yaml`
 - `clients` holds the providers: required `name / api_base / api_key / models` (each `models` entry has `name` plus optional `weight`, default 1, and optional `max_tokens`); `type` is `openai` (default; `open` is accepted) or `anthropic`, and the request follows the OpenAI or the Claude API standard accordingly
 - Top-level `model` selects the model:
   - missing → the first model of the first provider
@@ -245,12 +245,12 @@ Chats with the configured providers using the OpenAI `/v1/chat/completions` or t
 - `--debug`: prints the **actual HTTP request** (method / URL / headers / body) and **response** (status / headers / body) to stderr without polluting stdout
 
 ```
-sysenv ai chat "hi"                       # chat with the default config (~/.sysenv/config.yaml)
-sysenv ai chat hi there                   # multiple args are joined
-echo "summarize this" | sysenv ai chat    # pipe via stdin
-sysenv ai chat "hi" -c doc/config.yaml    # explicit config file
-sysenv ai chat "hi" --no-stream           # disable streaming
-sysenv ai chat "hi" --debug               # print the actual request & response (incl. headers)
+sys ai chat "hi"                       # chat with the default config (~/.sys/config.yaml)
+sys ai chat hi there                   # multiple args are joined
+echo "summarize this" | sys ai chat    # pipe via stdin
+sys ai chat "hi" -c doc/config.yaml    # explicit config file
+sys ai chat "hi" --no-stream           # disable streaming
+sys ai chat "hi" --debug               # print the actual request & response (incl. headers)
 ```
 
 #### 5.3 Task templates (`ai task`)
@@ -264,20 +264,20 @@ Assembles a chat message from a predefined `tasks` template, then sends it throu
 - Tasks may declare a tool executed by the program (no local shell commands) and fed back to the model as real data:
   - `api: <URL template>` — fixed HTTP API: `{key}` / `{key:default}` placeholders are filled from the model tool arguments
   - `search: <source>` — built-in search source: `bilibili` / `github` / `hn` / `toutiao` / `oschina` / `smzdm` (direct data APIs), `sogou` / `enlightent` / `dongchedi` / `autohome` (aggregate search, Sogou first with Bing fallback), `szhousing` (Shenzhen housing official API), `bochaai` (Bocha AI web search API, key from the config `search` section; args: `q`/`query`, optional `freshness` / `summary` / `count` / `page` / `include_domains` / `exclude_domains`)
-- `sysenv ai task --list-source` prints the full source catalogue (name / kind / purpose / URL)
+- `sys ai task --list-source` prints the full source catalogue (name / kind / purpose / URL)
 
 ```
-sysenv ai task                          # list the tasks (name / desc, at most 10)
-sysenv ai task -t weather               # build the message with defaults and chat
-sysenv ai task -t weather country:北京   # substitute country with 北京
-sysenv ai task -t weather country=北京   # '=' syntax is equivalent
+sys ai task                          # list the tasks (name / desc, at most 10)
+sys ai task -t weather               # build the message with defaults and chat
+sys ai task -t weather country:北京   # substitute country with 北京
+sys ai task -t weather country=北京   # '=' syntax is equivalent
 ```
 
 #### 5.4 Web search (`search`)
 
 Web search through the **Bocha AI Web Search API** (`POST https://api.bochaai.com/v1/web-search`, Bearer auth). All request parameters follow the official interface.
 
-- **API key**: read from the top-level `search` section of the config (default `~/.sysenv/config.yaml`, `-c/--config` overrides); the first `name: bochaai` entry wins:
+- **API key**: read from the top-level `search` section of the config (default `~/.sys/config.yaml`, `-c/--config` overrides); the first `name: bochaai` entry wins:
   ```yaml
   search:
     - name: bochaai
@@ -286,22 +286,22 @@ Web search through the **Bocha AI Web Search API** (`POST https://api.bochaai.co
 - **Parameters (official)**: `query` (positional, joined with spaces; stdin is read when piped); `--ai` switches to the AI Search API (`POST /v1/ai-search`) — structured modal cards plus an AI-generated answer (official `answer` param, on by default; `--no-answer` turns it off; `stream` stays off); `--freshness` (`noLimit` default / `oneDay` / `oneWeek` / `oneMonth` / `oneYear` / `YYYY-MM-DD` / range); `--summary` (AI summary + per-result snippet / site / publish time on Web Search; AI Search always shows them); `--count` (1-50, default 10); `--page` (default 1); `--include-domains` / `--exclude-domains` (repeatable domain filters); `--json` (raw response); `--debug` (actual request & response)
 
 ```
-sysenv search "2026 Nobel Prize in Physics"            # default 10 results: title + link
-sysenv search Shenzhen weather today --summary --count 5
-sysenv search "rust 2026" --freshness oneMonth
-sysenv search "cargo tutorial" --include-domains rust-lang.org docs.rs
-sysenv search "futures price" --exclude-domains baidu.com --json
-echo "today's hot news" | sysenv search                # pipe via stdin
-sysenv search "Hangzhou weather" --ai                  # AI Search: AI answer + weather card + sources
-sysenv search "housing policy" --ai --no-answer --count 5
-ssearch "holiday schedule"                              # ssearch shim == sysenv search
+sys search "2026 Nobel Prize in Physics"            # default 10 results: title + link
+sys search Shenzhen weather today --summary --count 5
+sys search "rust 2026" --freshness oneMonth
+sys search "cargo tutorial" --include-domains rust-lang.org docs.rs
+sys search "futures price" --exclude-domains baidu.com --json
+echo "today's hot news" | sys search                # pipe via stdin
+sys search "Hangzhou weather" --ai                  # AI Search: AI answer + weather card + sources
+sys search "housing policy" --ai --no-answer --count 5
+ssearch "holiday schedule"                              # ssearch shim == sys search
 ```
 
 > Note: **AI Search and Web Search are separate Bocha packages**. The key needs an AI Search package on the open platform; without it `--ai` returns 403 (`You do not have enough money or package quota`).
 
 #### 5.5 Local config lookup (`ai info`)
 
-Inspects the local config file (default `~/.sysenv/config.yaml`, `-c/--config` overrides) and the models.dev model prices.
+Inspects the local config file (default `~/.sys/config.yaml`, `-c/--config` overrides) and the models.dev model prices.
 
 - `info provider [KEYWORD]` — lists every provider under `clients` with `name / api_base / api_key` plus the official `DOCS` (help docs) and `CONSOLE` URLs (matched by provider name against a built-in table; unknown providers show `-`); with KEYWORD only providers whose name contains it are kept (case-insensitive), otherwise an error lists the available names; `-o json` / `-o csv` / `--json` print a JSON array or CSV table (JSON fields `name` / `api_base` / `api_key` / `docs` / `console`)
 - `info model [KEYWORD]` — lists every configured model as `{provider}:{name}`; with KEYWORD only models of providers whose name contains it are kept (`provider:model` / `provider:*` select specific models); when no provider matches, models whose name contains KEYWORD are listed instead; `-o json` / `-o csv` / `--json` print a JSON array or CSV table (JSON fields `provider` / `name`)
@@ -310,28 +310,28 @@ Inspects the local config file (default `~/.sysenv/config.yaml`, `-c/--config` o
 - `info sale-price PROVIDER` — scrapes the provider's official pricing page and prints every model's sale price. agnes uses `wiki.agnes-ai.cn` (text / image / video models, list + current price in ¥); minimax uses `platform.minimaxi.com` (language-model input / output / cache prices, ¥ per million tokens); alibaba-cn prints the official Bailian model list & billing page; other providers print their official pricing-page URL. Pricing pages are cached 24 h, `--refresh` forces a re-fetch
 
 ```
-sysenv ai info provider                     # every configured provider (name/api_base/api_key)
-sysenv ai info provider agnes               # only providers whose name contains agnes
-sysenv ai info provider -o json             # every provider as a JSON array
-sysenv ai info provider agnes -o csv        # filtered + CSV output
-sysenv ai info provider --json              # same as -o json
-sysenv ai info model                        # every model as provider:model
-sysenv ai info model modelscope             # only modelscope's models
-sysenv ai info model deepseek               # falls back to matching model names
-sysenv ai info model agnes:3.0              # one model: agnes models whose name contains 3.0
-sysenv ai info model modelscope:*           # every modelscope model
-sysenv ai info price openai,anthropic       # model prices of two providers
-sysenv ai info price "openai，deepseek"     # full-width commas work too
-sysenv ai info balance minimax              # query MiniMax's official balance with its api_key
-sysenv ai info balance alibaba-cn           # Alibaba Bailian: official limits + console hint
-sysenv ai info sale-price agnes             # scrape agnes' official pricing page (all models)
+sys ai info provider                     # every configured provider (name/api_base/api_key)
+sys ai info provider agnes               # only providers whose name contains agnes
+sys ai info provider -o json             # every provider as a JSON array
+sys ai info provider agnes -o csv        # filtered + CSV output
+sys ai info provider --json              # same as -o json
+sys ai info model                        # every model as provider:model
+sys ai info model modelscope             # only modelscope's models
+sys ai info model deepseek               # falls back to matching model names
+sys ai info model agnes:3.0              # one model: agnes models whose name contains 3.0
+sys ai info model modelscope:*           # every modelscope model
+sys ai info price openai,anthropic       # model prices of two providers
+sys ai info price "openai，deepseek"     # full-width commas work too
+sys ai info balance minimax              # query MiniMax's official balance with its api_key
+sys ai info balance alibaba-cn           # Alibaba Bailian: official limits + console hint
+sys ai info sale-price agnes             # scrape agnes' official pricing page (all models)
 ```
 
 #### 5.6 Text search & replacement (`file`)
 
 fd/sd-style: search stdin or a directory tree of text/source files, or replace a string in place. Matching runs on the Unicode char level (`-i` folds case per char, so non-ASCII text works too).
 
-* `file PATTERN` — read stdin and print matching lines (piping: `type a.txt | sysenv file hello`); **an argument with an extension (e.g. `me.txt`) displays that file's content instead** (cat-style); wrapping it in quotes (`"me.txt"`) forces the search meaning
+* `file PATTERN` — read stdin and print matching lines (piping: `type a.txt | sys file hello`); **an argument with an extension (e.g. `me.txt`) displays that file's content instead** (cat-style); wrapping it in quotes (`"me.txt"`) forces the search meaning
 * `file PATTERN PATH` — search PATH (a file or a directory tree) over all known text and source files (txt/md/py/java/c/...), printing `path:line:content`
 * `file OLD NEW PATH` — replace OLD with NEW in place under PATH, printing per-file counts and a summary
 
@@ -354,27 +354,27 @@ Giving any filter without a PATTERN enters **list mode** (one path per line, cur
 Traversal: hidden entries (`.` prefix) and common noise directories (`.git` / `node_modules` / `target` / `dist` / `build` / `__pycache__` ...) are skipped; binary files (NUL bytes) are skipped; replacement honors `-e` / `-t` / `-i` / `-w` too.
 
 ```
-sysenv file hello                              # search stdin (type a.txt | sysenv file hello)
-sysenv file me.txt                             # display the file me.txt
-sysenv file "me.txt"                           # quoted: still a string search (find me.txt in stdin)
-sysenv file hello D:\projects                  # search the D:\projects tree
-sysenv file hello D:\projects -e py -e md      # only .py and .md
-sysenv file HELLO D:\projects -i               # case-insensitive
-sysenv file hello D:\projects -t               # plain text only (no source code)
-sysenv file hello D:\projects -w -c 2          # whole words + 2 lines of context
-sysenv file hello hi D:\projects               # replace hello -> hi in place
-sysenv file HELLO hi D:\projects -i            # case-insensitive replacement
-sysenv file -S 2m                              # list files >= 2 MiB in the current dir
-sysenv file -S 5000 D:\data                    # list files >= 5000 bytes under D:\data
-sysenv file -S 2m -e bin -d 1 D:\data          # >= 2MiB .bin files, 1 level deep
-sysenv file --newer "2026-10-01" D:\data       # files modified at/after 2026-10-01
-sysenv file --older "2026-10-01 12:00" D:\data # files modified before that time
-sysenv file hello D:\data -S 1m                # search hello only in files >= 1 MiB
+sys file hello                              # search stdin (type a.txt | sys file hello)
+sys file me.txt                             # display the file me.txt
+sys file "me.txt"                           # quoted: still a string search (find me.txt in stdin)
+sys file hello D:\projects                  # search the D:\projects tree
+sys file hello D:\projects -e py -e md      # only .py and .md
+sys file HELLO D:\projects -i               # case-insensitive
+sys file hello D:\projects -t               # plain text only (no source code)
+sys file hello D:\projects -w -c 2          # whole words + 2 lines of context
+sys file hello hi D:\projects               # replace hello -> hi in place
+sys file HELLO hi D:\projects -i            # case-insensitive replacement
+sys file -S 2m                              # list files >= 2 MiB in the current dir
+sys file -S 5000 D:\data                    # list files >= 5000 bytes under D:\data
+sys file -S 2m -e bin -d 1 D:\data          # >= 2MiB .bin files, 1 level deep
+sys file --newer "2026-10-01" D:\data       # files modified at/after 2026-10-01
+sys file --older "2026-10-01 12:00" D:\data # files modified before that time
+sys file hello D:\data -S 1m                # search hello only in files >= 1 MiB
 ```
 
 #### 5.7 Format conversion (`con`)
 
-Interconvert json / csv / md / yaml. Reads stdin by default (piping: `cat a.json | sysenv con`) and prints to stdout; `-out` writes to a file instead.
+Interconvert json / csv / md / yaml. Reads stdin by default (piping: `cat a.json | sys con`) and prints to stdout; `-out` writes to a file instead.
 
 * `-file F` — read from file F (stdin when omitted; a json/csv/md/yaml extension also infers the input format)
 * `-i FMT` — input format `json | csv | md | yaml` (auto-detected from content when omitted)
@@ -384,19 +384,19 @@ Interconvert json / csv / md / yaml. Reads stdin by default (piping: `cat a.json
 Table conversions (csv / md) map to/from arrays of objects: the CSV first row is the header; Markdown tables parse header + data rows. Cells are type-inferred (null / bool / int / float / string); commas, quotes, newlines and `|` are escaped on output (`\|`). YAML parsing falls back to a tab-tolerant parser when serde_yaml fails, so real configs with tab indentation work.
 
 ```
-cat a.json | sysenv con                        # stdin, auto-detect, print (defaults to the input format)
-sysenv con -file a.json -o csv                 # json -> csv (stdout)
-sysenv con -i csv -o json < a.csv              # csv -> json
-sysenv con -file a.yaml -o md -out out.md      # yaml -> markdown, write to out.md
-sysenv con -file config.yaml -o json           # real config (tab indentation) -> json
-type a.csv | sysenv con -o md                  # csv -> markdown table
+cat a.json | sys con                        # stdin, auto-detect, print (defaults to the input format)
+sys con -file a.json -o csv                 # json -> csv (stdout)
+sys con -i csv -o json < a.csv              # csv -> json
+sys con -file a.yaml -o md -out out.md      # yaml -> markdown, write to out.md
+sys con -file config.yaml -o json           # real config (tab indentation) -> json
+type a.csv | sys con -o md                  # csv -> markdown table
 ```
 
 ## 6. Process management (`task`)
 
 ### Features
 
-- **No args lists all**: `sysenv task` (or `stask`) with no subcommand lists every process, equivalent to `task list`
+- **No args lists all**: `sys task` (or `stask`) with no subcommand lists every process, equivalent to `task list`
 - `task list [NAME]`: list every process with **PID / name / executable path**; `NAME` fuzzy-matches the process name (substring, case-insensitive), a numeric value looks up that PID
 - `-o/--port <PORT>`: show only the **process using that port** (e.g. `task -o 8080` or `task list -o 8080`), combinable with the name / PID filter; Windows uses `netstat -ano`, Linux uses `ss -ltnp`
 - `task kill <PID|name>`: terminate by PID or by name; a fuzzy name match kills **every** matching process; `-f/--force` forces the kill (SIGKILL on Linux, SIGTERM by default); permission failures are reported per process without aborting the rest
@@ -405,14 +405,14 @@ type a.csv | sysenv con -o md                  # csv -> markdown table
 ### Examples
 
 ```
-sysenv task                       # no args: list all processes (same as `task list`)
-sysenv task -o 8080               # show the process using port 8080
-sysenv task list -o 8080          # same, explicit `list` form
-sysenv task list chrome           # fuzzy name match (substring, case-insensitive)
-sysenv task list 1234             # look up by PID
-sysenv task kill 1234             # terminate by PID
-sysenv task kill notepad          # fuzzy name match; kills every match
-sysenv task kill -f 1234          # force kill (SIGKILL on Linux)
+sys task                       # no args: list all processes (same as `task list`)
+sys task -o 8080               # show the process using port 8080
+sys task list -o 8080          # same, explicit `list` form
+sys task list chrome           # fuzzy name match (substring, case-insensitive)
+sys task list 1234             # look up by PID
+sys task kill 1234             # terminate by PID
+sys task kill notepad          # fuzzy name match; kills every match
+sys task kill -f 1234          # force kill (SIGKILL on Linux)
 ```
 
 ## 7. httpie-compatible HTTP client (`http`)
@@ -437,28 +437,28 @@ Flags follow [httpie](https://httpie.io) (subset).
 ### Examples
 
 ```
-sysenv http pie.dev/get                       # GET (terminal shows status line + headers + body)
-sysenv http pie.dev/post name=John age:=29    # auto POST without method; JSON by default
-sysenv http -f POST pie.dev/post name='John Smith'   # form
-sysenv http -v pie.dev/get                    # full request & response
-sysenv http -h pie.dev/get                    # response headers only
-sysenv http GET pie.dev/get q==httpie per_page==1   # query parameters
-sysenv http pie.dev/post X-API-Token:123 name=John  # request header + JSON field
-sysenv http -d pie.dev/image.png              # wget-style download
-sysenv http -o out.json pie.dev/get           # body to file (rest to stderr)
-sysenv http POST pie.dev/post @data.json      # file as raw request body
-sysenv http pie.dev/post cv@resume.pdf        # multipart file upload
-sysenv http -a user:pass pie.dev/anything     # Basic auth
-sysenv http -A bearer -a TOKEN pie.dev/anything   # Bearer token
-sysenv http -F --max-redirects 5 pie.dev/     # follow redirects
-sysenv http --check-status pie.dev/404        # exit code 4
-sysenv http --offline pie.dev/post a=1        # build & print the request only
-sysenv http --help                            # print the flag reference with examples
-sysenv http --debug pie.dev/post a=1 b:=2     # print the actual request & response (incl. headers)
-sysenv http POST pie.dev/post --raw '{"a":1}' # explicit raw body
-sysenv http pie.dev/post -- -name=foo         # field names starting with - go after --
-echo '{"a":1}' | sysenv http POST pie.dev/post  # stdin as raw body
-sysenv http --verify no https://self-signed.example  # skip certificate verification
+sys http pie.dev/get                       # GET (terminal shows status line + headers + body)
+sys http pie.dev/post name=John age:=29    # auto POST without method; JSON by default
+sys http -f POST pie.dev/post name='John Smith'   # form
+sys http -v pie.dev/get                    # full request & response
+sys http -h pie.dev/get                    # response headers only
+sys http GET pie.dev/get q==httpie per_page==1   # query parameters
+sys http pie.dev/post X-API-Token:123 name=John  # request header + JSON field
+sys http -d pie.dev/image.png              # wget-style download
+sys http -o out.json pie.dev/get           # body to file (rest to stderr)
+sys http POST pie.dev/post @data.json      # file as raw request body
+sys http pie.dev/post cv@resume.pdf        # multipart file upload
+sys http -a user:pass pie.dev/anything     # Basic auth
+sys http -A bearer -a TOKEN pie.dev/anything   # Bearer token
+sys http -F --max-redirects 5 pie.dev/     # follow redirects
+sys http --check-status pie.dev/404        # exit code 4
+sys http --offline pie.dev/post a=1        # build & print the request only
+sys http --help                            # print the flag reference with examples
+sys http --debug pie.dev/post a=1 b:=2     # print the actual request & response (incl. headers)
+sys http POST pie.dev/post --raw '{"a":1}' # explicit raw body
+sys http pie.dev/post -- -name=foo         # field names starting with - go after --
+echo '{"a":1}' | sys http POST pie.dev/post  # stdin as raw body
+sys http --verify no https://self-signed.example  # skip certificate verification
 ```
 
 > PowerShell note: PS 5.1 strips embedded double quotes from native-program arguments; for quoted JSON / raw bodies use `\"` escaping, single quotes, or run in cmd/bash.
@@ -485,7 +485,7 @@ sysenv http --verify no https://self-signed.example  # skip certificate verifica
 
 `--debug` `--help`
 
-> Note: inside the `http` subcommand, `-h` means httpie-style "print response headers only", so use `sysenv http --help` for help.
+> Note: inside the `http` subcommand, `-h` means httpie-style "print response headers only", so use `sys http --help` for help.
 
 ## 8. Shortcut shims (`short`)
 
@@ -499,27 +499,27 @@ sysenv http --verify no https://self-signed.example  # skip certificate verifica
 
 | Short command | Equivalent |
 | --- | --- |
-| `spath` | `sysenv path` |
-| `senv` | `sysenv env` |
-| `slink` | `sysenv link` |
-| `shttp` | `sysenv http` |
-| `sai` | `sysenv ai` |
-| `stask` | `sysenv task` |
+| `spath` | `sys path` |
+| `senv` | `sys env` |
+| `slink` | `sys link` |
+| `shttp` | `sys http` |
+| `sai` | `sys ai` |
+| `stask` | `sys task` |
 
 ### Examples
 
 ```
-sysenv short              # install all 6 shims into the managed dir and register PATH
-sysenv short --dir ~/bin  # custom directory
-sysenv short -f           # overwrite existing shims
-sysenv short --temporary  # no PATH persistence, print a paste-ready snippet
+sys short              # install all 6 shims into the managed dir and register PATH
+sys short --dir ~/bin  # custom directory
+sys short -f           # overwrite existing shims
+sys short --temporary  # no PATH persistence, print a paste-ready snippet
 ```
 
 ---
 
 ## Limitations
 
-- `http`: `--auth-type digest`, `--session`, `--stream`, `--ssl`, `--cert`, custom `--boundary` are not implemented (see `sysenv help http`)
+- `http`: `--auth-type digest`, `--session`, `--stream`, `--ssl`, `--cert`, custom `--boundary` are not implemented (see `sys help http`)
 - `path export` `.reg` files are Windows-only (Registry Editor format); use `.txt` / `.json` for backups on Linux
 - `link` symlinks on Windows require Developer Mode or admin rights; falls back to copy automatically
 - `ai` uses models.dev's public endpoint; offline it serves the 24 h cache, and reports an error when the cache is stale and there is no network

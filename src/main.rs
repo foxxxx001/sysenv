@@ -18,33 +18,33 @@ use std::process::ExitCode;
 
 #[derive(Parser)]
 #[command(
-    name = "sysenv",
+    name = "sys",
     version = concat!(env!("CARGO_PKG_VERSION"), " (Made by Gary-china)"),
     about = "System PATH & environment manager + httpie-compatible HTTP client (Windows / Ubuntu)",
-    long_about = "sysenv manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, runs web searches through the Bocha AI API (config `search` section), installs command shims (spath/senv/slink/shttp/sai/stask/ssearch), and ships an httpie-compatible HTTP client.
+    long_about = "sys manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sys/config.yaml, runs web searches through the Bocha AI API (config `search` section), installs command shims (spath/senv/slink/shttp/sai/stask/ssearch), and ships an httpie-compatible HTTP client.
 
 Examples:
-  sysenv path list
-  sysenv path add D:\\tools
-  sysenv path export backup.reg
-  sysenv env set FOO bar
-  sysenv link myapp.exe
-  sysenv ai model gpt-4.1
-  sysenv ai cn-model gpt-6.1-sol
-  sysenv ai chat \"你好\"
-  sysenv ai image \"a red fox in the snow\"
-  sysenv ai task -t weather country:北京
-  sysenv ai provider openai
-  sysenv ai info provider
-  sysenv ai info model
-  sysenv ai info price openai,anthropic
-  sysenv ai info balance minimax
-  sysenv ai info sale-price agnes
-  sysenv search \"今天的头条新闻\"
-  sysenv task list
-  sysenv task kill 1234
-  sysenv short
-  sysenv http pie.dev/get name=John"
+  sys path list
+  sys path add D:\\tools
+  sys path export backup.reg
+  sys env set FOO bar
+  sys link myapp.exe
+  sys ai model gpt-4.1
+  sys ai cn-model gpt-6.1-sol
+  sys ai chat \"你好\"
+  sys ai image \"a red fox in the snow\"
+  sys ai task -t weather country:北京
+  sys ai provider openai
+  sys ai info provider
+  sys ai info model
+  sys ai info price openai,anthropic
+  sys ai info balance minimax
+  sys ai info sale-price agnes
+  sys search \"今天的头条新闻\"
+  sys task list
+  sys task kill 1234
+  sys short
+  sys http pie.dev/get name=John"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -65,7 +65,7 @@ enum Cmd {
         about = "httpie-compatible HTTP client",
         long_about = "httpie-compatible HTTP client.
 
-Usage: sysenv http [flags] [METHOD] URL [ITEM...]
+Usage: sys http [flags] [METHOD] URL [ITEM...]
 
 Items:
   key=value      JSON/form data field
@@ -82,7 +82,7 @@ Flags follow httpie: -j/--json, -f/--form, --multipart, -p/--print,
 -F/--follow, --max-redirects, --timeout, --check-status, --offline,
 --verify, -I/--ignore-stdin, --default-scheme, --raw.
 
-Use `sysenv help http` for help (in http subcommand, -h means response headers)."
+Use `sys help http` for help (in http subcommand, -h means response headers)."
     )]
     Http(HttpArgs),
     /// Query AI model info (DataLearner), provider info (models.dev), inspect the config (info), chat with configured providers
@@ -244,7 +244,7 @@ enum AiCmd {
     Provider(AiProviderArgs),
     /// Inspect the local config: providers (name/api_base/api_key), models ({provider}:{name}), model prices (models.dev)
     Info(AiInfoArgs),
-    /// Chat with an LLM configured in ~/.sysenv/config.yaml (OpenAI / Anthropic compatible)
+    /// Chat with an LLM configured in ~/.sys/config.yaml (OpenAI / Anthropic compatible)
     Chat(ChatArgs),
     /// Generate images via an OpenAI-compatible Images API (/v1/images/generations)
     Image(ImageArgs),
@@ -325,7 +325,7 @@ struct AiInfoArgs {
     /// Force re-fetching the models.dev price data (otherwise use the 24 h cache)
     #[arg(long)]
     refresh: bool,
-    /// Config file path (default: ~/.sysenv/config.yaml)
+    /// Config file path (default: ~/.sys/config.yaml)
     #[arg(short = 'c', long, value_name = "FILE")]
     config: Option<PathBuf>,
     /// Print the raw JSON (as a JSON array) instead of the formatted view
@@ -352,7 +352,7 @@ struct ChatArgs {
     /// List every provider configured under `clients` and exit
     #[arg(long)]
     list_provider: bool,
-    /// Config file path (default: ~/.sysenv/config.yaml)
+    /// Config file path (default: ~/.sys/config.yaml)
     #[arg(short = 'c', long, value_name = "FILE")]
     config: Option<PathBuf>,
     /// Print the actual HTTP request (method/URL/headers/body) and response (status/headers/body)
@@ -377,7 +377,7 @@ struct ImageArgs {
     /// List every provider configured under `clients` and exit
     #[arg(long)]
     list_provider: bool,
-    /// Config file path (default: ~/.sysenv/config.yaml)
+    /// Config file path (default: ~/.sys/config.yaml)
     #[arg(short = 'c', long, value_name = "FILE")]
     config: Option<PathBuf>,
     /// Print the actual HTTP request (method/URL/headers/body) and response (status/headers/body)
@@ -408,7 +408,7 @@ struct AiTaskArgs {
     /// List the built-in search sources (name / kind / purpose / URL) and exit
     #[arg(long)]
     list_source: bool,
-    /// Config file path (default: ~/.sysenv/config.yaml)
+    /// Config file path (default: ~/.sys/config.yaml)
     #[arg(short = 'c', long, value_name = "FILE")]
     config: Option<PathBuf>,
     /// Print the actual HTTP request (method/URL/headers/body) and response (status/headers/body)
@@ -440,7 +440,7 @@ struct AiProviderArgs {
     output: Option<OutFormat>,
 }
 
-/// Machine-readable output formats for `sysenv ai`.
+/// Machine-readable output formats for `sys ai`.
 #[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq)]
 enum OutFormat {
     /// JSON array output
@@ -451,7 +451,7 @@ enum OutFormat {
 
 #[derive(Args)]
 struct TaskArgs {
-    /// Show only the process using PORT (list mode, e.g. `sysenv task -o 8080`)
+    /// Show only the process using PORT (list mode, e.g. `sys task -o 8080`)
     #[arg(short = 'o', long, value_name = "PORT")]
     port: Option<u16>,
     /// Subcommand; omitted to list all processes
@@ -562,7 +562,7 @@ struct SearchArgs {
     /// Do not request the AI-generated answer (official `answer: false`; only with --ai)
     #[arg(long, requires = "ai")]
     no_answer: bool,
-    /// Config file path (default: ~/.sysenv/config.yaml)
+    /// Config file path (default: ~/.sys/config.yaml)
     #[arg(short = 'c', long, value_name = "FILE")]
     config: Option<PathBuf>,
     /// Print the raw JSON response instead of the formatted view
@@ -575,7 +575,7 @@ struct SearchArgs {
 
 #[derive(Args)]
 struct HttpArgs {
-    /// Print parameter descriptions and examples, then exit (use `sysenv help http` for clap help)
+    /// Print parameter descriptions and examples, then exit (use `sys help http` for clap help)
     #[arg(long)]
     help: bool,
     /// Print the actual HTTP request (method/URL/headers/body) and response (status/headers/body) to stderr
@@ -690,7 +690,7 @@ fn main() -> ExitCode {
     match result {
         Ok(code) => ExitCode::from(code as u8),
         Err(e) => {
-            eprintln!("sysenv: {e:#}");
+            eprintln!("sys: {e:#}");
             ExitCode::from(1)
         }
     }
@@ -827,11 +827,11 @@ fn run_task(t: TaskArgs) -> anyhow::Result<()> {
         Some(TaskCmd::List { name, port }) => task::cmd_list(name.as_deref(), port.or(t.port)),
         Some(TaskCmd::Kill { target, force }) => {
             if t.port.is_some() {
-                anyhow::bail!("`-o/--port` applies to the list mode only (e.g. `sysenv task -o 8080`)");
+                anyhow::bail!("`-o/--port` applies to the list mode only (e.g. `sys task -o 8080`)");
             }
             task::cmd_kill(&target, force)
         }
-        // `sysenv task` with no subcommand defaults to listing every process.
+        // `sys task` with no subcommand defaults to listing every process.
         None => task::cmd_list(None, t.port),
     }
 }

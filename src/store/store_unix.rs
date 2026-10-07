@@ -21,11 +21,11 @@ fn config_dir() -> Result<PathBuf> {
     }
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         if !xdg.is_empty() {
-            return Ok(PathBuf::from(xdg).join("sysenv"));
+            return Ok(PathBuf::from(xdg).join("sys"));
         }
     }
     let home = std::env::var("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home).join(".config").join("sysenv"))
+    Ok(PathBuf::from(home).join(".config").join("sys"))
 }
 
 fn path_file() -> Result<PathBuf> {
@@ -64,11 +64,11 @@ fn regenerate_env_sh(entries: &[String]) -> Result<()> {
 fn ensure_sourced() -> Result<()> {
     let home = std::env::var("HOME").context("HOME is not set")?;
     let source_line = format!(
-        "\n# >>> sysenv >>>\n[ -f \"{}\" ] && . \"{}\"\n# <<< sysenv <<<\n",
+        "\n# >>> sys >>>\n[ -f \"{}\" ] && . \"{}\"\n# <<< sys <<<\n",
         env_sh()?.display(),
         env_sh()?.display()
     );
-    let marker = "# >>> sysenv >>>";
+    let marker = "# >>> sys >>>";
 
     let mut targets: Vec<PathBuf> = vec![PathBuf::from(&home).join(".profile")];
     for name in [".bashrc", ".zshrc"] {
@@ -267,7 +267,7 @@ fn write_etc_environment(map: &std::collections::HashMap<String, String>) -> Res
     }
 
     std::fs::write("/etc/environment", content).with_context(|| {
-        "cannot write /etc/environment (machine scope)\nhint: run with `sudo sysenv ... --scope machine` or as root"
+        "cannot write /etc/environment (machine scope)\nhint: run with `sudo sys ... --scope machine` or as root"
             .to_string()
     })
 }

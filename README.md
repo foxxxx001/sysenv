@@ -1,4 +1,4 @@
-# sysenv
+# sys
 [English](./README.en.md) | **简体中文**
 跨平台（Windows / Ubuntu）Http接口客户端工具、AI模型查询工具、系统 PATH 与环境变量管理工具**，单一二进制、子命令划分功能。内置六大能力：
 
@@ -14,7 +14,7 @@
 
 * **AI 模型查询**：从 models.dev 按名称爬取模型 / Provider 信息
 
-* **联网搜索**：`sysenv search` 接入博查 AI 网页搜索 API（`api.bochaai.com/v1/web-search`），参数与官网接口一致；`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡
+* **联网搜索**：`sys search` 接入博查 AI 网页搜索 API（`api.bochaai.com/v1/web-search`），参数与官网接口一致；`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡
 
 * **httpie 兼容 HTTP 客户端**：参数与 httpie 保持一致
 
@@ -23,9 +23,9 @@
 
 
 ```
-sysenv 0.4.13 (Made by Gary-china)
+sys 0.4.13 (Made by Gary-china)
 
-Usage: sysenv <COMMAND>
+Usage: sys <COMMAND>
 
 Commands:
   path   Manage PATH entries: list / add / remove / has / export / import
@@ -55,7 +55,7 @@ Commands:
 | AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key、`info model` 列出 `{provider}:{name}` 模型清单、`info price` 查 models.dev 模型价格、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
 | 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin（带扩展名如 `me.txt` 则显示文件，引号包裹强制搜索）；2 参目录树文本/源码搜索（`-e` / `-i` / `-t` / `-w` / `-c`）；3 参 OLD NEW PATH 就地替换；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件 |
-| 格式转换      | `con`                | json / csv / md / yaml 互转：默认读 stdin（`cat a.json | sysenv con`），`-file` 读文件，`-i` 输入格式，`-o` 输出格式，`-out` 写文件；表格类转对象数组（类型推断 + 转义） |
+| 格式转换      | `con`                | json / csv / md / yaml 互转：默认读 stdin（`cat a.json | sys con`），`-file` 读文件，`-i` 输入格式，`-o` 输出格式，`-out` 写文件；表格类转对象数组（类型推断 + 转义） |
 | 联网搜索      | `search`             | 博查 AI 网页搜索 API（`POST api.bochaai.com/v1/web-search`）：`--freshness`（时间过滤）/ `--summary`（AI 摘要）/ `--count`（1-50）/ `--page` / `--include-domains` / `--exclude-domains`（域名白黑名单），参数与官网接口一致；key 取自配置 `search` 段；`--json` 原始响应 / `--debug` 请求与响应。`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡（`--no-answer` 关闭 AI 答案） |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
 | 快捷垫片      | `short`              | 一键安装七种短命令（spath/senv/slink/shttp/sai/ssearch/stask）；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
@@ -72,7 +72,7 @@ Commands:
 
 ```
 cargo build --release
-# 产物: target/release/sysenv(.exe)
+# 产物: target/release/sys(.exe)
 ```
 
 ### 发布产物
@@ -81,12 +81,12 @@ cargo build --release
 
 * 发布产物统一 **UPX 压缩** 后放入 `dist/` 目录
 
-* 文件名包含平台 + 架构 + 版本号：`sysenv-<平台>-<架构>_v<版本>`
+* 文件名包含平台 + 架构 + 版本号：`sys-<平台>-<架构>_v<版本>`
 
 
-  * Windows：`sysenv-windows-x86_64_v0.2.8.exe`
+  * Windows：`sys-windows-x86_64_v0.2.8.exe`
 
-  * Ubuntu：`sysenv-linux-x86_64_v0.2.8`
+  * Ubuntu：`sys-linux-x86_64_v0.2.8`
 
 * 一键发布脚本（推荐）：**每次编译成功后自动清除临时编译产物**（`target/`），仅保留 `dist/` 发布产物
 
@@ -100,7 +100,7 @@ cargo build --release
 
 ```
 cargo build --release
-upx --best -o dist/sysenv-windows-x86_64_v0.2.8.exe target/release/sysenv.exe
+upx --best -o dist/sys-windows-x86_64_v0.2.8.exe target/release/sys.exe
 cargo clean
 ```
 
@@ -114,7 +114,7 @@ cargo clean
 
 * **Windows**：默认写用户作用域注册表 `HKCU\Environment`（新进程自动继承）；`--scope machine` 写 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`，需管理员。
 
-* **Ubuntu**：默认写入 `~/.config/sysenv/` 托管文件，并自动在 shell 启动脚本中注入，使持久化变量 / 路径对新 shell 生效；machine 作用域写 `/etc/environment`，需 root。
+* **Ubuntu**：默认写入 `~/.config/sys/` 托管文件，并自动在 shell 启动脚本中注入，使持久化变量 / 路径对新 shell 生效；machine 作用域写 `/etc/environment`，需 root。
 
 * 无论哪种平台，`path add`、`env set` 都会**同时更新当前进程环境**（Linux 下通过向父 shell 输出可粘贴的 export 片段，Windows 下通过注册表广播），保证 "持久化 + 当前生效" 双满足。
 
@@ -149,13 +149,13 @@ cargo clean
 
 
 ```
-sysenv path list                      # 列出当前生效 PATH
-sysenv path add D:\tools              # 追加（自动转绝对路径、去重）
-sysenv path add D:\tools -p           # 前置
-sysenv path add /opt/bin --scope machine   # 机器级（需管理员/root）
-sysenv path add D:\tools --temporary # 仅当前会话（打印可粘贴片段）
-sysenv path remove D:\tools
-sysenv path has D:\tools              # 同时检查当前进程与已持久化作用域
+sys path list                      # 列出当前生效 PATH
+sys path add D:\tools              # 追加（自动转绝对路径、去重）
+sys path add D:\tools -p           # 前置
+sys path add /opt/bin --scope machine   # 机器级（需管理员/root）
+sys path add D:\tools --temporary # 仅当前会话（打印可粘贴片段）
+sys path remove D:\tools
+sys path has D:\tools              # 同时检查当前进程与已持久化作用域
 ```
 
 ## 2. PATH 导入 / 导出（`path export/import`）
@@ -175,11 +175,11 @@ sysenv path has D:\tools              # 同时检查当前进程与已持久化�
 
 
 ```
-sysenv path export backup.reg         # Windows Registry Editor 格式，可双击导入
-sysenv path export paths.json
-sysenv path import backup.reg         # 合并进用户 PATH（去重）
-sysenv path import backup.reg --replace   # 整体替换
-sysenv path export paths.txt          # Ubuntu 下交换备份
+sys path export backup.reg         # Windows Registry Editor 格式，可双击导入
+sys path export paths.json
+sys path import backup.reg         # 合并进用户 PATH（去重）
+sys path import backup.reg --replace   # 整体替换
+sys path export paths.txt          # Ubuntu 下交换备份
 ```
 
 ## 3. 链接到 PATH（`link`）
@@ -205,12 +205,12 @@ sysenv path export paths.txt          # Ubuntu 下交换备份
 
 
 ```
-sysenv link mytool.exe                # 放入托管 bin 目录并自动加入 PATH
-sysenv link ./script.py               # Windows 自动生成 script.cmd 垫片
-sysenv link tool --name t             # 改名
-sysenv link tool --method copy        # 强制用拷贝（跨盘时自动回退）
-sysenv link tool --system             # 放到系统目录
-sysenv link tool -f                   # 覆盖已存在的链接
+sys link mytool.exe                # 放入托管 bin 目录并自动加入 PATH
+sys link ./script.py               # Windows 自动生成 script.cmd 垫片
+sys link tool --name t             # 改名
+sys link tool --method copy        # 强制用拷贝（跨盘时自动回退）
+sys link tool --system             # 放到系统目录
+sys link tool -f                   # 覆盖已存在的链接
 ```
 
 ## 4. 环境变量（`env`）
@@ -234,12 +234,12 @@ sysenv link tool -f                   # 覆盖已存在的链接
 
 
 ```
-sysenv env get FOO
-sysenv env set FOO bar                # 持久化（默认）
-sysenv env set FOO bar --temporary    # 仅当前 shell（打印 export / $env: 片段）
-sysenv env set FOO bar --scope machine
-sysenv env unset FOO
-sysenv env list
+sys env get FOO
+sys env set FOO bar                # 持久化（默认）
+sys env set FOO bar --temporary    # 仅当前 shell（打印 export / $env: 片段）
+sys env set FOO bar --scope machine
+sys env unset FOO
+sys env list
 ```
 
 ## 5. AI 模型 / Provider 查询（`ai`）
@@ -250,7 +250,7 @@ sysenv env list
 
 * 数据源为 [models.dev](https://models.dev) 官方公开数据 `https://models.dev/api.json`（约 5.3 MB，**226 个 Provider、8000+ 模型**）；`/models/` 与 `/providers/` 页面即由此数据渲染
 
-* **24 小时本地缓存**：Windows `%LOCALAPPDATA%\sysenv\`、Linux `$XDG_CACHE_HOME` 或 `~/.cache/sysenv/`；`--refresh` 强制重新抓取
+* **24 小时本地缓存**：Windows `%LOCALAPPDATA%\sys\`、Linux `$XDG_CACHE_HOME` 或 `~/.cache/sys/`；`--refresh` 强制重新抓取
 
 * 查询匹配：大小写不敏感，精确匹配模型 `id` / `canonical_model_id` / `name`，未命中自动降级为子串
 
@@ -260,7 +260,7 @@ sysenv env list
 
 * `--list`：分页浏览全部模型 / Provider
 
-* **无参默认全量**：`sysenv ai model` 不加参数直接列出全部模型（`--limit N` 仍可限制条数）
+* **无参默认全量**：`sys ai model` 不加参数直接列出全部模型（`--limit N` 仍可限制条数）
 
 * **文本列表带列名**：无参 / `--list` / `--search` 的默认输出为对齐表格，表头 `ID  NAME  FAMILY  CONTEXT  TYPE  LAST UPDATED`（id / 名称 / 所属家族 / 上下文长度 / 模态类型 / 最后更新时间）
 
@@ -279,26 +279,26 @@ sysenv env list
 
 
 ```
-sysenv ai model                          # 无参：列出全部模型（sai model 同）
-sysenv ai model --date 2026-10-01        # 只显示 last updated 晚于 2026-10-01 的模型
-sysenv ai model --date 2026-10-01 --limit 10   # 上一条 + 只显示前 10 条
-sysenv ai model --open --limit 10        # 只显示 open_weights: yes 的模型
-sysenv ai model --open --date 2025-01-01 # 两个过滤组合：2025 年后更新且开放权重
-sysenv ai model --model-type audio --limit 10   # 只显示支持语音/音频的模型（文本/图像/语音/视频同理）
-sysenv ai model --model-type text,image --limit 10  # 多值取交集：同时支持文本和图像的模型
-sysenv ai model --model-type "文本，图像" --limit 10 # 中文别名 + 全角逗号同样可用
-sysenv ai model gpt-4.1                  # 精确查询；多 provider 同名时自动选 canonical 并提示其余
-sysenv ai model openai/gpt-4.1-mini      # 用完整 id 精确定位
-sysenv ai model -s qwen --limit 10       # 子串搜索（grep 风格列表）
-sysenv ai model --list --limit 5         # 列出模型（共 8000+）
-sysenv ai model gpt-4.1 --json           # 输出 JSON 数组（同 -o json）
-sysenv ai model gpt-4.1 -o csv           # 输出 CSV 表格（24 列）
-sysenv ai model -s qwen -o csv           # 搜索结果的 CSV 输出
-sysenv ai provider openai -o csv         # Provider CSV（6 列）
-sysenv ai model gpt-4.1 --refresh        # 强制重抓数据（--refresh 属 ai 层，也可写 ai --refresh model gpt-4.1）
-sysenv ai provider openai                # Provider 详情（api / npm / models 数量与清单）
-sysenv ai provider -s groq               # Provider 子串搜索
-sysenv ai provider --list                # 列出全部 Provider
+sys ai model                          # 无参：列出全部模型（sai model 同）
+sys ai model --date 2026-10-01        # 只显示 last updated 晚于 2026-10-01 的模型
+sys ai model --date 2026-10-01 --limit 10   # 上一条 + 只显示前 10 条
+sys ai model --open --limit 10        # 只显示 open_weights: yes 的模型
+sys ai model --open --date 2025-01-01 # 两个过滤组合：2025 年后更新且开放权重
+sys ai model --model-type audio --limit 10   # 只显示支持语音/音频的模型（文本/图像/语音/视频同理）
+sys ai model --model-type text,image --limit 10  # 多值取交集：同时支持文本和图像的模型
+sys ai model --model-type "文本，图像" --limit 10 # 中文别名 + 全角逗号同样可用
+sys ai model gpt-4.1                  # 精确查询；多 provider 同名时自动选 canonical 并提示其余
+sys ai model openai/gpt-4.1-mini      # 用完整 id 精确定位
+sys ai model -s qwen --limit 10       # 子串搜索（grep 风格列表）
+sys ai model --list --limit 5         # 列出模型（共 8000+）
+sys ai model gpt-4.1 --json           # 输出 JSON 数组（同 -o json）
+sys ai model gpt-4.1 -o csv           # 输出 CSV 表格（24 列）
+sys ai model -s qwen -o csv           # 搜索结果的 CSV 输出
+sys ai provider openai -o csv         # Provider CSV（6 列）
+sys ai model gpt-4.1 --refresh        # 强制重抓数据（--refresh 属 ai 层，也可写 ai --refresh model gpt-4.1）
+sys ai provider openai                # Provider 详情（api / npm / models 数量与清单）
+sys ai provider -s groq               # Provider 子串搜索
+sys ai provider --list                # 列出全部 Provider
 ```
 
 CSV 列：model 为 `id,name,provider,family,status,knowledge_cutoff,description,context,input_limit,output_limit,cost_input,cost_output,cost_cache_read,modalities_input,modalities_output,reasoning,tool_call,structured_output,temperature,attachment,open_weights,release_date,last_updated,canonical_model_id`；provider 为 `id,name,api,env,npm,models_count`。
@@ -322,22 +322,22 @@ CSV 列：model 为 `id,name,provider,family,status,knowledge_cutoff,description
 * `--limit N` 限制列表条数（默认 20）；`--json` / `-o json` 输出 JSON 数组；`-o csv` 输出 10 列 CSV（`id,name,provider,aliases,type,category,context,modality,published,url`）
 
 ```
-sysenv ai cn-model gpt-6-1-sol            # 精确查询（大小写不敏感；附带详情页 context / modality）
-sysenv ai cn-model -s ernie --limit 10    # 子串搜索（别名也匹配）
-sysenv ai cn-model --date 2026-09-28      # 列出所有 published 晚于该日期的模型
-sysenv ai cn-model --model-type 语音       # 列出所有语音大模型
-sysenv ai cn-model --model-type 语音,多模态 # 多值取交集：同时命中语音与多模态分类
-sysenv ai cn-model -s qwen --date 2026-01-01   # 搜索 + 日期过滤
-sysenv ai cn-model gpt-6-1-sol --json     # JSON 数组输出
-sysenv ai cn-model -s ernie -o csv        # CSV 输出
-sysenv ai cn-model gpt-6-1-sol --refresh  # 强制重新抓取（--refresh 属 ai 层）
+sys ai cn-model gpt-6-1-sol            # 精确查询（大小写不敏感；附带详情页 context / modality）
+sys ai cn-model -s ernie --limit 10    # 子串搜索（别名也匹配）
+sys ai cn-model --date 2026-09-28      # 列出所有 published 晚于该日期的模型
+sys ai cn-model --model-type 语音       # 列出所有语音大模型
+sys ai cn-model --model-type 语音,多模态 # 多值取交集：同时命中语音与多模态分类
+sys ai cn-model -s qwen --date 2026-01-01   # 搜索 + 日期过滤
+sys ai cn-model gpt-6-1-sol --json     # JSON 数组输出
+sys ai cn-model -s ernie -o csv        # CSV 输出
+sys ai cn-model gpt-6-1-sol --refresh  # 强制重新抓取（--refresh 属 ai 层）
 ```
 
 #### 5.2 AI 聊天（`ai chat`）
 
 按 OpenAI `/v1/chat/completions` 或 Anthropic Messages API 标准与配置好的 Provider 聊天。
 
-* 配置文件默认位置 **`~/.sysenv/config.yaml`**（找不到会明确提示），可用 `-c/--config FILE` 覆盖；格式见 `doc/config.yaml`，脱敏模板见 `doc/config.example.yaml`
+* 配置文件默认位置 **`~/.sys/config.yaml`**（找不到会明确提示），可用 `-c/--config FILE` 覆盖；格式见 `doc/config.yaml`，脱敏模板见 `doc/config.example.yaml`
 
 * `clients` 列表存放 Provider：必填 `name / api_base / api_key / models`（`models` 每项 `name` + 可选 `weight`，缺省权重 1，**取值范围 0-9**，可选 `max_tokens`、`max_input_tokens`、`type`）；`type` 为 `openai`（默认，兼容 `open`）或 `anthropic`，分别按 OpenAI / Claude API 标准发请求
 
@@ -367,16 +367,16 @@ sysenv ai cn-model gpt-6-1-sol --refresh  # 强制重新抓取（--refresh 属 a
 * `--debug`：把**实际 HTTP 请求**（方法 / URL / 请求头 / 请求体）与**响应**（状态 / 响应头 / 响应体）打印到 stderr，不污染 stdout
 
 ```
-sysenv ai chat "你好"                     # 用默认配置聊天（~/.sysenv/config.yaml）
-sysenv ai chat 你好 世界                  # 多参数自动拼接
-echo "帮我总结这段文字" | sysenv ai chat   # stdin 管道
-sysenv ai chat "你好" -c doc/config.yaml  # 指定配置文件
-sysenv ai chat "你好" --no-stream         # 关闭流式
-sysenv ai chat "你好" --debug             # 打印实际请求与响应（含 header）
-sysenv ai chat "你好" -m agnes:agnes-3.0-flash   # 覆盖顶层 model，只用 agnes 的该模型
-sysenv ai chat "你好" -m "agnes:*,claude:claude-3-5-sonnet"  # 多模型逗号分隔，加权轮询
-sysenv ai chat --list-provider            # 列出配置中的 Provider
-sysenv ai chat --list-model               # 列出配置中的所有模型（含权重）
+sys ai chat "你好"                     # 用默认配置聊天（~/.sys/config.yaml）
+sys ai chat 你好 世界                  # 多参数自动拼接
+echo "帮我总结这段文字" | sys ai chat   # stdin 管道
+sys ai chat "你好" -c doc/config.yaml  # 指定配置文件
+sys ai chat "你好" --no-stream         # 关闭流式
+sys ai chat "你好" --debug             # 打印实际请求与响应（含 header）
+sys ai chat "你好" -m agnes:agnes-3.0-flash   # 覆盖顶层 model，只用 agnes 的该模型
+sys ai chat "你好" -m "agnes:*,claude:claude-3-5-sonnet"  # 多模型逗号分隔，加权轮询
+sys ai chat --list-provider            # 列出配置中的 Provider
+sys ai chat --list-model               # 列出配置中的所有模型（含权重）
 ```
 
 #### 5.3 任务模板聊天（`ai task`）
@@ -394,7 +394,7 @@ sysenv ai chat --list-model               # 列出配置中的所有模型（含
     * **AI 聚合搜索源**（目标站点数据接口带签名/WAF，程序改用搜索引擎抓取相关结果回填，Sogou 优先、Bing 兜底，模型如实筛选总结）：`enlightent`（电视剧热播榜）、`dongchedi`（懂车帝汽车资讯）、`autohome`（汽车之家汽车新闻）；`sogou` 为通用聚合源，需传 `q` / `query` 参数（如 `q:电视剧 热播 榜单`）
     * **直连官方接口源**（v0.4.10）：`szhousing` —— 深圳楼盘销售情况。平台 API（`/szfdcscjy/*`）不经过瑞数反爬（瑞数只挂 HTML 首页），程序**纯 HTTP 直查官方接口，无需浏览器、不依赖本机任何软件**（Windows/Ubuntu 一致）。`name` 参数为楼盘名称（可选，如 `name:星悦尊府`），`area` 参数按区域查询（可选，如 `area:龙华` 或 `-area 龙华`），均未提供时返回近期在售项目列表
     * **博查 API 搜索源**（v0.4.12）：`bochaai` —— 博查 AI 网页搜索（`POST api.bochaai.com/v1/web-search`）。key 取自配置顶层 `search:` 段（如 `- name: bochaai, key: sk-...`）；`q` / `query` 为查询词（必填），可选参数与官网接口一致：`freshness`（`oneDay`/`oneWeek`/`oneMonth`/`oneYear`/`noLimit`/日期/区间）、`summary`（`true`/`false`）、`count`（1-50）、`page`、`include_domains` / `exclude_domains`（逗号分隔多域名）
-    * **搜索源清单**：`sysenv ai task --list-source` 列出全部内置搜索源的名称、类型（`api` 直连数据接口 / `search` AI 聚合搜索 Sogou 优先 Bing 兜底 / `generic` 通用搜索需 `q`/`query` 参数）、用途与访问地址（v0.4.10）
+    * **搜索源清单**：`sys ai task --list-source` 列出全部内置搜索源的名称、类型（`api` 直连数据接口 / `search` AI 聚合搜索 Sogou 优先 Bing 兜底 / `generic` 通用搜索需 `q`/`query` 参数）、用途与访问地址（v0.4.10）
     * **结果净化**（v0.4.9）：AI 聚合搜索自动过滤百度百科、搜狗百科、维基百科、互动百科等低价值词条（标题与 URL 双通道识别），避免搜索结果被百科词条占满；Sogou 请求失败时自动降级 Bing，两引擎均无可过滤结果时合并原始结果兜底，保证任务不因过滤而失败
 
 * `-t <name>`：取 `name` 匹配的任务，按 `msg` 组装消息（`desc` 为任务描述）；任务声明了 `api`/`search` 时同样先执行工具并回填真实数据再回答
@@ -406,16 +406,16 @@ sysenv ai chat --list-model               # 列出配置中的所有模型（含
 * `msg` 前缀：`file://` 读取本地**相对路径**文件内容作为消息；`url:` 抓取网络内容作为消息
 
 ```
-sysenv ai task                          # 列出任务（name / desc，最多 10 个）
-sysenv ai task 今天深圳的天气如何         # function_call 自动路由：模型选 weather 并自动执行 api 工具（真实天气）后回答
-sysenv ai task 今天有什么热门新闻        # function_call 自动路由：模型选 hotnews 并自动执行 toutiao 搜索源后回答
-sysenv ai task -t weather               # 用默认值（深圳）组装消息并聊天
-sysenv ai task -t weather country:北京   # 替换 country 为北京
-sysenv ai task -t weather country=北京   # = 号写法等价
-sysenv ai task -t "*" "帮我查今天深圳的天气"  # 对全部任务打分（TASK/DESC/SCORE，按分数排序）
+sys ai task                          # 列出任务（name / desc，最多 10 个）
+sys ai task 今天深圳的天气如何         # function_call 自动路由：模型选 weather 并自动执行 api 工具（真实天气）后回答
+sys ai task 今天有什么热门新闻        # function_call 自动路由：模型选 hotnews 并自动执行 toutiao 搜索源后回答
+sys ai task -t weather               # 用默认值（深圳）组装消息并聊天
+sys ai task -t weather country:北京   # 替换 country 为北京
+sys ai task -t weather country=北京   # = 号写法等价
+sys ai task -t "*" "帮我查今天深圳的天气"  # 对全部任务打分（TASK/DESC/SCORE，按分数排序）
 ```
 
-**工具执行示例**（`~/.sysenv/config.yaml` 中 `tasks` 配置）：
+**工具执行示例**（`~/.sys/config.yaml` 中 `tasks` 配置）：
 
 ```yaml
 tasks:
@@ -460,7 +460,7 @@ tasks:
     params: [name, area]
 ```
 
-实际输出示例（`sysenv ai task 今天深圳的天气如何`，模型选 weather → 程序请求 open-meteo → 回填后回答）：
+实际输出示例（`sys ai task 今天深圳的天气如何`，模型选 weather → 程序请求 open-meteo → 回填后回答）：
 
 ```
 [0] task: weather
@@ -478,30 +478,30 @@ tasks:
 
 通过 Provider 的 OpenAI 兼容 **Images API**（`POST {api_base}/images/generations`，Bearer 鉴权）生成图片并保存到本地。
 
-* 配置文件与 `ai chat` 完全一致（默认 `~/.sysenv/config.yaml`，`-c/--config` 覆盖），只支持 **OpenAI 兼容 Provider（`type: openai`）**；`type: anthropic` 目标在发请求前明确报错（Anthropic 没有 Images API）
+* 配置文件与 `ai chat` 完全一致（默认 `~/.sys/config.yaml`，`-c/--config` 覆盖），只支持 **OpenAI 兼容 Provider（`type: openai`）**；`type: anthropic` 目标在发请求前明确报错（Anthropic 没有 Images API）
 
 * **模型选择与 `ai chat` 同一套规则**：顶层 `model` 或 `-m/--model`（`{provider}:{model}` / `{model}` / `provider:*` / 逗号分隔多选），多目标按 `weight` 加权轮询，失败自动降权并尝试下一个模型，替补成功升权，权重写回配置文件
 
 * **参数**：`-o/--output DIR` 保存目录（默认当前目录，自动创建）；`-n/--count N` 生成数量（默认 1）；`-s/--size SIZE` 尺寸（默认 `1024x1024`，原样传给 API，如 `512x512` / `1792x1024`）；`--url` 请求图片 URL 并下载保存（默认请求 `b64_json`，本地解码保存，无需二次网络请求）
 
-* **保存**：文件名 `sysenv-ai-image-<YYYYMMDD-HHMMSS>-<序号>.<扩展名>`，扩展名按文件头魔数识别（png / jpg / gif / webp），重名自动追加 `-1`、`-2` 后缀不覆盖；每张图片的保存路径打印到 stdout
+* **保存**：文件名 `sys-ai-image-<YYYYMMDD-HHMMSS>-<序号>.<扩展名>`，扩展名按文件头魔数识别（png / jpg / gif / webp），重名自动追加 `-1`、`-2` 后缀不覆盖；每张图片的保存路径打印到 stdout
 
 * 提示词来源：命令行参数（多段自动拼接）；无参数时若 stdin 非终端则读取管道内容；`--debug` 打印实际 HTTP 请求与响应到 stderr
 
 ```
-sysenv ai image "a red fox in the snow"                  # 默认配置 + 默认模型，保存到当前目录
-sysenv ai image 一只 雪地里的 红色狐狸                   # 多参数自动拼接（空格分隔）
-echo "赛博朋克风格的城市夜景" | sysenv ai image          # stdin 管道
-sysenv ai image "樱花树下的小猫" -o pics -n 2 -s 512x512 # 2 张 512x512，保存到 pics/
-sysenv ai image "海报主视觉" -m bigmodel:cogview-4       # 覆盖顶层 model，只用 bigmodel 的该模型
-sysenv ai image "风景" -m "agnes:*,bigmodel:cogview-4"   # 多模型逗号分隔，加权轮询
-sysenv ai image "风景" --url -o pics                     # 请求 URL 版并下载保存
-sysenv ai image --list-provider --list-model             # 列出配置中的 Provider / 模型
+sys ai image "a red fox in the snow"                  # 默认配置 + 默认模型，保存到当前目录
+sys ai image 一只 雪地里的 红色狐狸                   # 多参数自动拼接（空格分隔）
+echo "赛博朋克风格的城市夜景" | sys ai image          # stdin 管道
+sys ai image "樱花树下的小猫" -o pics -n 2 -s 512x512 # 2 张 512x512，保存到 pics/
+sys ai image "海报主视觉" -m bigmodel:cogview-4       # 覆盖顶层 model，只用 bigmodel 的该模型
+sys ai image "风景" -m "agnes:*,bigmodel:cogview-4"   # 多模型逗号分隔，加权轮询
+sys ai image "风景" --url -o pics                     # 请求 URL 版并下载保存
+sys ai image --list-provider --list-model             # 列出配置中的 Provider / 模型
 ```
 
 #### 5.5 本地配置查询（`ai info`）
 
-检查本地配置文件（默认 `~/.sysenv/config.yaml`，`-c/--config` 覆盖）与 models.dev 模型价格。
+检查本地配置文件（默认 `~/.sys/config.yaml`，`-c/--config` 覆盖）与 models.dev 模型价格。
 
 * `info provider [KEYWORD]`：列出 `clients` 中全部 provider 的 `name / api_base / api_key` 及官方 `DOCS`（帮助文档）与 `CONSOLE`（控制台）地址（按 provider 名称匹配内置收录表，未收录显示 `-`）；带 KEYWORD 时只保留名称包含该词的 provider（大小写不敏感），无匹配报错并列出可用名称；`-o json` / `-o csv` / `--json` 输出 JSON 数组或 CSV 表（JSON 字段 `name` / `api_base` / `api_key` / `docs` / `console`）
 * `info model [KEYWORD]`：列出全部 provider 下的 model，格式 `{provider}:{name}`；带 KEYWORD 时按 provider 名称包含匹配（支持 `provider:model` / `provider:*` 精确选择），无 provider 命中时回退按 model 名称匹配；`-o json` / `-o csv` / `--json` 输出 JSON 数组或 CSV 表（JSON 字段 `provider` / `name`）
@@ -510,28 +510,28 @@ sysenv ai image --list-provider --list-model             # 列出配置中的 Pr
 * `info sale-price PROVIDER`：抓取官网定价页并列出全部模型销售价。agnes 抓取 `wiki.agnes-ai.cn` 定价页（文本/图片/视频模型，刊例价 + 现价，人民币）；minimax 抓取 `platform.minimaxi.com` 定价页（语言模型输入/输出/缓存价格，元/百万 tokens）；alibaba-cn 给出百炼官方模型列表与计费说明页地址；其余 provider 给出官网定价页地址。定价页 24h 缓存，`--refresh` 强制重抓
 
 ```
-sysenv ai info provider                     # 列出配置中全部 provider（name/api_base/api_key）
-sysenv ai info provider agnes               # 只显示名称包含 agnes 的 provider
-sysenv ai info provider -o json             # 全部 provider 的 JSON 数组输出
-sysenv ai info provider agnes -o csv        # 过滤 + CSV 输出
-sysenv ai info provider --json              # 等价于 -o json
-sysenv ai info model                        # 列出全部模型，格式 provider:model
-sysenv ai info model modelscope             # 只显示 modelscope 下的模型
-sysenv ai info model deepseek               # 无 provider 命中时按模型名匹配
-sysenv ai info model agnes:3.0              # 精确选择 agnes 下名称含 3.0 的模型
-sysenv ai info model modelscope:*           # modelscope 全部模型
-sysenv ai info price openai,anthropic       # 查询两个 provider 的模型价格列表
-sysenv ai info price "openai，deepseek"     # 全角逗号同样支持
-sysenv ai info balance minimax              # 用 minimax 的 api_key 查询官方余额
-sysenv ai info balance alibaba-cn           # 阿里云百炼：官方 limits 限额 + 控制台指引
-sysenv ai info sale-price agnes             # 抓取 agnes 官网定价页，列出全部模型销售价
+sys ai info provider                     # 列出配置中全部 provider（name/api_base/api_key）
+sys ai info provider agnes               # 只显示名称包含 agnes 的 provider
+sys ai info provider -o json             # 全部 provider 的 JSON 数组输出
+sys ai info provider agnes -o csv        # 过滤 + CSV 输出
+sys ai info provider --json              # 等价于 -o json
+sys ai info model                        # 列出全部模型，格式 provider:model
+sys ai info model modelscope             # 只显示 modelscope 下的模型
+sys ai info model deepseek               # 无 provider 命中时按模型名匹配
+sys ai info model agnes:3.0              # 精确选择 agnes 下名称含 3.0 的模型
+sys ai info model modelscope:*           # modelscope 全部模型
+sys ai info price openai,anthropic       # 查询两个 provider 的模型价格列表
+sys ai info price "openai，deepseek"     # 全角逗号同样支持
+sys ai info balance minimax              # 用 minimax 的 api_key 查询官方余额
+sys ai info balance alibaba-cn           # 阿里云百炼：官方 limits 限额 + 控制台指引
+sys ai info sale-price agnes             # 抓取 agnes 官网定价页，列出全部模型销售价
 ```
 
 #### 5.6 网络搜索（`search`）
 
 通过**博查 AI 网页搜索 API**（`POST https://api.bochaai.com/v1/web-search`，Bearer 鉴权）提供联网搜索能力，**请求参数与官网接口完全一致**。
 
-* **API key**：读取配置顶层 `search:` 段（默认 `~/.sysenv/config.yaml`，`-c/--config` 覆盖），首个 `name: bochaai` 条目生效，未配置时明确报错。示例：
+* **API key**：读取配置顶层 `search:` 段（默认 `~/.sys/config.yaml`，`-c/--config` 覆盖），首个 `name: bochaai` 条目生效，未配置时明确报错。示例：
 
   ```yaml
   search:
@@ -551,15 +551,15 @@ sysenv ai info sale-price agnes             # 抓取 agnes 官网定价页，列
   * `--json`：打印原始 JSON 响应；`--debug`：打印实际 HTTP 请求与响应
 
 ```
-sysenv search "2026年诺贝尔物理学奖"                     # 默认 10 条，标题 + 链接
-sysenv search 深圳 今天 天气 --summary --count 5        # 5 条并带 AI 摘要 / 站点 / 时间
-sysenv search "rust 2026" --freshness oneMonth          # 只搜最近一个月
-sysenv search "cargo 教程" --include-domains rust-lang.org docs.rs   # 只从指定站点搜
-sysenv search "期货 行情" --exclude-domains baidu.com --json          # 排除站点 + 原始 JSON
-echo "今天有什么热门新闻" | sysenv search               # stdin 管道查询
-sysenv search "杭州天气" --ai                           # AI Search：AI 答案 + 天气卡 + 参考网页
-sysenv search "深圳 买房 政策" --ai --no-answer --count 5   # AI Search 但不要 AI 答案
-ssearch "五一 放假 安排"                                 # ssearch 垫片等价于 sysenv search
+sys search "2026年诺贝尔物理学奖"                     # 默认 10 条，标题 + 链接
+sys search 深圳 今天 天气 --summary --count 5        # 5 条并带 AI 摘要 / 站点 / 时间
+sys search "rust 2026" --freshness oneMonth          # 只搜最近一个月
+sys search "cargo 教程" --include-domains rust-lang.org docs.rs   # 只从指定站点搜
+sys search "期货 行情" --exclude-domains baidu.com --json          # 排除站点 + 原始 JSON
+echo "今天有什么热门新闻" | sys search               # stdin 管道查询
+sys search "杭州天气" --ai                           # AI Search：AI 答案 + 天气卡 + 参考网页
+sys search "深圳 买房 政策" --ai --no-answer --count 5   # AI Search 但不要 AI 答案
+ssearch "五一 放假 安排"                                 # ssearch 垫片等价于 sys search
 ```
 
 > 注意：**AI Search 与 Web Search 是博查的独立套餐**，key 需在开放平台分别开通；未开通 AI Search 包时 `--ai` 会返回 403（`You do not have enough money or package quota`）。
@@ -568,7 +568,7 @@ ssearch "五一 放假 安排"                                 # ssearch 垫片�
 
 fd/sd 风格：搜索 stdin 或目录树中的文本/源码文件，或就地替换字符串。匹配在 Unicode 字符层进行（`-i` 逐字符大小写折叠，中文等非 ASCII 同样正确）。
 
-* 1 个参数 `file PATTERN`：从标准输入读取并输出匹配行（管道用法：`type a.txt | sysenv file hello`）；**带扩展名的参数（如 `me.txt`）改为直接显示该文件内容**（cat 风格），用引号包裹（`"me.txt"`）可强制按字符串搜索
+* 1 个参数 `file PATTERN`：从标准输入读取并输出匹配行（管道用法：`type a.txt | sys file hello`）；**带扩展名的参数（如 `me.txt`）改为直接显示该文件内容**（cat 风格），用引号包裹（`"me.txt"`）可强制按字符串搜索
 * 2 个参数 `file PATTERN PATH`：在 PATH（文件或目录树）的所有已知文本与源码文件（txt/md/py/java/c/...）中搜索 PATTERN，输出 `路径:行号:内容`
 * 3 个参数 `file OLD NEW PATH`：在 PATH 树中把 OLD 就地替换为 NEW，输出每个文件的替换数与汇总
 
@@ -591,27 +591,27 @@ fd/sd 风格：搜索 stdin 或目录树中的文本/源码文件，或就地替
 遍历规则：递归目录树时跳过隐藏项（`.` 开头）与常见噪音目录（`.git` / `node_modules` / `target` / `dist` / `build` / `__pycache__` 等）；二进制文件（含 NUL 字节）自动跳过；替换模式同样遵守 `-e` / `-t` / `-i` / `-w`。
 
 ```
-sysenv file hello                              # stdin 管道搜索（type a.txt | sysenv file hello）
-sysenv file me.txt                             # 显示 me.txt 文件内容
-sysenv file "me.txt"                           # 引号包裹：仍按字符串搜索（stdin 中找 me.txt）
-sysenv file hello D:\projects                  # 在 D:\projects 树中搜索
-sysenv file hello D:\projects -e py -e md      # 只搜 .py 和 .md
-sysenv file HELLO D:\projects -i               # 忽略大小写
-sysenv file hello D:\projects -t               # 只搜纯文本（不含源码）
-sysenv file hello D:\projects -w -c 2          # 整词 + 前后 2 行上下文
-sysenv file hello hi D:\projects               # 就地替换 hello -> hi
-sysenv file HELLO hi D:\projects -i            # 忽略大小写替换
-sysenv file -S 2m                              # 列出当前目录下 >= 2 MiB 的文件
-sysenv file -S 5000 D:\data                    # 列出 D:\data 下 >= 5000 字节的文件
-sysenv file -S 2m -e bin -d 1 D:\data          # >= 2MiB 的 .bin 文件，只递归 1 层
-sysenv file --newer "2026-10-01" D:\data       # 修改时间 >= 2026-10-01 的文件
-sysenv file --older "2026-10-01 12:00" D:\data # 修改时间早于该时刻的文件
-sysenv file hello D:\data -S 1m                # 只在 >= 1 MiB 的文件中搜 hello
+sys file hello                              # stdin 管道搜索（type a.txt | sys file hello）
+sys file me.txt                             # 显示 me.txt 文件内容
+sys file "me.txt"                           # 引号包裹：仍按字符串搜索（stdin 中找 me.txt）
+sys file hello D:\projects                  # 在 D:\projects 树中搜索
+sys file hello D:\projects -e py -e md      # 只搜 .py 和 .md
+sys file HELLO D:\projects -i               # 忽略大小写
+sys file hello D:\projects -t               # 只搜纯文本（不含源码）
+sys file hello D:\projects -w -c 2          # 整词 + 前后 2 行上下文
+sys file hello hi D:\projects               # 就地替换 hello -> hi
+sys file HELLO hi D:\projects -i            # 忽略大小写替换
+sys file -S 2m                              # 列出当前目录下 >= 2 MiB 的文件
+sys file -S 5000 D:\data                    # 列出 D:\data 下 >= 5000 字节的文件
+sys file -S 2m -e bin -d 1 D:\data          # >= 2MiB 的 .bin 文件，只递归 1 层
+sys file --newer "2026-10-01" D:\data       # 修改时间 >= 2026-10-01 的文件
+sys file --older "2026-10-01 12:00" D:\data # 修改时间早于该时刻的文件
+sys file hello D:\data -S 1m                # 只在 >= 1 MiB 的文件中搜 hello
 ```
 
 #### 5.8 格式转换（`con`）
 
-json / csv / md / yaml 四种格式互转。默认从标准输入读取（管道用法：`cat a.json | sysenv con`），结果输出到 stdout；`-out` 可改写到文件。
+json / csv / md / yaml 四种格式互转。默认从标准输入读取（管道用法：`cat a.json | sys con`），结果输出到 stdout；`-out` 可改写到文件。
 
 * `-file F`：从文件 F 读取（省略时读 stdin；扩展名为 json/csv/md/yaml 时自动推断输入格式）
 * `-i FMT`：输入格式 `json | csv | md | yaml`（省略时按内容自动检测）
@@ -621,19 +621,19 @@ json / csv / md / yaml 四种格式互转。默认从标准输入读取（管道
 表格类转换（csv / md）与对象数组互相映射：CSV 首行为表头；Markdown 表格解析表头 + 数据行。单元格自动做 null / bool / int / float / 字符串推断；字段含逗号、引号、换行、`|` 时自动转义。YAML 解析失败时回退到 tab-tolerant 解析器，兼容含 tab 缩进的真实配置。
 
 ```
-cat a.json | sysenv con                        # stdin 自动检测，按原格式格式化输出
-sysenv con -file a.json -o csv                 # json -> csv（stdout）
-sysenv con -i csv -o json < a.csv              # csv -> json
-sysenv con -file a.yaml -o md -out out.md      # yaml -> markdown，写入 out.md
-sysenv con -file config.yaml -o json           # 真实配置（含 tab 缩进）-> json
-type a.csv | sysenv con -o md                  # csv -> markdown 表格
+cat a.json | sys con                        # stdin 自动检测，按原格式格式化输出
+sys con -file a.json -o csv                 # json -> csv（stdout）
+sys con -i csv -o json < a.csv              # csv -> json
+sys con -file a.yaml -o md -out out.md      # yaml -> markdown，写入 out.md
+sys con -file config.yaml -o json           # 真实配置（含 tab 缩进）-> json
+type a.csv | sys con -o md                  # csv -> markdown 表格
 ```
 
 ## 6. 进程管理（`task`）
 
 ### 特性
 
-* **无参默认全量**：`sysenv task`（`stask`）不加参数直接列出全部进程，等价于 `task list`
+* **无参默认全量**：`sys task`（`stask`）不加参数直接列出全部进程，等价于 `task list`
 
 * `task list [NAME]`：列出全部进程的 **PID / 名称 / 可执行文件路径**；`NAME` 按名称模糊匹配（子串、大小写不敏感），传数字则按 PID 精确查询
 
@@ -644,14 +644,14 @@ type a.csv | sysenv con -o md                  # csv -> markdown 表格
 ### 示例
 
 ```
-sysenv task                       # 无参：列出全部进程（等价于 task list）
-sysenv task -o 8080               # 查看占用 8080 端口的进程
-sysenv task list -o 8080          # 同上（显式 list 写法）
-sysenv task list chrome           # 按名称模糊匹配（子串，大小写不敏感）
-sysenv task list 1234             # 按 PID 查询
-sysenv task kill 1234             # 按 PID 终止
-sysenv task kill notepad          # 按名称模糊匹配，终止全部命中的进程
-sysenv task kill -f 1234          # 强制终止（Linux 发送 SIGKILL）
+sys task                       # 无参：列出全部进程（等价于 task list）
+sys task -o 8080               # 查看占用 8080 端口的进程
+sys task list -o 8080          # 同上（显式 list 写法）
+sys task list chrome           # 按名称模糊匹配（子串，大小写不敏感）
+sys task list 1234             # 按 PID 查询
+sys task kill 1234             # 按 PID 终止
+sys task kill notepad          # 按名称模糊匹配，终止全部命中的进程
+sys task kill -f 1234          # 强制终止（Linux 发送 SIGKILL）
 ```
 
 ## 7. httpie 兼容 HTTP 客户端（`http`）
@@ -691,30 +691,30 @@ sysenv task kill -f 1234          # 强制终止（Linux 发送 SIGKILL）
 
 
 ```
-sysenv http pie.dev/get                       # GET（终端默认显示状态行+头+体）
-sysenv http pie.dev/post name=John age:=29    # 无方法时自动 POST；默认 JSON
-sysenv http -f POST pie.dev/post name='John Smith'   # 表单
-sysenv http -v pie.dev/get                    # 打印完整请求与响应
-sysenv http -h pie.dev/get                    # 只打印响应头
-sysenv http GET pie.dev/get q==httpie per_page==1   # 查询参数
-sysenv http pie.dev/post X-API-Token:123 name=John  # 请求头 + JSON 字段
-sysenv http -d pie.dev/image.png              # wget 式下载
-sysenv http -o out.json pie.dev/get           # 响应体存文件（其余打到 stderr）
-sysenv http POST pie.dev/post @data.json      # 文件作为原始请求体
-sysenv http POST pie.dev/post --file data.json # --file 读取本地文件作为原始请求体（等价 @FILE）
-sysenv http POST pie.dev/post note=@note.txt   # 字段值以 @ 开头则读取本地文件（特殊字符自动转义）
-sysenv http pie.dev/post cv@resume.pdf        # multipart 文件上传
-sysenv http -a user:pass pie.dev/anything     # Basic Auth
-sysenv http -A bearer -a TOKEN pie.dev/anything   # Bearer Token
-sysenv http -F --max-redirects 5 pie.dev/     # 跟随重定向
-sysenv http --check-status pie.dev/404        # 退出码 = 4
-sysenv http --offline pie.dev/post a=1        # 只构建并打印请求，不发送
-sysenv http --help                            # 打印接口参数说明与示例
-sysenv http --debug pie.dev/post a=1 b:=2     # 打印实际请求与响应（含 header）
-sysenv http POST pie.dev/post --raw '{"a":1}' # 显式原始体
-sysenv http pie.dev/post -- -name=foo         # 以 - 开头的字段名需跟在 -- 之后
-echo '{"a":1}' | sysenv http POST pie.dev/post  # stdin 作为原始体
-sysenv http --verify no https://self-signed.example  # 跳过证书校验
+sys http pie.dev/get                       # GET（终端默认显示状态行+头+体）
+sys http pie.dev/post name=John age:=29    # 无方法时自动 POST；默认 JSON
+sys http -f POST pie.dev/post name='John Smith'   # 表单
+sys http -v pie.dev/get                    # 打印完整请求与响应
+sys http -h pie.dev/get                    # 只打印响应头
+sys http GET pie.dev/get q==httpie per_page==1   # 查询参数
+sys http pie.dev/post X-API-Token:123 name=John  # 请求头 + JSON 字段
+sys http -d pie.dev/image.png              # wget 式下载
+sys http -o out.json pie.dev/get           # 响应体存文件（其余打到 stderr）
+sys http POST pie.dev/post @data.json      # 文件作为原始请求体
+sys http POST pie.dev/post --file data.json # --file 读取本地文件作为原始请求体（等价 @FILE）
+sys http POST pie.dev/post note=@note.txt   # 字段值以 @ 开头则读取本地文件（特殊字符自动转义）
+sys http pie.dev/post cv@resume.pdf        # multipart 文件上传
+sys http -a user:pass pie.dev/anything     # Basic Auth
+sys http -A bearer -a TOKEN pie.dev/anything   # Bearer Token
+sys http -F --max-redirects 5 pie.dev/     # 跟随重定向
+sys http --check-status pie.dev/404        # 退出码 = 4
+sys http --offline pie.dev/post a=1        # 只构建并打印请求，不发送
+sys http --help                            # 打印接口参数说明与示例
+sys http --debug pie.dev/post a=1 b:=2     # 打印实际请求与响应（含 header）
+sys http POST pie.dev/post --raw '{"a":1}' # 显式原始体
+sys http pie.dev/post -- -name=foo         # 以 - 开头的字段名需跟在 -- 之后
+echo '{"a":1}' | sys http POST pie.dev/post  # stdin 作为原始体
+sys http --verify no https://self-signed.example  # 跳过证书校验
 ```
 
 > PowerShell 注意：PS 5.1 会剥掉传给原生程序参数中的内嵌双引号，含引号的 JSON / 原始体请用
@@ -751,7 +751,7 @@ sysenv http --verify no https://self-signed.example  # 跳过证书校验
 > 说明：http 子命令中
 > `-h`
 > 是 httpie 语义的 "只打印响应头"，因此帮助请用
-> `sysenv http --help`
+> `sys http --help`
 > 。
 
 ## 8. 快捷命令垫片（`short`）
@@ -774,22 +774,22 @@ sysenv http --verify no https://self-signed.example  # 跳过证书校验
 
 | 短命令     | 等价            |
 | ------- | ------------- |
-| `spath` | `sysenv path` |
-| `senv`  | `sysenv env`  |
-| `slink` | `sysenv link` |
-| `shttp` | `sysenv http` |
-| `sai`   | `sysenv ai`   |
-| `stask` | `sysenv task` |
+| `spath` | `sys path` |
+| `senv`  | `sys env`  |
+| `slink` | `sys link` |
+| `shttp` | `sys http` |
+| `sai`   | `sys ai`   |
+| `stask` | `sys task` |
 
 ### 示例
 
 
 
 ```
-sysenv short              # 安装全部 6 个垫片到托管目录并自动加入 PATH
-sysenv short --dir ~/bin  # 指定安装目录
-sysenv short -f           # 覆盖已存在的垫片
-sysenv short --temporary  # 不持久化 PATH，只打印可粘贴的片段
+sys short              # 安装全部 6 个垫片到托管目录并自动加入 PATH
+sys short --dir ~/bin  # 指定安装目录
+sys short -f           # 覆盖已存在的垫片
+sys short --temporary  # 不持久化 PATH，只打印可粘贴的片段
 ```
 
 
@@ -800,7 +800,7 @@ sysenv short --temporary  # 不持久化 PATH，只打印可粘贴的片段
 
 
 
-* `http`：`--auth-type digest`、`--session`、`--stream`、`--ssl`、`--cert`、自定义 `--boundary` 未实现（见 `sysenv help http`）
+* `http`：`--auth-type digest`、`--session`、`--stream`、`--ssl`、`--cert`、自定义 `--boundary` 未实现（见 `sys help http`）
 
 * `path export` 的 `.reg` 仅适用于 Windows（Registry Editor 格式），Linux 交换备份请用 `.txt` / `.json`
 

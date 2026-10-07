@@ -1,4 +1,4 @@
-//! `sysenv task` — query and kill processes (Windows / Ubuntu).
+//! `sys task` — query and kill processes (Windows / Ubuntu).
 //!
 //! Listing enumerates every visible process with its PID, name and
 //! executable path; killing accepts a PID or a fuzzy-matched name
@@ -220,7 +220,7 @@ fn port_pids(port: u16) -> Result<Vec<u32>> {
 // Commands
 // ---------------------------------------------------------------------------
 
-/// `sysenv task list [NAME]` — list processes (PID, name, path).
+/// `sys task list [NAME]` — list processes (PID, name, path).
 /// NAME fuzzy-matches the process name; a numeric NAME looks up that PID;
 /// PORT (with -o/--port) restricts the listing to processes using that port.
 pub fn cmd_list(filter: Option<&str>, port: Option<u16>) -> Result<()> {
@@ -301,7 +301,7 @@ fn process_name(pid: u32) -> Option<String> {
     list_processes().ok()?.into_iter().find(|p| p.pid == pid).map(|p| p.name)
 }
 
-/// `sysenv task kill TARGET` — kill by PID or by fuzzy-matched name
+/// `sys task kill TARGET` — kill by PID or by fuzzy-matched name
 /// (a name match kills every matching process).
 pub fn cmd_kill(target: &str, force: bool) -> Result<()> {
     if let Ok(pid) = target.parse::<u32>() {

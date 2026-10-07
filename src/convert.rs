@@ -1,10 +1,10 @@
-//! `sysenv con` — JSON / CSV / Markdown / YAML conversion.
+//! `sys con` — JSON / CSV / Markdown / YAML conversion.
 //!
 //! Usage:
-//!   cat a.json | sysenv con                        # detect input format, print parsed (defaults to the input format)
-//!   sysenv con -file a.json -o csv                 # read file, convert to CSV (stdout)
-//!   sysenv con -i csv -o json < a.csv              # CSV -> JSON
-//!   sysenv con -file a.yaml -o md -out out.md      # YAML -> Markdown, write to out.md
+//!   cat a.json | sys con                        # detect input format, print parsed (defaults to the input format)
+//!   sys con -file a.json -o csv                 # read file, convert to CSV (stdout)
+//!   sys con -i csv -o json < a.csv              # CSV -> JSON
+//!   sys con -file a.yaml -o md -out out.md      # YAML -> Markdown, write to out.md
 //!
 //! Input is read from stdin unless `-file` is given; the input format is
 //! auto-detected unless `-i` is given; the output format defaults to the
@@ -447,10 +447,10 @@ fn parse_args(raw: &[String]) -> Result<(Option<String>, Option<String>, Option<
 const CON_HELP: &str = "Convert between json / csv / md / yaml.
 
 Usage:
-  cat a.json | sysenv con                    # stdin, auto-detect input, print (defaults to the input format)
-  sysenv con -file a.json -o csv             # read a file, convert to csv (stdout)
-  sysenv con -i csv -o json                  # csv from stdin -> json
-  sysenv con -file a.yaml -o md -out out.md  # yaml -> markdown, write to out.md
+  cat a.json | sys con                    # stdin, auto-detect input, print (defaults to the input format)
+  sys con -file a.json -o csv             # read a file, convert to csv (stdout)
+  sys con -i csv -o json                  # csv from stdin -> json
+  sys con -file a.yaml -o md -out out.md  # yaml -> markdown, write to out.md
 
 Options:
   -file F     read from F instead of stdin
@@ -587,11 +587,11 @@ mod tests {
     #[test]
     fn json_yaml_roundtrip() {
         let j: Value = serde_json::from_str(
-            r#"{"name":"sysenv","version":"0.4.20","features":["con","file"],"nested":{"ok":true}}"#,
+            r#"{"name":"sys","version":"0.4.20","features":["con","file"],"nested":{"ok":true}}"#,
         )
         .unwrap();
         let yaml = serialize(&j, Format::Yaml).unwrap();
-        assert!(yaml.contains("name: sysenv"));
+        assert!(yaml.contains("name: sys"));
         assert!(!yaml.starts_with("---"));
         let back = serde_yaml::from_str::<Value>(&yaml).unwrap();
         assert_eq!(back, j);
@@ -603,7 +603,7 @@ mod tests {
         assert_eq!(detect_format("[1,2]").unwrap(), Format::Json);
         assert_eq!(detect_format("a,b\n1,2").unwrap(), Format::Csv);
         assert_eq!(detect_format("| a | b |\n| --- | --- |\n| 1 | 2 |").unwrap(), Format::Md);
-        assert_eq!(detect_format("name: sysenv\nversion: 0.4").unwrap(), Format::Yaml);
+        assert_eq!(detect_format("name: sys\nversion: 0.4").unwrap(), Format::Yaml);
         assert!(detect_format("").is_err());
     }
 

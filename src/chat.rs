@@ -1,5 +1,5 @@
-//! `sysenv ai chat` / `sysenv ai task` — chat with LLM providers configured in
-//! `~/.sysenv/config.yaml` (default location; `-c/--config` overrides it).
+//! `sys ai chat` / `sys ai task` — chat with LLM providers configured in
+//! `~/.sys/config.yaml` (default location; `-c/--config` overrides it).
 //!
 //! The config file follows the schema shown in `doc/config.yaml`:
 //!
@@ -14,7 +14,7 @@
 //!     models:
 //!       - name: agnes-3.0-flash
 //!         weight: 1                 # optional, default 1
-//! tasks:                            # optional; used by `sysenv ai task`
+//! tasks:                            # optional; used by `sys ai task`
 //!   - name: weather
 //!     desc: 获取天气信息
 //!     msg: 我在{country:深圳},今天的天气如何
@@ -39,7 +39,7 @@ use std::time::Duration;
 const DEFAULT_MAX_TOKENS: u64 = 1024;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const STREAM_TIMEOUT: Duration = Duration::from_secs(600);
-pub(crate) const USER_AGENT_STR: &str = concat!("sysenv/", env!("CARGO_PKG_VERSION"));
+pub(crate) const USER_AGENT_STR: &str = concat!("sys/", env!("CARGO_PKG_VERSION"));
 
 // ---------------------------------------------------------------------------
 // Config
@@ -52,7 +52,7 @@ pub(crate) struct Config {
     pub(crate) providers: Vec<Provider>,
     pub(crate) tasks: Vec<Task>,
     /// Web-search API keys configured under the top-level `search` key
-    /// (e.g. `- name: bochaai, key: sk-...`), used by `sysenv search` and
+    /// (e.g. `- name: bochaai, key: sk-...`), used by `sys search` and
     /// the built-in `bochaai` search source of `ai task`.
     pub(crate) search: Vec<SearchKey>,
 }
@@ -106,7 +106,7 @@ pub(crate) struct Task {
     params: Option<Vec<String>>,
 }
 
-/// Resolve the config path: explicit `-c` wins, otherwise `~/.sysenv/config.yaml`.
+/// Resolve the config path: explicit `-c` wins, otherwise `~/.sys/config.yaml`.
 fn resolve_config_path(override_path: Option<&Path>) -> Result<PathBuf> {
     if let Some(p) = override_path {
         let p = p.to_path_buf();
@@ -1275,7 +1275,7 @@ fn route_tasks(cfg: &mut Config, path: &Path, input: &str, debug: bool) -> Resul
         ensure_model_capabilities(cfg, path, t.provider, t.model);
         let p = &cfg.providers[t.provider];
         let m = &p.models[t.model];
-        eprintln!("sysenv: using {} / {} ({})", p.name, m.name, p.kind);
+        eprintln!("sys: using {} / {} ({})", p.name, m.name, p.kind);
         let tools = task_tools(cfg, &p.kind)?;
         let body = tool_chat_body(p, m, input, TOOL_SYSTEM, &tools, false);
         match send_chat_raw(p, &body, false, debug) {
@@ -1284,7 +1284,7 @@ fn route_tasks(cfg: &mut Config, path: &Path, input: &str, debug: bool) -> Resul
                     if had_failure && m.weight < 9 {
                         if let Err(e) = update_weight_in_config(path, &p.name, &m.name, m.weight + 1) {
                             eprintln!(
-                                "sysenv: warning: failed to persist weight bump for {} / {}: {e:#}",
+                                "sys: warning: failed to persist weight bump for {} / {}: {e:#}",
                                 p.name, m.name
                             );
                         }
@@ -1296,7 +1296,7 @@ fn route_tasks(cfg: &mut Config, path: &Path, input: &str, debug: bool) -> Resul
                     if m.weight > 1 {
                         if let Err(e2) = update_weight_in_config(path, &p.name, &m.name, m.weight - 1) {
                             eprintln!(
-                                "sysenv: warning: failed to persist weight drop for {} / {}: {e2:#}",
+                                "sys: warning: failed to persist weight drop for {} / {}: {e2:#}",
                                 p.name, m.name
                             );
                         }
@@ -1309,7 +1309,7 @@ fn route_tasks(cfg: &mut Config, path: &Path, input: &str, debug: bool) -> Resul
                 if m.weight > 1 {
                     if let Err(e2) = update_weight_in_config(path, &p.name, &m.name, m.weight - 1) {
                         eprintln!(
-                            "sysenv: warning: failed to persist weight drop for {} / {}: {e2:#}",
+                            "sys: warning: failed to persist weight drop for {} / {}: {e2:#}",
                             p.name, m.name
                         );
                     }
@@ -2115,7 +2115,7 @@ fn run_task_tool(cfg: &Config, task: &Task, args: &HashMap<String, String>) -> R
             let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
             let resp = client
                 .get(&url)
-                .header(USER_AGENT, format!("sysenv/{}", env!("CARGO_PKG_VERSION")))
+                .header(USER_AGENT, format!("sys/{}", env!("CARGO_PKG_VERSION")))
                 .send()
                 .with_context(|| format!("api request to {url} failed"))?;
             if !resp.status().is_success() {
@@ -2363,14 +2363,14 @@ fn ensure_model_capabilities(cfg: &mut Config, path: &Path, pi: usize, mi: usize
     if need_ctx {
         if let Some(c) = ctx {
             if let Err(e) = update_model_field_in_config(path, &pname, &mname, "max_input_tokens", &c.to_string()) {
-                eprintln!("sysenv: warning: cannot persist max_input_tokens for {pname} / {mname}: {e:#}");
+                eprintln!("sys: warning: cannot persist max_input_tokens for {pname} / {mname}: {e:#}");
             }
         }
     }
     if need_type {
         if let Some(t) = &modl {
             if let Err(e) = update_model_field_in_config(path, &pname, &mname, "type", t) {
-                eprintln!("sysenv: warning: cannot persist type for {pname} / {mname}: {e:#}");
+                eprintln!("sys: warning: cannot persist type for {pname} / {mname}: {e:#}");
             }
         }
     }
@@ -2384,7 +2384,7 @@ fn truncate_to_limit(msg: &str, limit: Option<u64>) -> String {
         Some(l) if (msg.chars().count() as u64) > l => {
             let truncated: String = msg.chars().take(l as usize).collect();
             eprintln!(
-                "sysenv: message of {} chars truncated to {} (model input limit)",
+                "sys: message of {} chars truncated to {} (model input limit)",
                 msg.chars().count(),
                 l
             );
@@ -2431,7 +2431,7 @@ fn chat_once(
         ensure_model_capabilities(cfg, path, t.provider, t.model);
         let p = &cfg.providers[t.provider];
         let m = &p.models[t.model];
-        eprintln!("sysenv: using {} / {} ({})", p.name, m.name, p.kind);
+        eprintln!("sys: using {} / {} ({})", p.name, m.name, p.kind);
         let payload = truncate_to_limit(msg, m.max_input_tokens);
         match send_chat(p, m, &payload, stream, debug) {
             Ok(text) => {
@@ -2439,7 +2439,7 @@ fn chat_once(
                 // weight bumped (max 9), persisted to the config file.
                 if had_failure && m.weight < 9 {
                     if let Err(e) = update_weight_in_config(path, &p.name, &m.name, m.weight + 1) {
-                        eprintln!("sysenv: warning: failed to persist weight bump for {} / {}: {e:#}", p.name, m.name);
+                        eprintln!("sys: warning: failed to persist weight bump for {} / {}: {e:#}", p.name, m.name);
                     }
                 }
                 return Ok(text);
@@ -2450,7 +2450,7 @@ fn chat_once(
                 // then the next model is tried automatically.
                 if m.weight > 1 {
                     if let Err(e2) = update_weight_in_config(path, &p.name, &m.name, m.weight - 1) {
-                        eprintln!("sysenv: warning: failed to persist weight drop for {} / {}: {e2:#}", p.name, m.name);
+                        eprintln!("sys: warning: failed to persist weight drop for {} / {}: {e2:#}", p.name, m.name);
                     }
                 }
                 had_failure = true;
@@ -2460,7 +2460,7 @@ fn chat_once(
     bail!("all {} model(s) failed: {}", targets.len(), errors.join(" | "));
 }
 
-/// `sysenv ai chat` core: runs `chat_once` and prints the reply when the
+/// `sys ai chat` core: runs `chat_once` and prints the reply when the
 /// request was non-streaming (streaming already printed to stdout).
 fn chat_with(cfg: &mut Config, path: &Path, msg: &str, debug: bool, no_stream: bool, model_override: Option<&str>) -> Result<()> {
     let text = chat_once(cfg, path, msg, debug, no_stream, model_override)?;
@@ -2498,7 +2498,7 @@ pub(crate) fn print_models(cfg: &Config) {
     }
 }
 
-/// `sysenv ai chat [MSG...] [-m MODEL] [--list-model] [--list-provider] [-c FILE] [--debug] [--no-stream]`
+/// `sys ai chat [MSG...] [-m MODEL] [--list-model] [--list-provider] [-c FILE] [--debug] [--no-stream]`
 ///
 /// `-m/--model` overrides the top-level `model` from the config (same
 /// `{provider}:{model}` / `{model}` / comma-separated rules). `--list-model`
@@ -2538,18 +2538,18 @@ pub fn cmd_chat(
         }
         s
     } else {
-        bail!("provide a message: `sysenv ai chat \"your message\"` (or pipe text via stdin)");
+        bail!("provide a message: `sys ai chat \"your message\"` (or pipe text via stdin)");
     };
     chat_with(&mut cfg, &path, &msg, debug, no_stream, model)
 }
 
-/// `sysenv search QUERY [-c FILE] [--ai] [--no-answer] [--freshness VALUE]`
+/// `sys search QUERY [-c FILE] [--ai] [--no-answer] [--freshness VALUE]`
 /// `[--summary] [--count N] [--page N] [--include-domains D]...`
 /// `[--exclude-domains D]... [--json] [--debug]`
 ///
 /// Web search via the configured Bocha AI API. The API key is read from the
 /// top-level `search` section of the config (e.g. `- name: bochaai, key:
-/// sk-...`); `-c/--config` overrides the default `~/.sysenv/config.yaml`. All
+/// sk-...`); `-c/--config` overrides the default `~/.sys/config.yaml`. All
 /// request parameters follow the official Bocha interface.
 ///
 /// Default endpoint: `POST /v1/web-search` (query / freshness / summary /
@@ -2592,7 +2592,7 @@ pub fn cmd_search(
         std::io::stdin().read_to_string(&mut s).context("cannot read stdin")?;
         s.trim().to_string()
     } else {
-        bail!("provide a query: `sysenv search \"your query\"` (or pipe text via stdin)");
+        bail!("provide a query: `sys search \"your query\"` (or pipe text via stdin)");
     };
     if query.is_empty() {
         bail!("empty search query");
@@ -2623,7 +2623,7 @@ struct SourceRow {
     url: &'static str,
 }
 
-/// All built-in `search` sources of `sysenv ai task`: name, kind
+/// All built-in `search` sources of `sys ai task`: name, kind
 /// (`api` = direct HTTP API, `search` = aggregate search with Sogou first and
 /// Bing fallback, `generic` = general search engine requiring a `q`/`query`
 /// argument), purpose and access address.
@@ -2653,7 +2653,7 @@ pub fn list_sources() {
     }
 }
 
-/// `sysenv ai task [-t NAME] [key:value...] [-c FILE] [--debug] [--no-stream] [--list-source]`
+/// `sys ai task [-t NAME] [key:value...] [-c FILE] [--debug] [--no-stream] [--list-source]`
 ///
 /// Without `-t`: with a user request (arguments or piped stdin) the request is
 /// routed to the configured tasks via LLM function calls and the best match is
@@ -2761,7 +2761,7 @@ fn parse_score(text: &str) -> Option<u32> {
     nums.into_iter().find(|&v| v <= 10)
 }
 
-/// `sysenv ai task -t * [USER REQUEST]`: ask the configured LLM to score how
+/// `sys ai task -t * [USER REQUEST]`: ask the configured LLM to score how
 /// well each configured task's description matches the user's request (0 = no
 /// match, 10 = perfect match). Prints `TASK / DESC / SCORE`, best match first.
 fn score_all_tasks(cfg: &mut Config, path: &Path, params: &[String], debug: bool) -> Result<()> {
@@ -2775,7 +2775,7 @@ fn score_all_tasks(cfg: &mut Config, path: &Path, params: &[String], debug: bool
         }
         s
     } else {
-        bail!("provide the user request: `sysenv ai task -t * \"your request\"` (or pipe it via stdin)");
+        bail!("provide the user request: `sys ai task -t * \"your request\"` (or pipe it via stdin)");
     };
     if cfg.tasks.is_empty() {
         bail!("no tasks configured under `tasks` in `{}`", path.display());
@@ -2800,12 +2800,12 @@ fn score_all_tasks(cfg: &mut Config, path: &Path, params: &[String], debug: bool
             Ok(text) => {
                 let score = parse_score(&text);
                 if score.is_none() {
-                    eprintln!("sysenv: warning: cannot parse a 0-10 score from the reply for task `{}`", tname);
+                    eprintln!("sys: warning: cannot parse a 0-10 score from the reply for task `{}`", tname);
                 }
                 rows.push((tname.clone(), tdesc.clone(), score));
             }
             Err(e) => {
-                eprintln!("sysenv: warning: scoring task `{}` failed: {e:#}", tname);
+                eprintln!("sys: warning: scoring task `{}` failed: {e:#}", tname);
                 rows.push((tname.clone(), tdesc.clone(), None));
             }
         }
@@ -3260,7 +3260,7 @@ stream: true
     // ------------------------------------------------------------------
 
     fn tmp_config(name: &str, content: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join("sysenv-chat-test");
+        let dir = std::env::temp_dir().join("sys-chat-test");
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(format!("config-{name}.yaml"));
         std::fs::write(&p, content).unwrap();

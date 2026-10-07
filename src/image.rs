@@ -1,5 +1,5 @@
-//! `sysenv ai image` — generate images through the OpenAI-compatible Images
-//! API of a provider configured in `~/.sysenv/config.yaml` (default location;
+//! `sys ai image` — generate images through the OpenAI-compatible Images
+//! API of a provider configured in `~/.sys/config.yaml` (default location;
 //! `-c/--config` overrides it).
 //!
 //! The request goes to `POST {api_base}/images/generations` with a Bearer key
@@ -225,7 +225,7 @@ fn send_image(
     parse_images(&text)
 }
 
-/// `sysenv ai image [PROMPT...] [-m MODEL] [-o DIR] [-n N] [-s SIZE] [--url] [-c FILE] [--debug] [--list-model] [--list-provider]`
+/// `sys ai image [PROMPT...] [-m MODEL] [-o DIR] [-n N] [-s SIZE] [--url] [-c FILE] [--debug] [--list-model] [--list-provider]`
 ///
 /// The prompt is the joined arguments (or piped stdin when no argument is
 /// given). The model selector (`-m/--model` or the top-level `model`) follows
@@ -275,7 +275,7 @@ pub fn cmd_image(
         }
         s
     } else {
-        bail!("provide a prompt: `sysenv ai image \"a red fox in the snow\"` (or pipe text via stdin)");
+        bail!("provide a prompt: `sys ai image \"a red fox in the snow\"` (or pipe text via stdin)");
     };
 
     let selector = model.or(cfg.model.as_deref()).unwrap_or("<default>");
@@ -304,7 +304,7 @@ pub fn cmd_image(
         let t = &targets[ti];
         let p = &cfg.providers[t.provider];
         let m = &p.models[t.model];
-        eprintln!("sysenv: using {} / {} ({})", p.name, m.name, p.kind);
+        eprintln!("sys: using {} / {} ({})", p.name, m.name, p.kind);
         match send_image(p, m, &prompt, count, size, want_url, debug) {
             Ok(items) => {
                 let stamp = now_stamp();
@@ -317,7 +317,7 @@ pub fn cmd_image(
                         download_url(url)?
                     };
                     let ext = sniff_format(&bytes);
-                    let base = format!("sysenv-ai-image-{stamp}-{}", i + 1);
+                    let base = format!("sys-ai-image-{stamp}-{}", i + 1);
                     let out_path = unique_path(&out_dir, &base, ext);
                     std::fs::write(&out_path, &bytes)
                         .with_context(|| format!("cannot write {}", out_path.display()))?;
@@ -327,7 +327,7 @@ pub fn cmd_image(
                 // weight bumped (max 9), persisted to the config file.
                 if had_failure && m.weight < 9 {
                     if let Err(e) = chat::update_weight_in_config(&path, &p.name, &m.name, m.weight + 1) {
-                        eprintln!("sysenv: warning: failed to persist weight bump for {} / {}: {e:#}", p.name, m.name);
+                        eprintln!("sys: warning: failed to persist weight bump for {} / {}: {e:#}", p.name, m.name);
                     }
                 }
                 for out_path in &saved {
@@ -341,7 +341,7 @@ pub fn cmd_image(
                 // then the next model is tried automatically.
                 if m.weight > 1 {
                     if let Err(e2) = chat::update_weight_in_config(&path, &p.name, &m.name, m.weight - 1) {
-                        eprintln!("sysenv: warning: failed to persist weight drop for {} / {}: {e2:#}", p.name, m.name);
+                        eprintln!("sys: warning: failed to persist weight drop for {} / {}: {e2:#}", p.name, m.name);
                     }
                 }
                 had_failure = true;
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn unique_path_avoids_collisions() {
-        let dir = std::env::temp_dir().join(format!("sysenv-image-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("sys-image-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let a = unique_path(&dir, "img", "png");
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn anthropic_target_rejected_before_http() {
-        let dir = std::env::temp_dir().join(format!("sysenv-image-anthropic-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("sys-image-anthropic-{}", std::process::id()));
         let cfg = write_config(
             &dir,
             "model: claude:claude-3-5-sonnet\nclients:\n  - type: anthropic\n    name: claude\n    api_base: https://api.anthropic.com/v1\n    api_key: sk-test\n    models:\n      - name: claude-3-5-sonnet\n",
@@ -505,7 +505,7 @@ mod tests {
 
     #[test]
     fn listing_works_without_prompt() {
-        let dir = std::env::temp_dir().join(format!("sysenv-image-list-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("sys-image-list-{}", std::process::id()));
         let cfg = write_config(
             &dir,
             "clients:\n  - type: openai\n    name: agnes\n    api_base: https://api.example.com/v1\n    api_key: sk-test\n    models:\n      - name: gpt-image-1\n",
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn zero_count_rejected() {
-        let dir = std::env::temp_dir().join(format!("sysenv-image-count-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("sys-image-count-{}", std::process::id()));
         let cfg = write_config(
             &dir,
             "clients:\n  - type: openai\n    name: agnes\n    api_base: https://api.example.com/v1\n    api_key: sk-test\n    models:\n      - name: gpt-image-1\n",

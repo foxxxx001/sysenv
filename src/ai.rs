@@ -1,4 +1,4 @@
-//! `sysenv ai` — query AI model info.
+//! `sys ai` — query AI model info.
 //!
 //! - `ai model` / `ai provider` query the models.dev database
 //!   (`https://models.dev/api.json`), the data behind the `/models/` and
@@ -29,21 +29,21 @@ fn cache_dir() -> PathBuf {
     #[cfg(windows)]
     {
         if let Some(p) = std::env::var_os("LOCALAPPDATA") {
-            PathBuf::from(p).join("sysenv")
+            PathBuf::from(p).join("sys")
         } else if let Some(p) = std::env::var_os("USERPROFILE") {
             PathBuf::from(p).join(".sysenv").join("cache")
         } else {
-            std::env::temp_dir().join("sysenv")
+            std::env::temp_dir().join("sys")
         }
     }
     #[cfg(not(windows))]
     {
         if let Some(p) = std::env::var_os("XDG_CACHE_HOME") {
-            PathBuf::from(p).join("sysenv")
+            PathBuf::from(p).join("sys")
         } else if let Some(h) = std::env::var_os("HOME") {
-            PathBuf::from(h).join(".cache").join("sysenv")
+            PathBuf::from(h).join(".cache").join("sys")
         } else {
-            std::env::temp_dir().join("sysenv")
+            std::env::temp_dir().join("sys")
         }
     }
 }
@@ -80,7 +80,7 @@ pub fn fetch_data(refresh: bool) -> Result<Value> {
             return Ok(v);
         }
     }
-    eprintln!("sysenv: fetching {DATA_URL} ...");
+    eprintln!("sys: fetching {DATA_URL} ...");
     let resp = reqwest::blocking::get(DATA_URL)
         .with_context(|| format!("cannot fetch {DATA_URL} (offline? use a cached copy if available)"))?;
     if !resp.status().is_success() {
@@ -1029,7 +1029,7 @@ pub fn cmd_provider(
 }
 
 // ---------------------------------------------------------------------------
-// `sysenv ai info` — inspect the local config (providers / models) and the
+// `sys ai info` — inspect the local config (providers / models) and the
 // models.dev model prices.
 //
 // - `info provider [KEYWORD]`  lists every provider configured under `clients`
@@ -1287,7 +1287,7 @@ fn print_price_rows(rows: &[PriceRow]) {
     }
 }
 
-/// `sysenv ai info FIELD [PARAM...] [-c FILE] [--refresh]`
+/// `sys ai info FIELD [PARAM...] [-c FILE] [--refresh]`
 ///
 /// FIELD is `provider`, `model` or `price`:
 /// - `provider [KEYWORD]` — every configured provider (name / api_base /
@@ -1400,7 +1400,7 @@ pub fn cmd_info(
                 .map(str::to_string)
                 .collect();
             if providers.is_empty() {
-                bail!("`info price` needs at least one provider name: `sysenv ai info price openai,anthropic`");
+                bail!("`info price` needs at least one provider name: `sys ai info price openai,anthropic`");
             }
             let data = fetch_data(refresh)?;
             let rows = info_price_rows(&data, &providers)?;
@@ -1411,7 +1411,7 @@ pub fn cmd_info(
                 bail!("`info balance` does not support -o/--json (run without it for the balance view)");
             }
             let kw = keyword.ok_or_else(|| {
-                anyhow::anyhow!("`info balance` needs a provider name: `sysenv ai info balance agnes`")
+                anyhow::anyhow!("`info balance` needs a provider name: `sys ai info balance agnes`")
             })?;
             let (cfg, _) = chat::load_config(config)?;
             info_balance(&cfg, &kw)?;
@@ -1421,7 +1421,7 @@ pub fn cmd_info(
                 bail!("`info sale-price` does not support -o/--json (run without it for the price view)");
             }
             let kw = keyword.ok_or_else(|| {
-                anyhow::anyhow!("`info sale-price` needs a provider name: `sysenv ai info sale-price agnes`")
+                anyhow::anyhow!("`info sale-price` needs a provider name: `sys ai info sale-price agnes`")
             })?;
             let (cfg, _) = chat::load_config(config)?;
             info_sale_price(&cfg, &kw, refresh)?;
@@ -1432,7 +1432,7 @@ pub fn cmd_info(
 }
 
 // ---------------------------------------------------------------------------
-// `sysenv ai info balance` / `sysenv ai info sale-price` — per-provider
+// `sys ai info balance` / `sys ai info sale-price` — per-provider
 // official queries (余额 / 官网销售价).
 //
 // balance:  用该 provider 的 api_key 到官方接口查询余额。仅部分平台开放
@@ -1467,7 +1467,7 @@ fn find_provider<'a>(cfg: &'a chat::Config, keyword: &str) -> Result<&'a chat::P
     }
 }
 
-/// `sysenv ai info balance PROVIDER` — query the provider's official balance
+/// `sys ai info balance PROVIDER` — query the provider's official balance
 /// with its configured api_key.
 fn info_balance(cfg: &chat::Config, keyword: &str) -> Result<()> {
     let p = find_provider(cfg, keyword)?;
@@ -1686,7 +1686,7 @@ fn balance_openai_billing(p: &chat::Provider) -> Result<()> {
     Ok(())
 }
 
-/// `sysenv ai info sale-price PROVIDER` — scrape the provider's official
+/// `sys ai info sale-price PROVIDER` — scrape the provider's official
 /// pricing page and print every listed model's sale price.
 fn info_sale_price(cfg: &chat::Config, keyword: &str, refresh: bool) -> Result<()> {
     let p = find_provider(cfg, keyword)?;
@@ -1737,7 +1737,7 @@ fn fetch_pricing_page(url: &str, cache_key: &str, refresh: bool) -> Result<Strin
         }
     }
     let resp = reqwest::blocking::Client::builder()
-        .user_agent("Mozilla/5.0 (compatible; sysenv)")
+        .user_agent("Mozilla/5.0 (compatible; sys)")
         .build()
         .context("failed to build HTTP client")?
         .get(url)
@@ -1926,7 +1926,7 @@ fn parse_minimax_prices(html: &str) -> Vec<Vec<String>> {
 }
 
 // ---------------------------------------------------------------------------
-// `sysenv ai cn-model` — query the DataLearner AI model list.
+// `sys ai cn-model` — query the DataLearner AI model list.
 //
 // The DataLearner page (https://www.datalearner.com/ai-models/pretrained-models)
 // is server-rendered HTML. Models are listed as cards in the "全部模型" grid,
@@ -1937,7 +1937,7 @@ fn parse_minimax_prices(html: &str) -> Vec<Vec<String>> {
 // ---------------------------------------------------------------------------
 
 const DL_BASE: &str = "https://www.datalearner.com/ai-models/pretrained-models";
-const DL_UA: &str = "Mozilla/5.0 (compatible; sysenv)";
+const DL_UA: &str = "Mozilla/5.0 (compatible; sys)";
 const DL_MAX_PAGES: usize = 200;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2014,7 +2014,7 @@ fn fetch_datalearner(refresh: bool) -> Result<Vec<DlModel>> {
             return Ok(v);
         }
     }
-    eprintln!("sysenv: fetching {DL_BASE} ...");
+    eprintln!("sys: fetching {DL_BASE} ...");
     let mut models: Vec<DlModel> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut page = 1usize;
@@ -2454,7 +2454,7 @@ fn output_dl(hits: &[DlModel], take: usize, fmt: Option<OutFormat>, list_mode: b
     Ok(())
 }
 
-/// `sysenv ai cn-model [NAME | -s QUERY | --list] [--date DATE] [--model-type TYPE] [--limit N] [-o json|csv] [--refresh]`
+/// `sys ai cn-model [NAME | -s QUERY | --list] [--date DATE] [--model-type TYPE] [--limit N] [-o json|csv] [--refresh]`
 ///
 /// Query-only: a NAME or `--search` is required, unless `--list` (full
 /// listing) or `--date`/`--model-type` filters are given (no `--open` —
@@ -2550,7 +2550,7 @@ pub fn cmd_cn_model(
                 m.context = ctx;
                 m.modality = modl;
             }
-            Err(e) => eprintln!("sysenv: warning: cannot fetch detail page for {}: {e:#}", m.name),
+            Err(e) => eprintln!("sys: warning: cannot fetch detail page for {}: {e:#}", m.name),
         }
         return output_dl(std::slice::from_ref(&m), 1, fmt, false);
     }
@@ -2999,7 +2999,7 @@ mod tests {
         assert_eq!(dl_detail_value(html, "上下文长度"), None);
     }
 
-    // --- `sysenv ai info` ------------------------------------------------------
+    // --- `sys ai info` ------------------------------------------------------
 
     fn sample_config() -> chat::Config {
         chat::Config {

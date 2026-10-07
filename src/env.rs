@@ -1,4 +1,4 @@
-//! `sysenv env` — read/set/list environment variables.
+//! `sys env` — read/set/list environment variables.
 
 use crate::store::common;
 use crate::store::{Scope, get_persisted_var, set_persisted_var, unset_persisted_var};

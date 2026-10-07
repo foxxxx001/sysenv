@@ -1,13 +1,13 @@
-//! `sysenv file` — fd/sd-style text search, in-place replacement and file search.
+//! `sys file` — fd/sd-style text search, in-place replacement and file search.
 //!
 //! Usage:
-//!   sysenv file PATTERN                 search PATTERN in stdin (piped input)
-//!   sysenv file PATTERN PATH            search PATTERN in PATH and its subtree
-//!   sysenv file OLD NEW PATH            replace OLD with NEW in PATH (in place)
-//!   sysenv file NAME.EXT                display a file's content (e.g. me.txt)
-//!   sysenv file -S 2m [PATH]            list files >= 2 MiB under PATH (default .)
-//!   sysenv file --newer TIME [PATH]     list files modified at/after TIME
-//!   sysenv file --older TIME [PATH]     list files modified before TIME
+//!   sys file PATTERN                 search PATTERN in stdin (piped input)
+//!   sys file PATTERN PATH            search PATTERN in PATH and its subtree
+//!   sys file OLD NEW PATH            replace OLD with NEW in PATH (in place)
+//!   sys file NAME.EXT                display a file's content (e.g. me.txt)
+//!   sys file -S 2m [PATH]            list files >= 2 MiB under PATH (default .)
+//!   sys file --newer TIME [PATH]     list files modified at/after TIME
+//!   sys file --older TIME [PATH]     list files modified before TIME
 //!
 //! A single argument is a stdin search unless it is quoted ("me.txt" -> search
 //! the string) or carries an extension (me.txt -> display that file).
@@ -547,7 +547,7 @@ fn is_visible(path: &Path, exts: &Option<HashSet<String>>, text_only: bool) -> b
 // Modes
 // ---------------------------------------------------------------------------
 
-/// `sysenv file PATTERN` — read stdin and print matching lines.
+/// `sys file PATTERN` — read stdin and print matching lines.
 fn search_stdin(needle: &str, opts: &FileOpts) -> Result<()> {
     let stdin = io::stdin();
     let mut lines: Vec<String> = Vec::new();
@@ -562,7 +562,7 @@ fn search_stdin(needle: &str, opts: &FileOpts) -> Result<()> {
     Ok(())
 }
 
-/// `sysenv file PATTERN PATH` — search PATH (file or directory tree).
+/// `sys file PATTERN PATH` — search PATH (file or directory tree).
 fn search_path(needle: &str, path: &str, opts: &FileOpts) -> Result<()> {
     let files = collect_files(path, opts)?;
     let n: Vec<char> = needle.chars().collect();
@@ -587,7 +587,7 @@ fn search_path(needle: &str, path: &str, opts: &FileOpts) -> Result<()> {
     Ok(())
 }
 
-/// `sysenv file OLD NEW PATH` — replace OLD with NEW in place.
+/// `sys file OLD NEW PATH` — replace OLD with NEW in place.
 fn replace_path(old: &str, new: &str, path: &str, opts: &FileOpts) -> Result<()> {
     let files = collect_files(path, opts)?;
     let needle: Vec<char> = old.chars().collect();
@@ -617,7 +617,7 @@ fn replace_path(old: &str, new: &str, path: &str, opts: &FileOpts) -> Result<()>
     Ok(())
 }
 
-/// Entry point: `sysenv file ...`
+/// Entry point: `sys file ...`
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_file(
     args: &[String],
@@ -659,7 +659,7 @@ pub fn cmd_file(
         0 if has_filter => list_files(".", &opts),
         1 if has_filter => list_files(&args[0], &opts),
         0 => bail!(
-            "usage:\n  sysenv file PATTERN             search PATTERN in stdin (piped)\n  sysenv file PATTERN PATH        search PATTERN in PATH\n  sysenv file OLD NEW PATH        replace OLD with NEW in PATH\n  sysenv file NAME.EXT            display a file (e.g. file me.txt)\n  sysenv file -S SIZE [PATH]      list files by size (e.g. -S 2m)\n  sysenv file --newer TIME [PATH] list files by mtime\noptions: -e EXT (repeatable) -i -t -w -c NUM -S SIZE --newer TIME --older TIME -d NUM"
+            "usage:\n  sys file PATTERN             search PATTERN in stdin (piped)\n  sys file PATTERN PATH        search PATTERN in PATH\n  sys file OLD NEW PATH        replace OLD with NEW in PATH\n  sys file NAME.EXT            display a file (e.g. file me.txt)\n  sys file -S SIZE [PATH]      list files by size (e.g. -S 2m)\n  sys file --newer TIME [PATH] list files by mtime\noptions: -e EXT (repeatable) -i -t -w -c NUM -S SIZE --newer TIME --older TIME -d NUM"
         ),
         1 => {
             if let Some(inner) = strip_quotes(&args[0]) {
@@ -843,7 +843,7 @@ mod tests {
 
     #[test]
     fn walk_respects_max_depth() {
-        let base = std::env::temp_dir().join(format!("sysenv_filedepth_{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("sys_filedepth_{}", std::process::id()));
         let sub = base.join("a").join("b");
         fs::create_dir_all(&sub).unwrap();
         fs::write(base.join("r.txt"), "x").unwrap();
@@ -887,7 +887,7 @@ mod tests {
 
     #[test]
     fn show_file_reads_content() {
-        let base = std::env::temp_dir().join(format!("sysenv_show_{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("sys_show_{}", std::process::id()));
         fs::create_dir_all(&base).unwrap();
         let f = base.join("t.txt");
         fs::write(&f, "line1\nline2").unwrap();

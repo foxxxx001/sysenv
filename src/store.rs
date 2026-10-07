@@ -4,7 +4,7 @@
 //!   `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment` for
 //!   machine scope), plus a `WM_SETTINGCHANGE` broadcast so new processes pick
 //!   up the change immediately.
-//! - Unix (Ubuntu etc.): a managed config dir (`~/.config/sysenv`) holding the
+//! - Unix (Ubuntu etc.): a managed config dir (`~/.config/sys`) holding the
 //!   PATH entries and variable exports in `env.sh`, sourced from the shell
 //!   startup files; `--scope machine` targets `/etc/environment`.
 

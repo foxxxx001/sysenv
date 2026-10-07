@@ -1,4 +1,4 @@
-//! `sysenv path` — CRUD for PATH entries, plus registry import/export.
+//! `sys path` — CRUD for PATH entries, plus registry import/export.
 
 use crate::store::common;
 use crate::store::{Scope, current_path_entries, get_persisted_path, set_persisted_path};

@@ -1,4 +1,4 @@
-//! `sysenv link` — make a file executable from anywhere by placing a link
+//! `sys link` — make a file executable from anywhere by placing a link
 //! (hard link / symlink / copy, or a `.cmd` shim on Windows) into a directory
 //! that is on the PATH.
 
