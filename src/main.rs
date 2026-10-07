@@ -499,6 +499,18 @@ struct FileArgs {
     /// Show NUM lines of context around every match
     #[arg(short = 'c', long, value_name = "NUM")]
     context: Option<usize>,
+    /// Only files at least SIZE bytes (plain number = bytes; 2k/2m/2g/2t = 1024-based)
+    #[arg(short = 'S', long, value_name = "SIZE")]
+    size: Option<String>,
+    /// Only files modified at or after TIME (YYYY-MM-DD [HH:MM[:SS]])
+    #[arg(long, value_name = "TIME")]
+    newer: Option<String>,
+    /// Only files modified before TIME
+    #[arg(long, value_name = "TIME")]
+    older: Option<String>,
+    /// Only descend NUM levels of subdirectories (0 = current dir only)
+    #[arg(short = 'd', long, value_name = "NUM")]
+    max_depth: Option<usize>,
 }
 
 #[derive(Args)]
@@ -658,7 +670,19 @@ fn main() -> ExitCode {
         Cmd::Http(h) => run_http(h),
         Cmd::Ai(a) => run_ai(a).map(|_| 0),
         Cmd::Search(s) => run_search(s).map(|_| 0),
-        Cmd::File(f) => file::cmd_file(&f.args, &f.ext, f.ignore_case, f.text_only, f.word, f.context).map(|_| 0),
+        Cmd::File(f) => file::cmd_file(
+            &f.args,
+            &f.ext,
+            f.ignore_case,
+            f.text_only,
+            f.word,
+            f.context,
+            f.size,
+            f.newer,
+            f.older,
+            f.max_depth,
+        )
+        .map(|_| 0),
         Cmd::Con(c) => convert::cmd_con(&c.raw).map(|_| 0),
         Cmd::Task(t) => run_task(t).map(|_| 0),
         Cmd::Short(s) => run_short(s).map(|_| 0),

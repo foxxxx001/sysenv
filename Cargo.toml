@@ -1,6 +1,6 @@
 [package]
 name = "sysenv"
-version = "0.4.20"
+version = "0.4.21"
 edition = "2021"
 description = "Cross-platform (Windows/Ubuntu) system PATH & environment manager with an httpie-compatible HTTP client"
 license = "MIT"
@@ -14,6 +14,7 @@ anyhow = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "multipart", "gzip"] }
 base64 = "0.22"
 serde_yaml = "0.9"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

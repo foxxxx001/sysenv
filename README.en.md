@@ -40,7 +40,7 @@ Commands:
 | AI model lookup | `ai` | `ai model` (models.dev: 226 providers, 8000+ models; 24 h cache; canonical preference; no args lists all; `--date` / `--open` / `--search / --list / --json / --refresh`); `ai cn-model` (datalearner: ~1015 models; `--date` filters by published); `ai info` (local config lookup: `info provider` name/api_base/api_key, `info model` `{provider}:{name}` list, `info price` models.dev prices, `info balance` official balance via api_key, `info sale-price` official pricing page scrape); `ai chat` (multi-provider weighted round-robin chat, OpenAI / Anthropic compatible); `ai task` (task-template chat) |
 | Process management | `task` | no args lists all processes; list (PID / name / path, fuzzy name match); `-o` shows the process using a port; kill by PID or name; `-f` force |
 | Web search | `search` | Bocha AI web search API (`POST api.bochaai.com/v1/web-search`): `--freshness` (time filter) / `--summary` (AI summaries) / `--count` (1-50) / `--page` / `--include-domains` / `--exclude-domains`, official parameters; key from the config `search` section; `--json` raw response / `--debug` request & response. `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards (`--no-answer` disables the AI answer) |
-| Text search & replace | `file` | fd/sd-style: 1 arg searches stdin; 2 args search a directory tree of text/source files (`-e` extension filter / `-i` case-insensitive / `-t` plain text only / `-w` whole words / `-c` context); 3 args OLD NEW PATH replace in place |
+| Text search & replace | `file` | fd/sd-style: 1 arg searches stdin; 2 args search a directory tree of text/source files (`-e` extension filter / `-i` case-insensitive / `-t` plain text only / `-w` whole words / `-c` context); 3 args OLD NEW PATH replace in place; `-S` size / `--newer` / `--older` time / `-d` depth filters; lists files when no PATTERN is given |
 | Format conversion | `con` | json / csv / md / yaml interconversion: stdin by default (`cat a.json | sysenv con`), `-file` reads a file, `-i` input format, `-o` output format, `-out` writes a file; tables map to/from object arrays (type inference + escaping) |
 | HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
 | Shortcut shims | `short` | installs seven short commands at once (spath/senv/slink/shttp/sai/ssearch/stask); Windows `.cmd` / Linux sh scripts; auto PATH registration |
@@ -343,6 +343,14 @@ Options:
 * `-w` — match whole words only (not preceded/followed by a letter, digit or `_`)
 * `-c NUM` — show NUM lines of context around every match (`--` separates groups)
 
+File attribute filters (fd-style, combine with search / replace / listing):
+
+* `-S SIZE` / `--size SIZE` — only files at least SIZE bytes. A plain number is bytes; `2k`/`2m`/`2g`/`2t` (or kb/mb/gb/tb) scale by 1024, decimals allowed (`1.5m`), case-insensitive
+* `--newer TIME` — only files modified at/after TIME; `--older TIME` — only files modified before TIME. Format `YYYY-MM-DD [HH:MM[:SS]]` (`T` or slash separators work too), interpreted in the local timezone
+* `-d NUM` — descend at most NUM levels of subdirectories (`-d 0` = current dir only)
+
+Giving any filter without a PATTERN enters **list mode** (one path per line, current dir by default; `-e`/`-t` still apply); with a PATTERN or OLD NEW the filters combine with string search / in-place replacement.
+
 Traversal: hidden entries (`.` prefix) and common noise directories (`.git` / `node_modules` / `target` / `dist` / `build` / `__pycache__` ...) are skipped; binary files (NUL bytes) are skipped; replacement honors `-e` / `-t` / `-i` / `-w` too.
 
 ```
@@ -354,6 +362,12 @@ sysenv file hello D:\projects -t               # plain text only (no source code
 sysenv file hello D:\projects -w -c 2          # whole words + 2 lines of context
 sysenv file hello hi D:\projects               # replace hello -> hi in place
 sysenv file HELLO hi D:\projects -i            # case-insensitive replacement
+sysenv file -S 2m                              # list files >= 2 MiB in the current dir
+sysenv file -S 5000 D:\data                    # list files >= 5000 bytes under D:\data
+sysenv file -S 2m -e bin -d 1 D:\data          # >= 2MiB .bin files, 1 level deep
+sysenv file --newer "2026-10-01" D:\data       # files modified at/after 2026-10-01
+sysenv file --older "2026-10-01 12:00" D:\data # files modified before that time
+sysenv file hello D:\data -S 1m                # search hello only in files >= 1 MiB
 ```
 
 #### 5.7 Format conversion (`con`)

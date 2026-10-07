@@ -1,9 +1,12 @@
-//! `sysenv file` — fd/sd-style text search and in-place replacement.
+//! `sysenv file` — fd/sd-style text search, in-place replacement and file search.
 //!
 //! Usage:
 //!   sysenv file PATTERN                 search PATTERN in stdin (piped input)
 //!   sysenv file PATTERN PATH            search PATTERN in PATH and its subtree
 //!   sysenv file OLD NEW PATH            replace OLD with NEW in PATH (in place)
+//!   sysenv file -S 2m [PATH]            list files >= 2 MiB under PATH (default .)
+//!   sysenv file --newer TIME [PATH]     list files modified at/after TIME
+//!   sysenv file --older TIME [PATH]     list files modified before TIME
 //!
 //! Options:
 //!   -e EXT       filter by file extension (repeatable, dot optional)
@@ -12,15 +15,23 @@
 //!                source-code files are searched too
 //!   -w           match whole words only
 //!   -c NUM       show NUM lines of context around every match
+//!   -S SIZE      only files at least SIZE bytes (plain number = bytes;
+//!                2k/2m/2g/2t = 1024-based KiB/MiB/GiB/TiB)
+//!   --newer TIME only files modified at/after TIME (YYYY-MM-DD [HH:MM[:SS]])
+//!   --older TIME only files modified before TIME
+//!   -d NUM       descend at most NUM levels of subdirectories (0 = current dir)
 //!
 //! All matching is done on the Unicode char level (case folding per char), so
 //! `-i` and `-w` behave correctly for non-ASCII text.
 
 use anyhow::{Context, Result, bail};
+use chrono::NaiveDate;
+use chrono::{Local, NaiveDateTime, TimeZone};
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 /// Plain-text extensions (searched when `-t` is set, and always).
 const TEXT_EXTS: &[&str] = &[
@@ -57,6 +68,14 @@ pub struct FileOpts {
     pub word: bool,
     /// `-c NUM`
     pub context: usize,
+    /// `-S SIZE` in bytes; files smaller than this are skipped.
+    pub min_size: Option<u64>,
+    /// `--newer TIME` as a unix timestamp (local timezone); older files skipped.
+    pub newer: Option<i64>,
+    /// `--older TIME` as a unix timestamp (local timezone); newer files skipped.
+    pub older: Option<i64>,
+    /// `-d NUM` maximum subdirectory depth (0 = current directory only).
+    pub max_depth: Option<usize>,
 }
 
 impl FileOpts {
@@ -73,6 +92,111 @@ impl FileOpts {
                 .collect(),
         )
     }
+}
+
+// ---------------------------------------------------------------------------
+// Attribute filters (size / time / depth)
+// ---------------------------------------------------------------------------
+
+/// Parse a size argument: a plain number is bytes; a trailing unit k/kb, m/mb,
+/// g/gb, t/tb scales by 1024 (case-insensitive). Decimals like 1.5m are allowed.
+fn parse_size(s: &str) -> Result<u64> {
+    let t = s.trim();
+    if t.is_empty() {
+        bail!("-S requires a size");
+    }
+    if let Ok(n) = t.parse::<u64>() {
+        return Ok(n);
+    }
+    let split = t
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .ok_or_else(|| anyhow::anyhow!("cannot parse size `{t}`"))?;
+    let num: f64 = t[..split]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("cannot parse size `{t}`"))?;
+    let unit = t[split..].to_ascii_lowercase();
+    let mult: u64 = match unit.as_str() {
+        "k" | "kb" => 1 << 10,
+        "m" | "mb" => 1 << 20,
+        "g" | "gb" => 1 << 30,
+        "t" | "tb" => 1 << 40,
+        other => bail!("unknown size unit `{other}` (expected k/m/g or kb/mb/gb)"),
+    };
+    Ok((num * mult as f64) as u64)
+}
+
+/// Parse a local date/time argument into a unix timestamp (seconds).
+/// Accepts YYYY-MM-DD [HH:MM[:SS]] with ` ` or `T` separators, and slashes.
+fn parse_datetime(s: &str) -> Result<i64> {
+    let t = s.trim();
+    if t.is_empty() {
+        bail!("time argument is empty (expected YYYY-MM-DD [HH:MM[:SS]])");
+    }
+    const FORMATS: &[&str] = &[
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y/%m/%d",
+    ];
+    for f in FORMATS {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(t, f) {
+            return local_timestamp(dt);
+        }
+        if let Ok(d) = NaiveDate::parse_from_str(t, f) {
+            if let Some(dt) = d.and_hms_opt(0, 0, 0) {
+                return local_timestamp(dt);
+            }
+        }
+    }
+    bail!("cannot parse time `{t}` (expected YYYY-MM-DD [HH:MM[:SS]])")
+}
+
+/// Interpret a naive local datetime in the local timezone and return unix seconds.
+fn local_timestamp(dt: NaiveDateTime) -> Result<i64> {
+    let local = Local
+        .from_local_datetime(&dt)
+        .single()
+        .ok_or_else(|| anyhow::anyhow!("invalid or ambiguous local time `{dt}`"))?;
+    Ok(local.timestamp())
+}
+
+/// File size in bytes (0 when metadata is unavailable).
+fn file_size(path: &Path) -> u64 {
+    fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+/// File modification time in unix seconds (0 when unavailable).
+fn file_mtime(path: &Path) -> i64 {
+    fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// True when the file passes the -S / --newer / --older attribute filters.
+fn passes_attrs(path: &Path, opts: &FileOpts) -> bool {
+    if let Some(min) = opts.min_size {
+        if file_size(path) < min {
+            return false;
+        }
+    }
+    if let Some(t) = opts.newer {
+        if file_mtime(path) < t {
+            return false;
+        }
+    }
+    if let Some(t) = opts.older {
+        if file_mtime(path) >= t {
+            return false;
+        }
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -265,8 +389,20 @@ fn is_target_file(path: &Path, exts: &Option<HashSet<String>>, text_only: bool) 
     }
 }
 
-/// Recursively collect target files under `dir` (sorted, deterministic).
-fn walk(dir: &Path, exts: &Option<HashSet<String>>, text_only: bool, out: &mut Vec<PathBuf>) {
+/// Recursively collect files under `dir` (sorted, deterministic).
+///
+/// `ext_filter` applies the text/source extension filter (search/replace modes);
+/// when false every file is collected (list mode, filters applied later).
+/// `max_depth` bounds subdirectory descent (root = depth 0).
+fn walk(
+    dir: &Path,
+    exts: &Option<HashSet<String>>,
+    text_only: bool,
+    ext_filter: bool,
+    max_depth: Option<usize>,
+    depth: usize,
+    out: &mut Vec<PathBuf>,
+) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -286,14 +422,17 @@ fn walk(dir: &Path, exts: &Option<HashSet<String>>, text_only: bool, out: &mut V
             if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
                 continue;
             }
+            if max_depth.is_some_and(|m| depth + 1 > m) {
+                continue;
+            }
             dirs.push(path);
-        } else if ft.is_file() && is_target_file(&path, exts, text_only) {
+        } else if ft.is_file() && (!ext_filter || is_target_file(&path, exts, text_only)) {
             out.push(path);
         }
     }
     dirs.sort();
     for d in dirs {
-        walk(&d, exts, text_only, out);
+        walk(&d, exts, text_only, ext_filter, max_depth, depth + 1, out);
     }
     out.sort();
 }
@@ -316,13 +455,59 @@ fn collect_files(path: &str, opts: &FileOpts) -> Result<Vec<PathBuf>> {
     let exts = opts.ext_set();
     let mut files = Vec::new();
     if p.is_dir() {
-        walk(p, &exts, opts.text_only, &mut files);
+        walk(p, &exts, opts.text_only, true, opts.max_depth, 0, &mut files);
     } else if p.is_file() {
         files.push(p.to_path_buf());
     } else {
         bail!("path `{path}` does not exist");
     }
     Ok(files)
+}
+
+/// List mode: collect every file (extension filter applied later), then print
+/// the ones passing -e / -t / -S / --newer / --older.
+fn list_files(path: &str, opts: &FileOpts) -> Result<()> {
+    let p = Path::new(path);
+    let mut files = Vec::new();
+    if p.is_dir() {
+        let exts = opts.ext_set();
+        walk(p, &exts, opts.text_only, false, opts.max_depth, 0, &mut files);
+    } else if p.is_file() {
+        files.push(p.to_path_buf());
+    } else {
+        bail!("path `{path}` does not exist");
+    }
+    let es = opts.ext_set();
+    for f in &files {
+        if !is_visible(&f, &es, opts.text_only) {
+            continue;
+        }
+        if !passes_attrs(f, opts) {
+            continue;
+        }
+        println!("{}", f.display());
+    }
+    Ok(())
+}
+
+/// Visibility filter for list mode (hidden files skipped; `-e` / `-t` apply).
+fn is_visible(path: &Path, exts: &Option<HashSet<String>>, text_only: bool) -> bool {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if name.starts_with('.') {
+        return false;
+    }
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    match exts {
+        Some(es) => es.contains(&ext) || es.contains(&name),
+        None if text_only => TEXT_EXTS.contains(&ext.as_str()),
+        None => true,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,6 +535,9 @@ fn search_path(needle: &str, path: &str, opts: &FileOpts) -> Result<()> {
     let n: Vec<char> = needle.chars().collect();
     let mut matched_files = 0usize;
     for f in &files {
+        if !passes_attrs(f, opts) {
+            continue;
+        }
         let Some(content) = read_text_file(f)? else { continue };
         let lines: Vec<String> = content.lines().map(str::to_string).collect();
         let out = build_match_output(&lines, Some(f), &n, opts.ignore_case, opts.word, opts.context);
@@ -374,6 +562,9 @@ fn replace_path(old: &str, new: &str, path: &str, opts: &FileOpts) -> Result<()>
     let mut modified = 0usize;
     let mut total = 0usize;
     for f in &files {
+        if !passes_attrs(f, opts) {
+            continue;
+        }
         let Some(content) = read_text_file(f)? else { continue };
         let mut chars: Vec<char> = content.chars().collect();
         let n = replace_all(&mut chars, &needle, &replacement, opts.ignore_case, opts.word);
@@ -394,17 +585,48 @@ fn replace_path(old: &str, new: &str, path: &str, opts: &FileOpts) -> Result<()>
 }
 
 /// Entry point: `sysenv file ...`
-pub fn cmd_file(args: &[String], exts: &[String], ignore_case: bool, text_only: bool, word: bool, context: Option<usize>) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+pub fn cmd_file(
+    args: &[String],
+    exts: &[String],
+    ignore_case: bool,
+    text_only: bool,
+    word: bool,
+    context: Option<usize>,
+    size: Option<String>,
+    newer: Option<String>,
+    older: Option<String>,
+    max_depth: Option<usize>,
+) -> Result<()> {
     let opts = FileOpts {
         exts: exts.to_vec(),
         ignore_case,
         text_only,
         word,
         context: context.unwrap_or(0),
+        min_size: match size {
+            Some(s) => Some(parse_size(&s)?),
+            None => None,
+        },
+        newer: match newer {
+            Some(t) => Some(parse_datetime(&t)?),
+            None => None,
+        },
+        older: match older {
+            Some(t) => Some(parse_datetime(&t)?),
+            None => None,
+        },
+        max_depth,
     };
+    let has_filter = opts.min_size.is_some()
+        || opts.newer.is_some()
+        || opts.older.is_some()
+        || opts.max_depth.is_some();
     match args.len() {
+        0 if has_filter => list_files(".", &opts),
+        1 if has_filter => list_files(&args[0], &opts),
         0 => bail!(
-            "usage:\n  sysenv file PATTERN             search PATTERN in stdin (piped)\n  sysenv file PATTERN PATH        search PATTERN in PATH\n  sysenv file OLD NEW PATH        replace OLD with NEW in PATH\noptions: -e EXT (repeatable) -i -t -w -c NUM"
+            "usage:\n  sysenv file PATTERN             search PATTERN in stdin (piped)\n  sysenv file PATTERN PATH        search PATTERN in PATH\n  sysenv file OLD NEW PATH        replace OLD with NEW in PATH\n  sysenv file -S SIZE [PATH]      list files by size (e.g. -S 2m)\n  sysenv file --newer TIME [PATH] list files by mtime\noptions: -e EXT (repeatable) -i -t -w -c NUM -S SIZE --newer TIME --older TIME -d NUM"
         ),
         1 => search_stdin(&args[0], &opts),
         2 => search_path(&args[0], &args[1], &opts),
@@ -526,5 +748,86 @@ mod tests {
         assert_eq!(find_chars(&chars("abc"), &chars(""), 0, false), Some(0));
         let mut v = chars("abc");
         assert_eq!(replace_all(&mut v, &chars(""), &chars("x"), false, false), 0);
+    }
+
+    #[test]
+    fn parse_size_units() {
+        assert_eq!(parse_size("100").unwrap(), 100);
+        assert_eq!(parse_size("2k").unwrap(), 2 * 1024);
+        assert_eq!(parse_size("2K").unwrap(), 2 * 1024);
+        assert_eq!(parse_size("2kb").unwrap(), 2 * 1024);
+        assert_eq!(parse_size("2m").unwrap(), 2 * 1024 * 1024);
+        assert_eq!(parse_size("2MB").unwrap(), 2 * 1024 * 1024);
+        assert_eq!(parse_size("2g").unwrap(), 2 * 1024 * 1024 * 1024);
+        assert_eq!(parse_size("1.5k").unwrap(), 1536);
+        assert!(parse_size("").is_err());
+        assert!(parse_size("2x").is_err());
+        assert!(parse_size("abc").is_err());
+    }
+
+    #[test]
+    fn parse_datetime_formats() {
+        let d0 = parse_datetime("2026-10-01").unwrap();
+        let d1 = parse_datetime("2026-10-01 00:00").unwrap();
+        let d2 = parse_datetime("2026-10-01 00:00:00").unwrap();
+        let d3 = parse_datetime("2026-10-01T00:00:00").unwrap();
+        let d4 = parse_datetime("2026/10/01").unwrap();
+        assert_eq!(d0, d1);
+        assert_eq!(d1, d2);
+        assert_eq!(d2, d3);
+        assert_eq!(d3, d4);
+        // 同一本地时区下，+1 分钟 = 60 秒
+        let later = parse_datetime("2026-10-01 00:01").unwrap();
+        assert_eq!(later - d0, 60);
+        assert!(parse_datetime("not a date").is_err());
+        assert!(parse_datetime("2026-13-45").is_err());
+    }
+
+    #[test]
+    fn attrs_size_filter() {
+        // 以本文件自身为样本（肯定远大于 1 KiB）
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/file.rs");
+        let small = FileOpts { min_size: Some(1024), ..opts_base() };
+        assert!(passes_attrs(&p, &small));
+        let huge = FileOpts { min_size: Some(1 << 40), ..opts_base() };
+        assert!(!passes_attrs(&p, &huge));
+    }
+
+    #[test]
+    fn walk_respects_max_depth() {
+        let base = std::env::temp_dir().join(format!("sysenv_filedepth_{}", std::process::id()));
+        let sub = base.join("a").join("b");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(base.join("r.txt"), "x").unwrap();
+        fs::write(base.join("a").join("l1.txt"), "x").unwrap();
+        fs::write(sub.join("l2.txt"), "x").unwrap();
+        let mut files = Vec::new();
+        walk(&base, &None, false, false, Some(0), 0, &mut files);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file_name().unwrap().to_str().unwrap(), "r.txt");
+        let mut files = Vec::new();
+        walk(&base, &None, false, false, Some(1), 0, &mut files);
+        let names: Vec<String> = files.iter().map(|f| f.file_name().unwrap().to_str().unwrap().to_string()).collect();
+        assert!(names.contains(&"r.txt".to_string()));
+        assert!(names.contains(&"l1.txt".to_string()));
+        assert!(!names.contains(&"l2.txt".to_string()));
+        let mut files = Vec::new();
+        walk(&base, &None, false, false, None, 0, &mut files);
+        assert_eq!(files.len(), 3);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    fn opts_base() -> FileOpts {
+        FileOpts {
+            exts: Vec::new(),
+            ignore_case: false,
+            text_only: false,
+            word: false,
+            context: 0,
+            min_size: None,
+            newer: None,
+            older: None,
+            max_depth: None,
+        }
     }
 }

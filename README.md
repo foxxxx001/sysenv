@@ -54,7 +54,7 @@ Commands:
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
 | AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key、`info model` 列出 `{provider}:{name}` 模型清单、`info price` 查 models.dev 模型价格、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
-| 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin；2 参在目录树文本/源码文件搜（`-e` 扩展名过滤 / `-i` 忽略大小写 / `-t` 仅文本 / `-w` 整词 / `-c` 上下文）；3 参 OLD NEW PATH 就地替换 |
+| 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin；2 参在目录树文本/源码文件搜（`-e` 扩展名过滤 / `-i` 忽略大小写 / `-t` 仅文本 / `-w` 整词 / `-c` 上下文）；3 参 OLD NEW PATH 就地替换；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件 |
 | 格式转换      | `con`                | json / csv / md / yaml 互转：默认读 stdin（`cat a.json | sysenv con`），`-file` 读文件，`-i` 输入格式，`-o` 输出格式，`-out` 写文件；表格类转对象数组（类型推断 + 转义） |
 | 联网搜索      | `search`             | 博查 AI 网页搜索 API（`POST api.bochaai.com/v1/web-search`）：`--freshness`（时间过滤）/ `--summary`（AI 摘要）/ `--count`（1-50）/ `--page` / `--include-domains` / `--exclude-domains`（域名白黑名单），参数与官网接口一致；key 取自配置 `search` 段；`--json` 原始响应 / `--debug` 请求与响应。`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡（`--no-answer` 关闭 AI 答案） |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
@@ -580,6 +580,14 @@ fd/sd 风格：搜索 stdin 或目录树中的文本/源码文件，或就地替
 * `-w`：整词匹配（前后字符非字母/数字/下划线）
 * `-c NUM`：显示匹配行的前后 NUM 行（多组间以 `--` 分隔）
 
+文件属性筛选（fd 风格，可与搜索/替换/列文件叠加）：
+
+* `-S SIZE` / `--size SIZE`：只处理大小达到指定值的文件。纯数字按字节；`2k`/`2m`/`2g`/`2t`（或 kb/mb/gb/tb）按 1024 进制，支持小数（`1.5m`），大小写不敏感
+* `--newer TIME`：只处理修改时间不早于 TIME 的文件；`--older TIME`：只处理早于 TIME 的文件。时间格式 `YYYY-MM-DD [HH:MM[:SS]]`（`T` 或斜杠分隔也可），按本地时区解释
+* `-d NUM`：只递归 NUM 级子目录（`-d 0` 仅当前目录）
+
+给出任一筛选且不带 PATTERN 时进入**列文件模式**（每行一个路径，默认当前目录，`-e`/`-t` 可附加筛选）；带 PATTERN 或 OLD NEW 时筛选叠加到字符串搜索与就地替换。
+
 遍历规则：递归目录树时跳过隐藏项（`.` 开头）与常见噪音目录（`.git` / `node_modules` / `target` / `dist` / `build` / `__pycache__` 等）；二进制文件（含 NUL 字节）自动跳过；替换模式同样遵守 `-e` / `-t` / `-i` / `-w`。
 
 ```
@@ -591,6 +599,12 @@ sysenv file hello D:\projects -t               # 只搜纯文本（不含源码�
 sysenv file hello D:\projects -w -c 2          # 整词 + 前后 2 行上下文
 sysenv file hello hi D:\projects               # 就地替换 hello -> hi
 sysenv file HELLO hi D:\projects -i            # 忽略大小写替换
+sysenv file -S 2m                              # 列出当前目录下 >= 2 MiB 的文件
+sysenv file -S 5000 D:\data                    # 列出 D:\data 下 >= 5000 字节的文件
+sysenv file -S 2m -e bin -d 1 D:\data          # >= 2MiB 的 .bin 文件，只递归 1 层
+sysenv file --newer "2026-10-01" D:\data       # 修改时间 >= 2026-10-01 的文件
+sysenv file --older "2026-10-01 12:00" D:\data # 修改时间早于该时刻的文件
+sysenv file hello D:\data -S 1m                # 只在 >= 1 MiB 的文件中搜 hello
 ```
 
 #### 5.8 格式转换（`con`）
