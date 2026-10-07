@@ -359,6 +359,7 @@ struct AiInfoArgs {
 }
 
 #[derive(Args)]
+#[command(disable_help_flag = true)]
 struct ChatArgs {
     /// The message to send (multiple words are joined with spaces; when omitted, stdin is read when piped)
     #[arg(value_name = "MSG")]
@@ -386,6 +387,10 @@ struct ChatArgs {
     /// keeps the other default)
     #[arg(long, value_name = "ADDR", num_args = 0..=1, default_missing_value = "")]
     server: Option<String>,
+    /// With --server: show whether the server is running (address/port) plus the
+    /// configured providers & models; without --server: show this command's usage
+    #[arg(short = 'h', long)]
+    help: bool,
 }
 
 #[derive(Args)]
@@ -759,6 +764,31 @@ fn run_link(l: LinkArgs) -> anyhow::Result<()> {
     )
 }
 
+/// Short usage for `sys ai chat --help` (the chat subcommand owns its -h/--help
+/// flag so that `--server --help` can query the running server instead).
+fn print_chat_usage() {
+    println!("Usage: sys ai chat [OPTIONS] [MSG...]");
+    println!();
+    println!("Chat with a configured model (message read from stdin when piped and MSG is empty).");
+    println!();
+    println!("Options:");
+    println!("  -m, --model MODEL   override the model ({{provider}}:{{model}}, {{model}}, or a comma-separated list)");
+    println!("  -c, --config FILE   config file path (default ~/.sysenv/config.yaml)");
+    println!("      --list-model    list every configured model and exit");
+    println!("      --list-provider list every configured provider and exit");
+    println!("      --debug         print the actual HTTP request & response (incl. headers)");
+    println!("      --no-stream     disable streaming even if the config sets stream: true");
+    println!("      --server [ADDR] serve an OpenAI-compatible API instead of chatting (default 127.0.0.1:10000; a bare port or IP keeps the other default)");
+    println!("  -h, --help          with --server: show server status + configured providers/models; otherwise this usage");
+    println!();
+    println!("Examples:");
+    println!("  sys ai chat \"hi\"");
+    println!("  echo \"summarize this\" | sys ai chat");
+    println!("  sys ai chat --server");
+    println!("  sys ai chat --server 8080");
+    println!("  sys ai chat --server --help");
+}
+
 fn run_ai(a: AiArgs) -> anyhow::Result<()> {
     match a.cmd {
         AiCmd::Model(m) => ai::cmd_model(
@@ -795,7 +825,24 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
         ),
         AiCmd::Info(i) => ai::cmd_info(i.field.as_deref(), &i.param, i.refresh, i.config.as_deref(), i.output, i.json),
         AiCmd::Chat(c) => {
-            if let Some(addr) = c.server.as_deref() {
+            if c.help {
+                if c.server.is_some() {
+                    let bind = server::parse_addr(c.server.as_deref().unwrap_or(""));
+                    if server::is_running(&bind) {
+                        println!(
+                            "sys: server is RUNNING at http://{bind} (OpenAI-compatible: POST /v1/chat/completions, GET /v1/models)"
+                        );
+                    } else {
+                        println!(
+                            "sys: server is NOT running at http://{bind} — start it with `sys ai chat --server [ADDR]`"
+                        );
+                    }
+                    ai::cmd_info(None, &[], false, c.config.as_deref(), None, false)
+                } else {
+                    print_chat_usage();
+                    Ok(())
+                }
+            } else if let Some(addr) = c.server.as_deref() {
                 server::serve(c.config.as_deref(), &server::parse_addr(addr))
             } else {
                 chat::cmd_chat(

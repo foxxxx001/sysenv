@@ -381,9 +381,11 @@ sys ai chat --server                   # 以 OpenAI 兼容 API 对外提供聊�
 sys ai chat --server 8080              # 只给端口，host 用默认 127.0.0.1
 sys ai chat --server 0.0.0.0           # 只给 IP，端口用默认 10000（对外网开放）
 sys ai chat --server 0.0.0.0:9000      # 同时指定 IP 与端口
+sys ai chat --server --help             # 查询服务是否已启动：地址/端口 + 配置的 provider/model
 ```
 
 * `--server [ADDR]`：**把配置中的 Provider 以 OpenAI 兼容格式对外提供**（本地 HTTP 服务，默认 `127.0.0.1:10000`）。提供 `POST /v1/chat/completions`（非流式与 SSE 流式透传到上游 Provider）与 `GET /v1/models`（列出全部已配置模型，ID 为 `{provider}:{model}`）。请求中的 `model` 使用与聊天相同的选择规则（`provider:model` / `provider:*` / 裸模型名 / `auto` = 配置默认）。仅支持 `type: openai` 的 Provider，anthropic 目标返回明确错误。地址可只给端口（如 `8080`，host 用默认）或只给 IP（如 `0.0.0.0`，端口用默认）。
+* `--server --help`：**查询服务状态**——先探测该地址（GET /v1/models，2 秒超时）是否已有服务在运行：已启动则打印当前地址/端口，未启动则提示 `server is NOT running`；两种情况都会继续打印当前配置的 provider 表（name/api_base/api_key/DOCS/CONSOLE）与全部模型清单（`{provider}:{name}`）。不带 `--server` 的 `chat --help` 显示本命令用法。
 
 #### 5.3 任务模板聊天（`ai task`）
 

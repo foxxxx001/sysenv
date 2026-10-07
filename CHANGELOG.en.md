@@ -2,6 +2,12 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.26 (2026-10-07)
+
+### Added
+- **`sys ai chat --server --help` server-status query**: probes the address (GET /v1/models, 2 s timeout; bind-all hosts `0.0.0.0` / `::` are probed via 127.0.0.1) to tell whether the server is already running — running prints the current address/port, not-running says `server is NOT running` with the start command; both cases then print the configured provider table (name/api_base/api_key/DOCS/CONSOLE) and the full model list (`{provider}:{name}`). The chat subcommand now owns a custom `-h/--help` (without `--server` it prints a usage summary)
+- Version 0.4.25 -> 0.4.26
+
 ## v0.4.25 (2026-10-07)
 
 ### Added

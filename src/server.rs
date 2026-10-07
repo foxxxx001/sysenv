@@ -47,6 +47,32 @@ pub(crate) fn parse_addr(s: &str) -> String {
     format!("{s}:{DEFAULT_PORT}")
 }
 
+/// Probe whether an OpenAI-compatible server is already listening at `addr`
+/// (GET /v1/models with a short timeout). Bind-all hosts (0.0.0.0 / ::) are
+/// probed through loopback, which is where the service is reachable locally.
+pub(crate) fn is_running(addr: &str) -> bool {
+    let probe = if let Some((host, port)) = addr.rsplit_once(':') {
+        if host == "0.0.0.0" || host == "::" || host == "[::]" {
+            format!("127.0.0.1:{port}")
+        } else {
+            addr.to_string()
+        }
+    } else {
+        addr.to_string()
+    };
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+    else {
+        return false;
+    };
+    client
+        .get(format!("http://{probe}/v1/models"))
+        .send()
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
 /// Start the OpenAI-compatible server and block forever.
 pub(crate) fn serve(config: Option<&Path>, addr: &str) -> Result<()> {
     let (cfg, _path) = chat::load_config(config)?;
