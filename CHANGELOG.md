@@ -2,6 +2,12 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.25（2026-10-07）
+
+### 新增
+- **`sys ai info` 无参默认输出**：不带 FIELD 参数时，同时打印当前配置的 provider 表（name / api_base / api_key / DOCS / CONSOLE）与全部模型清单（`{provider}:{name}`）；`-o json` 输出合并对象 `{"providers": [...], "models": [...]}`；无参 + `-o csv` 明确提示改用 `info provider` / `info model` 单独输出
+- 版本 0.4.24 -> 0.4.25
+
 ## v0.4.24（2026-10-07）
 
 ### 新增

@@ -1287,6 +1287,20 @@ fn print_price_rows(rows: &[PriceRow]) {
     }
 }
 
+/// Text view of the provider rows (PROVIDER / API_BASE / DOCS / CONSOLE / API_KEY).
+fn print_provider_table(rows: &[ProviderInfoRow]) {
+    let w_name = rows.iter().map(|r| r.name.chars().count()).max().unwrap_or(8).max(8);
+    let w_base = rows.iter().map(|r| r.api_base.chars().count()).max().unwrap_or(8).max(8);
+    let w_docs = rows.iter().map(|r| r.docs.chars().count()).max().unwrap_or(4).max(4);
+    let w_console = rows.iter().map(|r| r.console.chars().count()).max().unwrap_or(7).max(7);
+    println!("{:<w_name$}  {:<w_base$}  {:<w_docs$}  {:<w_console$}  {}", "PROVIDER", "API_BASE", "DOCS", "CONSOLE", "API_KEY");
+    for r in rows {
+        let docs = if r.docs.is_empty() { "-".to_string() } else { r.docs.clone() };
+        let console = if r.console.is_empty() { "-".to_string() } else { r.console.clone() };
+        println!("{:<w_name$}  {:<w_base$}  {:<w_docs$}  {:<w_console$}  {}", r.name, r.api_base, docs, console, r.api_key);
+    }
+}
+
 /// `sys ai info FIELD [PARAM...] [-c FILE] [--refresh]`
 ///
 /// FIELD is `provider`, `model` or `price`:
@@ -1311,7 +1325,7 @@ fn print_price_rows(rows: &[PriceRow]) {
 /// - `-o json` / `-o csv` / `--json` — machine-readable output, supported by
 ///   `info provider` and `info model` (JSON array or CSV table).
 pub fn cmd_info(
-    field: &str,
+    field: Option<&str>,
     param: &[String],
     refresh: bool,
     config: Option<&Path>,
@@ -1324,8 +1338,53 @@ pub fn cmd_info(
         let s = s.trim();
         if s.is_empty() { None } else { Some(s.to_string()) }
     };
-    match field.to_ascii_lowercase().as_str() {
-        "provider" | "providers" => {
+    let field = field.map(|f| f.to_ascii_lowercase());
+    match field.as_deref() {
+        None => {
+            // No field: print the configured providers and models together.
+            let (cfg, _) = chat::load_config(config)?;
+            let provs = info_provider_rows(&cfg, None)?;
+            let mods = info_model_rows(&cfg, None)?;
+            match fmt {
+                Some(OutFormat::Json) => {
+                    let providers: Vec<Value> = provs
+                        .iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "name": r.name,
+                                "api_base": r.api_base,
+                                "api_key": r.api_key,
+                                "docs": r.docs,
+                                "console": r.console,
+                            })
+                        })
+                        .collect();
+                    let models: Vec<Value> = mods
+                        .iter()
+                        .map(|r| serde_json::json!({"provider": r.provider, "name": r.name}))
+                        .collect();
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "providers": providers,
+                            "models": models,
+                        }))?
+                    );
+                }
+                Some(OutFormat::Csv) => {
+                    bail!("`sys ai info` without a field does not support CSV; use `info provider` / `info model` for CSV, or run `sys ai info` for the combined text view")
+                }
+                None => {
+                    print_provider_table(&provs);
+                    println!();
+                    println!("MODELS:");
+                    for r in &mods {
+                        println!("{}:{}", r.provider, r.name);
+                    }
+                }
+            }
+        }
+        Some("provider") | Some("providers") => {
             let (cfg, _) = chat::load_config(config)?;
             let rows = info_provider_rows(&cfg, keyword.as_deref())?;
             match fmt {
@@ -1351,20 +1410,11 @@ pub fn cmd_info(
                     }
                 }
                 None => {
-                    let w_name = rows.iter().map(|r| r.name.chars().count()).max().unwrap_or(8).max(8);
-                    let w_base = rows.iter().map(|r| r.api_base.chars().count()).max().unwrap_or(8).max(8);
-                    let w_docs = rows.iter().map(|r| r.docs.chars().count()).max().unwrap_or(4).max(4);
-                    let w_console = rows.iter().map(|r| r.console.chars().count()).max().unwrap_or(7).max(7);
-                    println!("{:<w_name$}  {:<w_base$}  {:<w_docs$}  {:<w_console$}  {}", "PROVIDER", "API_BASE", "DOCS", "CONSOLE", "API_KEY");
-                    for r in &rows {
-                        let docs = if r.docs.is_empty() { "-".to_string() } else { r.docs.clone() };
-                        let console = if r.console.is_empty() { "-".to_string() } else { r.console.clone() };
-                        println!("{:<w_name$}  {:<w_base$}  {:<w_docs$}  {:<w_console$}  {}", r.name, r.api_base, docs, console, r.api_key);
-                    }
+                    print_provider_table(&rows);
                 }
             }
         }
-        "model" | "models" => {
+        Some("model") | Some("models") => {
             let (cfg, _) = chat::load_config(config)?;
             let rows = info_model_rows(&cfg, keyword.as_deref())?;
             match fmt {
@@ -1388,7 +1438,7 @@ pub fn cmd_info(
                 }
             }
         }
-        "price" | "prices" => {
+        Some("price") | Some("prices") => {
             if fmt.is_some() {
                 bail!("`info price` does not support -o/--json (run without it for the price table)");
             }
@@ -1406,7 +1456,7 @@ pub fn cmd_info(
             let rows = info_price_rows(&data, &providers)?;
             print_price_rows(&rows);
         }
-        "balance" => {
+        Some("balance") => {
             if fmt.is_some() {
                 bail!("`info balance` does not support -o/--json (run without it for the balance view)");
             }
@@ -1416,7 +1466,7 @@ pub fn cmd_info(
             let (cfg, _) = chat::load_config(config)?;
             info_balance(&cfg, &kw)?;
         }
-        "sale-price" | "saleprice" | "sale_price" => {
+        Some("sale-price") | Some("saleprice") | Some("sale_price") => {
             if fmt.is_some() {
                 bail!("`info sale-price` does not support -o/--json (run without it for the price view)");
             }
@@ -1426,7 +1476,7 @@ pub fn cmd_info(
             let (cfg, _) = chat::load_config(config)?;
             info_sale_price(&cfg, &kw, refresh)?;
         }
-        other => bail!("unknown `info` field `{other}` (expected: provider | model | price | balance | sale-price)"),
+        Some(other) => bail!("unknown `info` field `{other}` (expected: provider | model | price | balance | sale-price)"),
     }
     Ok(())
 }

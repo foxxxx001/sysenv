@@ -507,7 +507,7 @@ sys ai image --list-provider --list-model             # 列出配置中的 Provi
 
 #### 5.5 本地配置查询（`ai info`）
 
-检查本地配置文件（默认 `~/.sysenv/config.yaml`，`-c/--config` 覆盖）与 models.dev 模型价格。
+检查本地配置文件（默认 `~/.sysenv/config.yaml`，`-c/--config` 覆盖）与 models.dev 模型价格。**不带 FIELD 参数时默认同时打印 provider 表（name/api_base/api_key/DOCS/CONSOLE）与全部模型清单（`{provider}:{name}`）**。
 
 * `info provider [KEYWORD]`：列出 `clients` 中全部 provider 的 `name / api_base / api_key` 及官方 `DOCS`（帮助文档）与 `CONSOLE`（控制台）地址（按 provider 名称匹配内置收录表，未收录显示 `-`）；带 KEYWORD 时只保留名称包含该词的 provider（大小写不敏感），无匹配报错并列出可用名称；`-o json` / `-o csv` / `--json` 输出 JSON 数组或 CSV 表（JSON 字段 `name` / `api_base` / `api_key` / `docs` / `console`）
 * `info model [KEYWORD]`：列出全部 provider 下的 model，格式 `{provider}:{name}`；带 KEYWORD 时按 provider 名称包含匹配（支持 `provider:model` / `provider:*` 精确选择），无 provider 命中时回退按 model 名称匹配；`-o json` / `-o csv` / `--json` 输出 JSON 数组或 CSV 表（JSON 字段 `provider` / `name`）
@@ -516,6 +516,7 @@ sys ai image --list-provider --list-model             # 列出配置中的 Provi
 * `info sale-price PROVIDER`：抓取官网定价页并列出全部模型销售价。agnes 抓取 `wiki.agnes-ai.cn` 定价页（文本/图片/视频模型，刊例价 + 现价，人民币）；minimax 抓取 `platform.minimaxi.com` 定价页（语言模型输入/输出/缓存价格，元/百万 tokens）；alibaba-cn 给出百炼官方模型列表与计费说明页地址；其余 provider 给出官网定价页地址。定价页 24h 缓存，`--refresh` 强制重抓
 
 ```
+sys ai info                                # 无参：provider 表 + 全部模型清单
 sys ai info provider                     # 列出配置中全部 provider（name/api_base/api_key）
 sys ai info provider agnes               # 只显示名称包含 agnes 的 provider
 sys ai info provider -o json             # 全部 provider 的 JSON 数组输出

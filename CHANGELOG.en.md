@@ -2,6 +2,12 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.25 (2026-10-07)
+
+### Added
+- **`sys ai info` default combined output**: with no FIELD argument it prints the configured provider table (name / api_base / api_key / DOCS / CONSOLE) plus the full model list (`{provider}:{name}`) together; `-o json` emits one object `{"providers": [...], "models": [...]}`; no-field `-o csv` gives a clear hint to use `info provider` / `info model` separately
+- Version 0.4.24 -> 0.4.25
+
 ## v0.4.24 (2026-10-07)
 
 ### Added

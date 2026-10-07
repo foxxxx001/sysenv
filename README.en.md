@@ -307,7 +307,7 @@ ssearch "holiday schedule"                              # ssearch shim == sys se
 
 #### 5.5 Local config lookup (`ai info`)
 
-Inspects the local config file (default `~/.sysenv/config.yaml`, `-c/--config` overrides) and the models.dev model prices.
+Inspects the local config file (default `~/.sysenv/config.yaml`, `-c/--config` overrides) and the models.dev model prices. **With no FIELD argument it prints the provider table (name/api_base/api_key/DOCS/CONSOLE) and the full model list (`{provider}:{name}`) together.**
 
 - `info provider [KEYWORD]` — lists every provider under `clients` with `name / api_base / api_key` plus the official `DOCS` (help docs) and `CONSOLE` URLs (matched by provider name against a built-in table; unknown providers show `-`); with KEYWORD only providers whose name contains it are kept (case-insensitive), otherwise an error lists the available names; `-o json` / `-o csv` / `--json` print a JSON array or CSV table (JSON fields `name` / `api_base` / `api_key` / `docs` / `console`)
 - `info model [KEYWORD]` — lists every configured model as `{provider}:{name}`; with KEYWORD only models of providers whose name contains it are kept (`provider:model` / `provider:*` select specific models); when no provider matches, models whose name contains KEYWORD are listed instead; `-o json` / `-o csv` / `--json` print a JSON array or CSV table (JSON fields `provider` / `name`)
@@ -316,6 +316,7 @@ Inspects the local config file (default `~/.sysenv/config.yaml`, `-c/--config` o
 - `info sale-price PROVIDER` — scrapes the provider's official pricing page and prints every model's sale price. agnes uses `wiki.agnes-ai.cn` (text / image / video models, list + current price in ¥); minimax uses `platform.minimaxi.com` (language-model input / output / cache prices, ¥ per million tokens); alibaba-cn prints the official Bailian model list & billing page; other providers print their official pricing-page URL. Pricing pages are cached 24 h, `--refresh` forces a re-fetch
 
 ```
+sys ai info                              # no field: provider table + full model list
 sys ai info provider                     # every configured provider (name/api_base/api_key)
 sys ai info provider agnes               # only providers whose name contains agnes
 sys ai info provider -o json             # every provider as a JSON array

@@ -331,9 +331,9 @@ struct CnModelArgs {
 
 #[derive(Args)]
 struct AiInfoArgs {
-    /// What to show: provider | model | price
+    /// What to show: provider | model | price (omitted: the configured providers and models together)
     #[arg(value_name = "FIELD")]
-    field: String,
+    field: Option<String>,
     /// provider KEYWORD: keep only providers whose name contains KEYWORD;
     /// model KEYWORD: keep only models of providers whose name contains KEYWORD
     /// (or `provider:model` / `provider:*` to select specific models);
@@ -793,7 +793,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             p.output,
             a.refresh,
         ),
-        AiCmd::Info(i) => ai::cmd_info(&i.field, &i.param, i.refresh, i.config.as_deref(), i.output, i.json),
+        AiCmd::Info(i) => ai::cmd_info(i.field.as_deref(), &i.param, i.refresh, i.config.as_deref(), i.output, i.json),
         AiCmd::Chat(c) => {
             if let Some(addr) = c.server.as_deref() {
                 server::serve(c.config.as_deref(), &server::parse_addr(addr))
