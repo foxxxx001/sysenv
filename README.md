@@ -52,7 +52,7 @@ Commands:
 | 注册表导入导出   | `path export/import` | `.reg` / JSON / TXT 三种格式；合并或 `--replace` 整体替换；跨机迁移备份                                   |
 | 链接到 PATH  | `link`               | 硬链接 → 符号链接 → 拷贝三级自动回退；Windows `.cmd` 垫片；自定义命令名；系统目录或托管目录                               |
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
-| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key、`info model` 列出 `{provider}:{name}` 模型清单、`info price` 查 models.dev 模型价格、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
+| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key、`info model` 列出 `{provider}:{name}` 模型清单、`info price` 查 models.dev 模型价格、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页）；`ai config`（导出配置为 codex / opencode / litellm / freellmapi 格式，支持 `provider:*` / `provider:model` 选择与 `-f` 写文件）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`、`--server` 以 OpenAI 兼容 API 对外提供 `/v1/chat/completions` 与 `/v1/models` 服务（默认 127.0.0.1:10000，可只给端口/IP），请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
 | 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin（带扩展名如 `me.txt` 则显示文件，引号包裹强制搜索）；2 参目录树文本/源码搜索（`-e` / `-i` / `-t` / `-w` / `-c`）；3 参 OLD NEW PATH 就地替换；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件 |
 | 格式转换      | `con`                | json / csv / md / yaml 互转：默认读 stdin（`cat a.json | sys con`），`-file` 读文件，`-i` 输入格式，`-o` 输出格式，`-out` 写文件；表格类转对象数组（类型推断 + 转义） |
@@ -337,7 +337,7 @@ sys ai cn-model gpt-6-1-sol --refresh  # 强制重新抓取（--refresh 属 ai �
 
 按 OpenAI `/v1/chat/completions` 或 Anthropic Messages API 标准与配置好的 Provider 聊天。
 
-* 配置文件默认位置 **`~/.sys/config.yaml`**（找不到会明确提示），可用 `-c/--config FILE` 覆盖；格式见 `doc/config.yaml`，脱敏模板见 `doc/config.example.yaml`
+* 配置文件默认位置 **`~/.sysenv/config.yaml`**（找不到会明确提示），可用 `-c/--config FILE` 覆盖；格式见 `doc/config.yaml`，脱敏模板见 `doc/config.example.yaml`
 
 * `clients` 列表存放 Provider：必填 `name / api_base / api_key / models`（`models` 每项 `name` + 可选 `weight`，缺省权重 1，**取值范围 0-9**，可选 `max_tokens`、`max_input_tokens`、`type`）；`type` 为 `openai`（默认，兼容 `open`）或 `anthropic`，分别按 OpenAI / Claude API 标准发请求
 
@@ -367,7 +367,7 @@ sys ai cn-model gpt-6-1-sol --refresh  # 强制重新抓取（--refresh 属 ai �
 * `--debug`：把**实际 HTTP 请求**（方法 / URL / 请求头 / 请求体）与**响应**（状态 / 响应头 / 响应体）打印到 stderr，不污染 stdout
 
 ```
-sys ai chat "你好"                     # 用默认配置聊天（~/.sys/config.yaml）
+sys ai chat "你好"                     # 用默认配置聊天（~/.sysenv/config.yaml）
 sys ai chat 你好 世界                  # 多参数自动拼接
 echo "帮我总结这段文字" | sys ai chat   # stdin 管道
 sys ai chat "你好" -c doc/config.yaml  # 指定配置文件
@@ -377,7 +377,13 @@ sys ai chat "你好" -m agnes:agnes-3.0-flash   # 覆盖顶层 model，只用 ag
 sys ai chat "你好" -m "agnes:*,claude:claude-3-5-sonnet"  # 多模型逗号分隔，加权轮询
 sys ai chat --list-provider            # 列出配置中的 Provider
 sys ai chat --list-model               # 列出配置中的所有模型（含权重）
+sys ai chat --server                   # 以 OpenAI 兼容 API 对外提供聊天服务（默认 127.0.0.1:10000）
+sys ai chat --server 8080              # 只给端口，host 用默认 127.0.0.1
+sys ai chat --server 0.0.0.0           # 只给 IP，端口用默认 10000（对外网开放）
+sys ai chat --server 0.0.0.0:9000      # 同时指定 IP 与端口
 ```
+
+* `--server [ADDR]`：**把配置中的 Provider 以 OpenAI 兼容格式对外提供**（本地 HTTP 服务，默认 `127.0.0.1:10000`）。提供 `POST /v1/chat/completions`（非流式与 SSE 流式透传到上游 Provider）与 `GET /v1/models`（列出全部已配置模型，ID 为 `{provider}:{model}`）。请求中的 `model` 使用与聊天相同的选择规则（`provider:model` / `provider:*` / 裸模型名 / `auto` = 配置默认）。仅支持 `type: openai` 的 Provider，anthropic 目标返回明确错误。地址可只给端口（如 `8080`，host 用默认）或只给 IP（如 `0.0.0.0`，端口用默认）。
 
 #### 5.3 任务模板聊天（`ai task`）
 
@@ -415,7 +421,7 @@ sys ai task -t weather country=北京   # = 号写法等价
 sys ai task -t "*" "帮我查今天深圳的天气"  # 对全部任务打分（TASK/DESC/SCORE，按分数排序）
 ```
 
-**工具执行示例**（`~/.sys/config.yaml` 中 `tasks` 配置）：
+**工具执行示例**（`~/.sysenv/config.yaml` 中 `tasks` 配置）：
 
 ```yaml
 tasks:
@@ -478,7 +484,7 @@ tasks:
 
 通过 Provider 的 OpenAI 兼容 **Images API**（`POST {api_base}/images/generations`，Bearer 鉴权）生成图片并保存到本地。
 
-* 配置文件与 `ai chat` 完全一致（默认 `~/.sys/config.yaml`，`-c/--config` 覆盖），只支持 **OpenAI 兼容 Provider（`type: openai`）**；`type: anthropic` 目标在发请求前明确报错（Anthropic 没有 Images API）
+* 配置文件与 `ai chat` 完全一致（默认 `~/.sysenv/config.yaml`，`-c/--config` 覆盖），只支持 **OpenAI 兼容 Provider（`type: openai`）**；`type: anthropic` 目标在发请求前明确报错（Anthropic 没有 Images API）
 
 * **模型选择与 `ai chat` 同一套规则**：顶层 `model` 或 `-m/--model`（`{provider}:{model}` / `{model}` / `provider:*` / 逗号分隔多选），多目标按 `weight` 加权轮询，失败自动降权并尝试下一个模型，替补成功升权，权重写回配置文件
 
@@ -501,7 +507,7 @@ sys ai image --list-provider --list-model             # 列出配置中的 Provi
 
 #### 5.5 本地配置查询（`ai info`）
 
-检查本地配置文件（默认 `~/.sys/config.yaml`，`-c/--config` 覆盖）与 models.dev 模型价格。
+检查本地配置文件（默认 `~/.sysenv/config.yaml`，`-c/--config` 覆盖）与 models.dev 模型价格。
 
 * `info provider [KEYWORD]`：列出 `clients` 中全部 provider 的 `name / api_base / api_key` 及官方 `DOCS`（帮助文档）与 `CONSOLE`（控制台）地址（按 provider 名称匹配内置收录表，未收录显示 `-`）；带 KEYWORD 时只保留名称包含该词的 provider（大小写不敏感），无匹配报错并列出可用名称；`-o json` / `-o csv` / `--json` 输出 JSON 数组或 CSV 表（JSON 字段 `name` / `api_base` / `api_key` / `docs` / `console`）
 * `info model [KEYWORD]`：列出全部 provider 下的 model，格式 `{provider}:{name}`；带 KEYWORD 时按 provider 名称包含匹配（支持 `provider:model` / `provider:*` 精确选择），无 provider 命中时回退按 model 名称匹配；`-o json` / `-o csv` / `--json` 输出 JSON 数组或 CSV 表（JSON 字段 `provider` / `name`）
@@ -527,11 +533,30 @@ sys ai info balance alibaba-cn           # 阿里云百炼：官方 limits 限�
 sys ai info sale-price agnes             # 抓取 agnes 官网定价页，列出全部模型销售价
 ```
 
-#### 5.6 网络搜索（`search`）
+#### 5.6 配置导出（`ai config`）
+
+把本地配置（`~/.sysenv/config.yaml` 的 `clients` 段）导出为其他 AI 工具的配置格式：
+
+* `ai config FORMAT [SELECT] [-f FILE] [-c FILE]`，`FORMAT` 支持：
+  * **`codex`**（TOML）：每个 Provider 一个 `[model_providers.<name>]` 段（`name` / `base_url` / `env_key` / `wire_api = "chat"`）；codex 只从环境变量读 key，导出时生成 `SYS_<PROVIDER>_API_KEY` 命名并打印 `export` 提示到 stderr；顶层 `model` 选中第一个模型的 `provider.model`
+  * **`opencode`**（JSON）：每个 Provider 一个条目（`npm: "@ai-sdk/openai-compatible"` + `options.baseURL` / `options.apiKey` 内联 + `models` 映射），可直接合并进 `opencode.json`
+  * **`litellm`**（YAML）：每个模型一条 `model_list` 条目，暴露名 `{provider}:{model}`（防冲突），路由到 `openai/{model}`，`api_base` / `api_key` 内联
+  * **`freellmapi`**（JSON）：`customProviders` 数组，每个 Provider 一个 `baseUrl` / `label` / `models` 条目（`supportsTools: true`），可合并进 `freellmapi.config.json`
+* `SELECT` 选择导出范围：缺省 = **全部 Provider 的全部模型**；`provider:*` = 指定 Provider 的全部模型；`provider:model` = 指定 Provider 的单个模型（无匹配明确报错）
+* `-f/--file FILE` 写入文件（缺省打印到 stdout）；`-c/--config` 指定配置文件
+
+```
+sys ai config codex                      # 全部模型导出为 codex TOML（stdout）
+sys ai config opencode -f opencode.json  # 写入文件
+sys ai config litellm "agnes:*"          # 只导出 agnes 的模型
+sys ai config freellmapi "minimax:MiniMax-M2.7"   # 只导出 minimax 的单个模型
+```
+
+#### 5.7 网络搜索（`search`）
 
 通过**博查 AI 网页搜索 API**（`POST https://api.bochaai.com/v1/web-search`，Bearer 鉴权）提供联网搜索能力，**请求参数与官网接口完全一致**。
 
-* **API key**：读取配置顶层 `search:` 段（默认 `~/.sys/config.yaml`，`-c/--config` 覆盖），首个 `name: bochaai` 条目生效，未配置时明确报错。示例：
+* **API key**：读取配置顶层 `search:` 段（默认 `~/.sysenv/config.yaml`，`-c/--config` 覆盖），首个 `name: bochaai` 条目生效，未配置时明确报错。示例：
 
   ```yaml
   search:
@@ -564,7 +589,7 @@ ssearch "五一 放假 安排"                                 # ssearch 垫片�
 
 > 注意：**AI Search 与 Web Search 是博查的独立套餐**，key 需在开放平台分别开通；未开通 AI Search 包时 `--ai` 会返回 403（`You do not have enough money or package quota`）。
 
-#### 5.7 文本搜索与替换（`file`）
+#### 5.8 文本搜索与替换（`file`）
 
 fd/sd 风格：搜索 stdin 或目录树中的文本/源码文件，或就地替换字符串。匹配在 Unicode 字符层进行（`-i` 逐字符大小写折叠，中文等非 ASCII 同样正确）。
 
@@ -609,7 +634,7 @@ sys file --older "2026-10-01 12:00" D:\data # 修改时间早于该时刻的文�
 sys file hello D:\data -S 1m                # 只在 >= 1 MiB 的文件中搜 hello
 ```
 
-#### 5.8 格式转换（`con`）
+#### 5.9 格式转换（`con`）
 
 json / csv / md / yaml 四种格式互转。默认从标准输入读取（管道用法：`cat a.json | sys con`），结果输出到 stdout；`-out` 可改写到文件。
 

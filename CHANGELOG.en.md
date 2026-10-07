@@ -2,6 +2,13 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.24 (2026-10-07)
+
+### Added
+- **`sys ai config` multi-format config export**: exports the local config's `clients` section as `codex` (TOML, one `[model_providers]` table per provider + `env_key` + stderr `export` hints), `opencode` (JSON, `@ai-sdk/openai-compatible` + inline apiKey), `litellm` (YAML `model_list`, exposed name `{provider}:{model}` to avoid collisions) and `freellmapi` (JSON `customProviders`); default exports every provider's every model, `provider:*` exports one provider's models, `provider:model` exports one model (clear errors listing the available names on no match); `-f/--file` writes to a file (stdout by default), `-c/--config` selects the config file; a missing config keeps the existing explicit error
+- **`sys ai chat --server [ADDR]` OpenAI-compatible local server**: serves the configured providers as an OpenAI-format API, default `127.0.0.1:10000`; a bare port keeps the default host, a bare IP keeps the default port; exposes `POST /v1/chat/completions` (non-streaming passthrough + SSE streaming via chunked transfer) and `GET /v1/models` (all models, id `{provider}:{model}`); request `model` accepts `provider:model` / `provider:*` / bare name / `auto` (= config default); only `type: openai` providers are served (anthropic targets get a clear error); unknown models return 404 listing the available names
+- Version 0.4.23 -> 0.4.24
+
 ## v0.4.23 (2026-10-07)
 
 ### Changed
@@ -48,14 +55,14 @@ Versioned record of new features / fixes / release conventions. Artifact naming:
   - `company`: company registration info (legal representative, registered capital, founding date, etc.; public disclosure channels, AI aggregate search).
 - Implementation note: Creditchina (creditchina.gov.cn) is unreachable, the enterprise credit system (gsxt.gov.cn) returns 521, and the court execution site / wenshu / aiqicha all require CAPTCHA or JS rendering, so direct fetching is impossible. AI aggregate search (Sogou first, Bing fallback) over public disclosure pages (qcc / aiqicha / baike / government notices) is used instead; the entity name comes from the model's `name` argument, and the model honestly reports when no records are found.
 - Manual `-t` tasks now fill the first declared parameter with a bare free-text argument (e.g. `-t company 字节跳动` → `name=字节跳动`), replacing both the `{name}` placeholder in the msg and the tool query. Existing tasks like `weather` are unaffected.
-- Sample config adds the `penalty` / `company` tasks (both `~/.sys/config.yaml` and `doc/config.yaml`).
+- Sample config adds the `penalty` / `company` tasks (both `~/.sysenv/config.yaml` and `doc/config.yaml`).
 
 ## v0.4.6 (2026-10-05)
 
 ### Added
 - New search source `szhousing` for `sys ai task`: **Shenzhen housing sales** (new/second-hand transaction counts from the Shenzhen Real Estate Information Platform's public data).
 - Implementation note: `fdc.zjj.sz.gov.cn` runs a Ruishi dynamic WAF (full browser headers still return HTTP 412), so it cannot be fetched directly. It uses AI aggregate search (Sogou first, Bing fallback) over public channels (Leyoujia / Centaline / the housing bureau site) and the model summarizes honestly with sources.
-- Sample config adds the `szhousing` task (both `~/.sys/config.yaml` and `doc/config.yaml`).
+- Sample config adds the `szhousing` task (both `~/.sysenv/config.yaml` and `doc/config.yaml`).
 
 ## v0.4.5 (2026-10-05)
 
@@ -68,7 +75,7 @@ Versioned record of new features / fixes / release conventions. Artifact naming:
   - **Deals**: `smzdm` (today's deals, direct SSR, title + price).
 - **AI aggregate search engine**: Sogou first (reliable Chinese tokenization) with an automatic Bing fallback when Sogou serves a CAPTCHA page or empty results; the program feeds the fetched headlines back to the model, which filters and summarizes honestly.
 - Manual `-t NAME` task selection now **executes the task's `api`/`search` tool and feeds real data back** before replying (previously only function_call auto-routing executed tools).
-- Sample config (`~/.sys/config.yaml` and `doc/config.yaml`) adds 9 tasks: `hotdrama` / `cloudrank` / `hotnews` / `finance` / `auto` / `cartech` / `technews` / `oschina` / `deals`.
+- Sample config (`~/.sysenv/config.yaml` and `doc/config.yaml`) adds 9 tasks: `hotdrama` / `cloudrank` / `hotnews` / `finance` / `auto` / `cartech` / `technews` / `oschina` / `deals`.
 
 ### Implementation notes
 - All new sources are pure in-code HTTP requests (reqwest with a browser UA), **no local shell commands**; HTML pages are parsed with built-in helpers (tag stripping, HTML entity decoding, percent-encoding).

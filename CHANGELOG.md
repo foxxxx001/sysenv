@@ -2,6 +2,13 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.24（2026-10-07）
+
+### 新增
+- **`sys ai config` 多格式配置导出**：把本地配置（`clients` 段）导出为 `codex`（TOML，`[model_providers]` 段 + `env_key` + stderr export 提示）、`opencode`（JSON，`@ai-sdk/openai-compatible` + 内联 apiKey）、`litellm`（YAML `model_list`，暴露名 `{provider}:{model}` 防冲突）、`freellmapi`（JSON `customProviders`）四种格式；缺省导出全部 provider 的全部模型，`provider:*` 导出指定 provider 全部模型、`provider:model` 导出单个模型（无匹配明确报错并列出可用项）；`-f/--file` 写入文件（缺省 stdout），`-c/--config` 指定配置；找不到配置文件沿用既有明确报错
+- **`sys ai chat --server [ADDR]` OpenAI 兼容本地服务**：把配置中的 provider 以 OpenAI 格式对外提供，默认 `127.0.0.1:10000`；地址可只给端口（host 用默认）或只给 IP（端口用默认）；提供 `POST /v1/chat/completions`（非流式透传 + SSE 流式 chunked 转发）与 `GET /v1/models`（全部模型，ID 为 `{provider}:{model}`）；请求 model 支持 `provider:model` / `provider:*` / 裸名 / `auto`（= 配置默认）；仅服务 `type: openai` 的 provider，anthropic 目标明确报错；未知模型返回 404 并列出可用项
+- 版本 0.4.23 -> 0.4.24
+
 ## v0.4.23（2026-10-07）
 
 ### 变更
@@ -114,13 +121,13 @@
 
 ### 新增
 - **`sys ai image`（`sai image`）**：通过 Provider 的 OpenAI 兼容 **Images API（`POST {api_base}/images/generations`）** 生成图片
-  - 与 `ai chat` 共用 `~/.sys/config.yaml` 的 `clients` 配置与模型选择规则：`-m/--model` 支持 `{provider}:{model}` / `{model}` / 逗号分隔多选，多模型目标按 `weight` 加权轮询，失败自动降权并尝试下一个模型（成功替补升权，写回配置文件）
+  - 与 `ai chat` 共用 `~/.sysenv/config.yaml` 的 `clients` 配置与模型选择规则：`-m/--model` 支持 `{provider}:{model}` / `{model}` / 逗号分隔多选，多模型目标按 `weight` 加权轮询，失败自动降权并尝试下一个模型（成功替补升权，写回配置文件）
   - `-o/--output DIR` 指定保存目录（默认当前目录）；`-n/--count N` 数量（默认 1）；`-s/--size SIZE` 尺寸（默认 `1024x1024`，原样传给 API）；`--url` 改为请求图片 URL 并下载保存（默认请求 `b64_json` 本地解码保存）
   - 图片保存为 `sys-ai-image-<时间戳>-<序号>.<格式>`，扩展名按文件头魔数识别（png / jpg / gif / webp），文件名冲突自动加 `-1`、`-2` 后缀；每张图片的保存路径打印到 stdout
   - 仅支持 OpenAI 兼容 Provider（`type: openai`）；`type: anthropic` 目标在发请求前明确报错；`--list-provider / --list-model` 与 `ai chat` 一致
   - 冒烟验证：请求正确到达智谱 `/images/generations`（429 余额不足系账号余额问题，接口与错误透传正常）；agnes 对话模型返回 400 并提示"Use /v1/chat/completions"
 - **`sys search`（`ssearch`）**：接入**博查 AI 网页搜索 API**（`POST https://api.bochaai.com/v1/web-search`）提供联网搜索
-  - API key 读取配置顶层 `search:` 段（如 `- name: bochaai, key: sk-...`），`-c/--config` 可覆盖默认 `~/.sys/config.yaml`
+  - API key 读取配置顶层 `search:` 段（如 `- name: bochaai, key: sk-...`），`-c/--config` 可覆盖默认 `~/.sysenv/config.yaml`
   - **参数与官网接口一致**：`query`（位置参数，多词自动空格连接，支持 stdin 管道）、`--freshness`（`noLimit`/`oneDay`/`oneWeek`/`oneMonth`/`oneYear`/`YYYY-MM-DD`/区间）、`--summary`（返回 AI 摘要与逐条摘要）、`--count`（1-50，默认 10）、`--page`（默认 1）、`--include-domains` / `--exclude-domains`（域名白/黑名单，可重复）
   - 默认输出标题+链接行；`--summary` 追加摘要/站点/发布时间；`--json` 输出原始响应（含 AI 摘要与分页）；`--debug` 打印实际请求与响应
   - 同时注册为内置搜索源 `bochaai`（`ai task --list-source` 可查）：任务可用 `search: bochaai` 联网搜索，`q`/`query` 为查询词，`freshness`/`count`/`page`/`summary`/`include_domains`/`exclude_domains` 为可选参数；`short` 新增 `ssearch` shim
@@ -164,14 +171,14 @@
   - `company`：查询**公司工商注册信息**（法定代表人、注册资本、成立日期等，公开公示渠道，AI 聚合搜索）
 - 实现说明：实测信用中国（creditchina.gov.cn）无响应、国家企业信用信息公示系统（gsxt.gov.cn）521、中国执行信息公开网/裁判文书网/爱企查均需验证码或 JS 渲染、无法程序直连 → 采用 AI 聚合搜索（Sogou 优先、Bing 兜底）抓取公开公示页面（企查查/爱企查/百科/政府公示等）回填，模型如实总结；查询对象由模型的 `name` 参数指定，无相关记录时模型如实说明
 - **`-t` 手动指定任务时自由文本参数自动填充任务的第一个声明参数**（如 `-t company 字节跳动` → `name=字节跳动`，msg 中 `{name}` 占位符与工具 query 均被替换），`weather` 等既有任务不受影响
-- 配置示例新增 `penalty` / `company` 任务（`~/.sys/config.yaml` 与 `doc/config.yaml`）
+- 配置示例新增 `penalty` / `company` 任务（`~/.sysenv/config.yaml` 与 `doc/config.yaml`）
 
 ## v0.4.6（2026-10-05）
 
 ### 新增
 - `sys ai task` 新增搜索源 `szhousing`：获取**深圳房源销售情况**（新房/二手房成交套数等，深圳房地产信息平台公开数据）
 - 实现说明：`fdc.zjj.sz.gov.cn` 经实测部署瑞数动态 WAF（curl 全量浏览器头仍返回 HTTP 412 验证页），无法程序直连；改用 AI 聚合搜索（Sogou 优先、Bing 兜底）抓取公开渠道（乐有家/中原/住建局官网等）的成交数据报道回填，模型如实总结并注明来源
-- 配置示例新增任务 `szhousing`（`~/.sys/config.yaml` 与 `doc/config.yaml`）
+- 配置示例新增任务 `szhousing`（`~/.sysenv/config.yaml` 与 `doc/config.yaml`）
 
 ## v0.4.5（2026-10-05）
 
@@ -184,7 +191,7 @@
   - **特价商品**：`smzdm`（什么值得买今日好价，SSR 直连，标题+价格）
 - **AI 聚合搜索引擎**：Sogou 优先（中文分词可靠）、Bing 兜底（Sogou 触发验证码/空结果时自动回退），程序抓取搜索结果标题+链接回填给模型，模型如实筛选总结
 - `-t NAME` 手动指定任务时，若任务声明了 `api`/`search` 工具，同样**先执行工具并回填真实数据**再回答（此前仅 function_call 自动路由会执行工具）
-- 配置示例（`~/.sys/config.yaml` 与 `doc/config.yaml`）新增 `hotdrama` / `cloudrank` / `hotnews` / `finance` / `auto` / `cartech` / `technews` / `oschina` / `deals` 共 9 个任务
+- 配置示例（`~/.sysenv/config.yaml` 与 `doc/config.yaml`）新增 `hotdrama` / `cloudrank` / `hotnews` / `finance` / `auto` / `cartech` / `technews` / `oschina` / `deals` 共 9 个任务
 
 ### 实现说明
 - 所有新搜索源均为纯代码 HTTP 请求（reqwest + 浏览器 UA），**无本地 shell 命令**；HTML 页面用内置解析器提取（含标签剥离、HTML 实体解码、URL 百分号编码工具）

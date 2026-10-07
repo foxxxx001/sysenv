@@ -1,5 +1,5 @@
 //! `sys ai chat` / `sys ai task` — chat with LLM providers configured in
-//! `~/.sys/config.yaml` (default location; `-c/--config` overrides it).
+//! `~/.sysenv/config.yaml` (default location; `-c/--config` overrides it).
 //!
 //! The config file follows the schema shown in `doc/config.yaml`:
 //!
@@ -106,7 +106,7 @@ pub(crate) struct Task {
     params: Option<Vec<String>>,
 }
 
-/// Resolve the config path: explicit `-c` wins, otherwise `~/.sys/config.yaml`.
+/// Resolve the config path: explicit `-c` wins, otherwise `~/.sysenv/config.yaml`.
 fn resolve_config_path(override_path: Option<&Path>) -> Result<PathBuf> {
     if let Some(p) = override_path {
         let p = p.to_path_buf();
@@ -848,7 +848,7 @@ fn update_model_field_in_config(
 // Chat requests (OpenAI / Anthropic)
 // ---------------------------------------------------------------------------
 
-fn chat_url(p: &Provider) -> String {
+pub(crate) fn chat_url(p: &Provider) -> String {
     let base = p.api_base.trim_end_matches('/');
     if p.kind == "anthropic" {
         if base.ends_with("/v1") {
@@ -2549,7 +2549,7 @@ pub fn cmd_chat(
 ///
 /// Web search via the configured Bocha AI API. The API key is read from the
 /// top-level `search` section of the config (e.g. `- name: bochaai, key:
-/// sk-...`); `-c/--config` overrides the default `~/.sys/config.yaml`. All
+/// sk-...`); `-c/--config` overrides the default `~/.sysenv/config.yaml`. All
 /// request parameters follow the official Bocha interface.
 ///
 /// Default endpoint: `POST /v1/web-search` (query / freshness / summary /

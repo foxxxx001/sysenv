@@ -1,5 +1,5 @@
 //! `sys ai image` — generate images through the OpenAI-compatible Images
-//! API of a provider configured in `~/.sys/config.yaml` (default location;
+//! API of a provider configured in `~/.sysenv/config.yaml` (default location;
 //! `-c/--config` overrides it).
 //!
 //! The request goes to `POST {api_base}/images/generations` with a Bearer key

@@ -10,7 +10,7 @@
   - `--date YYYY-MM-DD`：以卡片 **published 发布日期**为筛选标准，只显示严格晚于该日期的模型；单独使用 `--date` 时直接列出全部晚于该日期的模型
   - 字段：id（slug）/ name / provider / aliases / type 徽章 / category / published / url；`--json` / `-o json` 输出 JSON 数组，`-o csv` 输出 8 列 CSV；`--refresh` 强制重抓
 - `sys ai chat`：新增**聊天**子命令，按 OpenAI `/chat/completions`（type=openai，默认）或 Anthropic Messages API（type=anthropic）标准发请求：
-  - 配置文件默认 `~/.sys/config.yaml`（缺失明确提示；`-c/--config` 覆盖）；`clients` 存放多 Provider（必填 name / api_base / api_key / models，weight 缺省 1，max_tokens 可选）
+  - 配置文件默认 `~/.sysenv/config.yaml`（缺失明确提示；`-c/--config` 覆盖）；`clients` 存放多 Provider（必填 name / api_base / api_key / models，weight 缺省 1，max_tokens 可选）
   - 顶层 `model` 选择规则：缺失 → 第一个 Provider 的第 1 个模型；`provider:model` → 双匹配；`provider:*` → 该 Provider 全部模型**加权轮询**；裸 `model` → 跨 Provider 匹配模型合集**加权轮询**（轮询状态持久化于配置同目录 `chat_state.json`）
   - 顶层 `stream: true` 默认 SSE 流式逐字输出；`--no-stream` 关闭；`--debug` 时自动非流式
   - `--debug`：打印实际 HTTP 请求（方法 / URL / 头 / 体）与响应（状态 / 头 / 体）到 stderr

@@ -8,6 +8,7 @@ mod image;
 mod link;
 mod path;
 mod short;
+mod server;
 mod store;
 mod szfdc;
 mod task;
@@ -21,7 +22,7 @@ use std::process::ExitCode;
     name = "sys",
     version = concat!(env!("CARGO_PKG_VERSION"), " (Made by Gary-china)"),
     about = "System PATH & environment manager + httpie-compatible HTTP client (Windows / Ubuntu)",
-    long_about = "sys manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sys/config.yaml, runs web searches through the Bocha AI API (config `search` section), installs command shims (spath/senv/slink/shttp/sai/stask/ssearch), and ships an httpie-compatible HTTP client.
+    long_about = "sys manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, runs web searches through the Bocha AI API (config `search` section), installs command shims (spath/senv/slink/shttp/sai/stask/ssearch), and ships an httpie-compatible HTTP client.
 
 Examples:
   sys path list
@@ -244,12 +245,31 @@ enum AiCmd {
     Provider(AiProviderArgs),
     /// Inspect the local config: providers (name/api_base/api_key), models ({provider}:{name}), model prices (models.dev)
     Info(AiInfoArgs),
-    /// Chat with an LLM configured in ~/.sys/config.yaml (OpenAI / Anthropic compatible)
+    /// Chat with an LLM configured in ~/.sysenv/config.yaml (OpenAI / Anthropic compatible)
     Chat(ChatArgs),
     /// Generate images via an OpenAI-compatible Images API (/v1/images/generations)
     Image(ImageArgs),
     /// Run a chat task template from the config (no -t lists the tasks)
     Task(AiTaskArgs),
+    /// Export the local config to another tool's format (codex | opencode | litellm | freellmapi)
+    Config(AiConfigArgs),
+}
+
+#[derive(Args)]
+struct AiConfigArgs {
+    /// Target format: codex (TOML) | opencode (JSON) | litellm (YAML) | freellmapi (JSON)
+    #[arg(value_name = "FORMAT")]
+    format: String,
+    /// Select models: omit for all; `provider:*` = a provider's whole model list;
+    /// `provider:model` = one specific model
+    #[arg(value_name = "SELECT")]
+    provider: Option<String>,
+    /// Write the export to this file instead of stdout
+    #[arg(short = 'f', long, value_name = "FILE")]
+    file: Option<PathBuf>,
+    /// Config file path (default: ~/.sysenv/config.yaml)
+    #[arg(short = 'c', long, value_name = "FILE")]
+    config: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -325,7 +345,7 @@ struct AiInfoArgs {
     /// Force re-fetching the models.dev price data (otherwise use the 24 h cache)
     #[arg(long)]
     refresh: bool,
-    /// Config file path (default: ~/.sys/config.yaml)
+    /// Config file path (default: ~/.sysenv/config.yaml)
     #[arg(short = 'c', long, value_name = "FILE")]
     config: Option<PathBuf>,
     /// Print the raw JSON (as a JSON array) instead of the formatted view
@@ -352,7 +372,7 @@ struct ChatArgs {
     /// List every provider configured under `clients` and exit
     #[arg(long)]
     list_provider: bool,
-    /// Config file path (default: ~/.sys/config.yaml)
+    /// Config file path (default: ~/.sysenv/config.yaml)
     #[arg(short = 'c', long, value_name = "FILE")]
     config: Option<PathBuf>,
     /// Print the actual HTTP request (method/URL/headers/body) and response (status/headers/body)
@@ -361,6 +381,11 @@ struct ChatArgs {
     /// Disable streaming even if the config sets stream: true
     #[arg(long)]
     no_stream: bool,
+    /// Serve the configured providers as an OpenAI-compatible API server
+    /// instead of chatting (default 127.0.0.1:10000; a bare port or a bare IP
+    /// keeps the other default)
+    #[arg(long, value_name = "ADDR", num_args = 0..=1, default_missing_value = "")]
+    server: Option<String>,
 }
 
 #[derive(Args)]
@@ -377,7 +402,7 @@ struct ImageArgs {
     /// List every provider configured under `clients` and exit
     #[arg(long)]
     list_provider: bool,
-    /// Config file path (default: ~/.sys/config.yaml)
+    /// Config file path (default: ~/.sysenv/config.yaml)
     #[arg(short = 'c', long, value_name = "FILE")]
     config: Option<PathBuf>,
     /// Print the actual HTTP request (method/URL/headers/body) and response (status/headers/body)
@@ -408,7 +433,7 @@ struct AiTaskArgs {
     /// List the built-in search sources (name / kind / purpose / URL) and exit
     #[arg(long)]
     list_source: bool,
-    /// Config file path (default: ~/.sys/config.yaml)
+    /// Config file path (default: ~/.sysenv/config.yaml)
     #[arg(short = 'c', long, value_name = "FILE")]
     config: Option<PathBuf>,
     /// Print the actual HTTP request (method/URL/headers/body) and response (status/headers/body)
@@ -562,7 +587,7 @@ struct SearchArgs {
     /// Do not request the AI-generated answer (official `answer: false`; only with --ai)
     #[arg(long, requires = "ai")]
     no_answer: bool,
-    /// Config file path (default: ~/.sys/config.yaml)
+    /// Config file path (default: ~/.sysenv/config.yaml)
     #[arg(short = 'c', long, value_name = "FILE")]
     config: Option<PathBuf>,
     /// Print the raw JSON response instead of the formatted view
@@ -769,15 +794,21 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             a.refresh,
         ),
         AiCmd::Info(i) => ai::cmd_info(&i.field, &i.param, i.refresh, i.config.as_deref(), i.output, i.json),
-        AiCmd::Chat(c) => chat::cmd_chat(
-            &c.msg,
-            c.config.as_deref(),
-            c.debug,
-            c.no_stream,
-            c.model.as_deref(),
-            c.list_model,
-            c.list_provider,
-        ),
+        AiCmd::Chat(c) => {
+            if let Some(addr) = c.server.as_deref() {
+                server::serve(c.config.as_deref(), &server::parse_addr(addr))
+            } else {
+                chat::cmd_chat(
+                    &c.msg,
+                    c.config.as_deref(),
+                    c.debug,
+                    c.no_stream,
+                    c.model.as_deref(),
+                    c.list_model,
+                    c.list_provider,
+                )
+            }
+        }
         AiCmd::Image(i) => image::cmd_image(
             &i.prompt,
             i.config.as_deref(),
@@ -797,6 +828,12 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             t.debug,
             t.no_stream,
             t.list_source,
+        ),
+        AiCmd::Config(g) => ai::cmd_config(
+            &g.format,
+            g.provider.as_deref(),
+            g.file.as_deref(),
+            g.config.as_deref(),
         ),
     }
 }

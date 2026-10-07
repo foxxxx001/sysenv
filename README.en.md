@@ -232,7 +232,7 @@ sys ai cn-model gpt-6-1-sol --refresh  # force re-fetch (--refresh lives on `ai`
 
 Chats with the configured providers using the OpenAI `/v1/chat/completions` or the Anthropic Messages API standard.
 
-- Config file defaults to **`~/.sys/config.yaml`** (a clear message is shown when missing); `-c/--config FILE` overrides it. The format is documented in `doc/config.yaml`; the sanitized template is `doc/config.example.yaml`
+- Config file defaults to **`~/.sysenv/config.yaml`** (a clear message is shown when missing); `-c/--config FILE` overrides it. The format is documented in `doc/config.yaml`; the sanitized template is `doc/config.example.yaml`
 - `clients` holds the providers: required `name / api_base / api_key / models` (each `models` entry has `name` plus optional `weight`, default 1, and optional `max_tokens`); `type` is `openai` (default; `open` is accepted) or `anthropic`, and the request follows the OpenAI or the Claude API standard accordingly
 - Top-level `model` selects the model:
   - missing → the first model of the first provider
@@ -245,13 +245,19 @@ Chats with the configured providers using the OpenAI `/v1/chat/completions` or t
 - `--debug`: prints the **actual HTTP request** (method / URL / headers / body) and **response** (status / headers / body) to stderr without polluting stdout
 
 ```
-sys ai chat "hi"                       # chat with the default config (~/.sys/config.yaml)
+sys ai chat "hi"                       # chat with the default config (~/.sysenv/config.yaml)
 sys ai chat hi there                   # multiple args are joined
 echo "summarize this" | sys ai chat    # pipe via stdin
 sys ai chat "hi" -c doc/config.yaml    # explicit config file
 sys ai chat "hi" --no-stream           # disable streaming
 sys ai chat "hi" --debug               # print the actual request & response (incl. headers)
+sys ai chat --server                   # serve an OpenAI-compatible API (default 127.0.0.1:10000)
+sys ai chat --server 8080              # bare port: host stays 127.0.0.1
+sys ai chat --server 0.0.0.0           # bare IP: port stays 10000 (exposed to the network)
+sys ai chat --server 0.0.0.0:9000      # full address
 ```
+
+- `--server [ADDR]`: **serves the configured providers as an OpenAI-compatible API** (default `127.0.0.1:10000`). Exposes `POST /v1/chat/completions` (non-streaming passthrough and SSE streaming via chunked transfer) and `GET /v1/models` (every configured model, id `{provider}:{model}`). The request `model` follows the same selector rules as chat (`provider:model` / `provider:*` / bare model name / `auto` = config default). Only `type: openai` providers are served; anthropic targets get a clear error. The address may be a bare port (`8080` → host default) or a bare IP (`0.0.0.0` → port default).
 
 #### 5.3 Task templates (`ai task`)
 
@@ -277,7 +283,7 @@ sys ai task -t weather country=北京   # '=' syntax is equivalent
 
 Web search through the **Bocha AI Web Search API** (`POST https://api.bochaai.com/v1/web-search`, Bearer auth). All request parameters follow the official interface.
 
-- **API key**: read from the top-level `search` section of the config (default `~/.sys/config.yaml`, `-c/--config` overrides); the first `name: bochaai` entry wins:
+- **API key**: read from the top-level `search` section of the config (default `~/.sysenv/config.yaml`, `-c/--config` overrides); the first `name: bochaai` entry wins:
   ```yaml
   search:
     - name: bochaai
@@ -301,7 +307,7 @@ ssearch "holiday schedule"                              # ssearch shim == sys se
 
 #### 5.5 Local config lookup (`ai info`)
 
-Inspects the local config file (default `~/.sys/config.yaml`, `-c/--config` overrides) and the models.dev model prices.
+Inspects the local config file (default `~/.sysenv/config.yaml`, `-c/--config` overrides) and the models.dev model prices.
 
 - `info provider [KEYWORD]` — lists every provider under `clients` with `name / api_base / api_key` plus the official `DOCS` (help docs) and `CONSOLE` URLs (matched by provider name against a built-in table; unknown providers show `-`); with KEYWORD only providers whose name contains it are kept (case-insensitive), otherwise an error lists the available names; `-o json` / `-o csv` / `--json` print a JSON array or CSV table (JSON fields `name` / `api_base` / `api_key` / `docs` / `console`)
 - `info model [KEYWORD]` — lists every configured model as `{provider}:{name}`; with KEYWORD only models of providers whose name contains it are kept (`provider:model` / `provider:*` select specific models); when no provider matches, models whose name contains KEYWORD are listed instead; `-o json` / `-o csv` / `--json` print a JSON array or CSV table (JSON fields `provider` / `name`)
@@ -327,7 +333,26 @@ sys ai info balance alibaba-cn           # Alibaba Bailian: official limits + co
 sys ai info sale-price agnes             # scrape agnes' official pricing page (all models)
 ```
 
-#### 5.6 Text search & replacement (`file`)
+#### 5.6 Config export (`ai config`)
+
+Exports the local config's `clients` section into another tool's format:
+
+* `ai config FORMAT [SELECT] [-f FILE] [-c FILE]`; `FORMAT`:
+  * **`codex`** (TOML): one `[model_providers.<name>]` table per provider (`name` / `base_url` / `env_key` / `wire_api = "chat"`). codex reads keys from env vars only, so the export names them `SYS_<PROVIDER>_API_KEY` and prints `export` hints to stderr; the top-level `model` selects the first model as `provider.model`
+  * **`opencode`** (JSON): one provider entry per configured provider (`npm: "@ai-sdk/openai-compatible"` + `options.baseURL` / `options.apiKey` inline + `models` map) — mergeable into `opencode.json`
+  * **`litellm`** (YAML): one `model_list` entry per model; the exposed name is `{provider}:{model}` (collision-free) routing to `openai/{model}`, with `api_base` / `api_key` inline
+  * **`freellmapi`** (JSON): a `customProviders` array, one `baseUrl` / `label` / `models` entry per provider (`supportsTools: true`) — mergeable into `freellmapi.config.json`
+* `SELECT`: omitted = **every provider's every model**; `provider:*` = a provider's whole model list; `provider:model` = one specific model (no match → clear error)
+* `-f/--file FILE` writes to a file (stdout by default); `-c/--config` selects the config file
+
+```
+sys ai config codex                      # all models as codex TOML (stdout)
+sys ai config opencode -f opencode.json  # write to a file
+sys ai config litellm "agnes:*"          # only agnes' models
+sys ai config freellmapi "minimax:MiniMax-M2.7"  # one specific model
+```
+
+#### 5.7 Text search & replacement (`file`)
 
 fd/sd-style: search stdin or a directory tree of text/source files, or replace a string in place. Matching runs on the Unicode char level (`-i` folds case per char, so non-ASCII text works too).
 
@@ -372,7 +397,7 @@ sys file --older "2026-10-01 12:00" D:\data # files modified before that time
 sys file hello D:\data -S 1m                # search hello only in files >= 1 MiB
 ```
 
-#### 5.7 Format conversion (`con`)
+#### 5.8 Format conversion (`con`)
 
 Interconvert json / csv / md / yaml. Reads stdin by default (piping: `cat a.json | sys con`) and prints to stdout; `-out` writes to a file instead.
 
