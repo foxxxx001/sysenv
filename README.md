@@ -52,7 +52,7 @@ Commands:
 | 注册表导入导出   | `path export/import` | `.reg` / JSON / TXT 三种格式；合并或 `--replace` 整体替换；跨机迁移备份                                   |
 | 链接到 PATH  | `link`               | 硬链接 → 符号链接 → 拷贝三级自动回退；Windows `.cmd` 垫片；自定义命令名；系统目录或托管目录                               |
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
-| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key、`info model` 列出 `{provider}:{name}` 模型清单、`info price` 查 models.dev 模型价格）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
+| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key、`info model` 列出 `{provider}:{name}` 模型清单、`info price` 查 models.dev 模型价格、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
 | 联网搜索      | `search`             | 博查 AI 网页搜索 API（`POST api.bochaai.com/v1/web-search`）：`--freshness`（时间过滤）/ `--summary`（AI 摘要）/ `--count`（1-50）/ `--page` / `--include-domains` / `--exclude-domains`（域名白黑名单），参数与官网接口一致；key 取自配置 `search` 段；`--json` 原始响应 / `--debug` 请求与响应。`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡（`--no-answer` 关闭 AI 答案） |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
@@ -504,6 +504,8 @@ sysenv ai image --list-provider --list-model             # 列出配置中的 Pr
 * `info provider [KEYWORD]`：列出 `clients` 中全部 provider 的 `name / api_base / api_key`；带 KEYWORD 时只保留名称包含该词的 provider（大小写不敏感），无匹配报错并列出可用名称
 * `info model [KEYWORD]`：列出全部 provider 下的 model，格式 `{provider}:{name}`；带 KEYWORD 时按 provider 名称包含匹配（支持 `provider:model` / `provider:*` 精确选择），无 provider 命中时回退按 model 名称匹配
 * `info price P1,P2,...`：按逗号分隔（支持全角 `，`）的 provider 名称查询模型价格列表，输出 input / output / cache_read 每 1M token 价格（`$`），数据源 models.dev（id/名称均匹配，复用 24h 缓存，`--refresh` 强制刷新）
+* `info balance PROVIDER`：用该 provider 的 `api_key` 到官方接口查询余额。minimax 走官方 `token_plan/remains`（Token Plan 剩余额度；无订阅时给出按量付费余额入口）；agnes 走 OpenAI 兼容 billing 探测（credit_grants / subscription / usage，无余额字段时提示控制台）；modelscope / sensenova / bigmodel / amd / anspire 官方未开放 Key 级余额接口，命令给出对应控制台地址。余额实时查询，不走缓存
+* `info sale-price PROVIDER`：抓取官网定价页并列出全部模型销售价。agnes 抓取 `wiki.agnes-ai.cn` 定价页（文本/图片/视频模型，刊例价 + 现价，人民币）；minimax 抓取 `platform.minimaxi.com` 定价页（语言模型输入/输出/缓存价格，元/百万 tokens）；其余 provider 给出官网定价页地址。定价页 24h 缓存，`--refresh` 强制重抓
 
 ```
 sysenv ai info provider                     # 列出配置中全部 provider（name/api_base/api_key）
@@ -515,6 +517,8 @@ sysenv ai info model agnes:3.0              # 精确选择 agnes 下名称含 3.
 sysenv ai info model modelscope:*           # modelscope 全部模型
 sysenv ai info price openai,anthropic       # 查询两个 provider 的模型价格列表
 sysenv ai info price "openai，deepseek"     # 全角逗号同样支持
+sysenv ai info balance minimax              # 用 minimax 的 api_key 查询官方余额
+sysenv ai info sale-price agnes             # 抓取 agnes 官网定价页，列出全部模型销售价
 ```
 
 #### 5.6 网络搜索（`search`）

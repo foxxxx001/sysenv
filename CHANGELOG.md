@@ -2,6 +2,14 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sysenv-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.15（2026-10-07）
+
+### 新增
+- **`sysenv ai info` 新增两个参数**（`sai info`）：
+  - `info balance PROVIDER`：用该 provider 的 `api_key` 到官方接口查询余额。minimax 走官方 `token_plan/remains`（Token Plan 剩余额度；非订阅用户给出按量付费余额入口）；agnes 走 OpenAI 兼容 billing 探测（credit_grants / subscription / usage，无余额字段时提示控制台）；modelscope / sensenova / bigmodel / amd / anspire 官方未开放 Key 级余额接口，命令给出对应控制台地址。余额查询实时进行，不走缓存
+  - `info sale-price PROVIDER`：抓取官网定价页并列出全部模型销售价。agnes 抓取 `wiki.agnes-ai.cn` 定价页（文本/图片/视频模型，刊例价+现价，人民币）；minimax 抓取 `platform.minimaxi.com` 定价页（语言模型输入/输出/缓存价格，元/百万 tokens）；其余 provider 给出官网定价页地址。定价页 24h 缓存，`--refresh` 强制重抓
+- 版本 0.4.14 -> 0.4.15
+
 ## v0.4.14（2026-10-07）
 
 ### 新增

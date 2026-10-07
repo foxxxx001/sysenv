@@ -11,6 +11,7 @@
 use anyhow::{Context, Result, bail};
 use crate::chat;
 use crate::OutFormat;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -1259,6 +1260,13 @@ fn print_price_rows(rows: &[PriceRow]) {
 /// - `price P1,P2,...` — per-1M-token prices (input / output / cache_read)
 ///   of the comma-separated providers, fetched from models.dev (24 h cache,
 ///   `--refresh` forces a re-fetch).
+/// - `balance PROVIDER` — query the provider's official balance with its
+///   configured api_key (minimax / agnes have API handlers; the rest point to
+///   their consoles because no API-key balance endpoint is exposed).
+/// - `sale-price PROVIDER` — scrape the provider's official pricing page and
+///   print every model's sale price (agnes / minimax scraped; the rest point
+///   to their official pricing pages). Pages are cached 24 h, `--refresh`
+///   forces a re-fetch.
 pub fn cmd_info(
     field: &str,
     param: &[String],
@@ -1303,9 +1311,445 @@ pub fn cmd_info(
             let rows = info_price_rows(&data, &providers)?;
             print_price_rows(&rows);
         }
-        other => bail!("unknown `info` field `{other}` (expected: provider | model | price)"),
+        "balance" => {
+            let kw = keyword.ok_or_else(|| {
+                anyhow::anyhow!("`info balance` needs a provider name: `sysenv ai info balance agnes`")
+            })?;
+            let (cfg, _) = chat::load_config(config)?;
+            info_balance(&cfg, &kw)?;
+        }
+        "sale-price" | "saleprice" | "sale_price" => {
+            let kw = keyword.ok_or_else(|| {
+                anyhow::anyhow!("`info sale-price` needs a provider name: `sysenv ai info sale-price agnes`")
+            })?;
+            let (cfg, _) = chat::load_config(config)?;
+            info_sale_price(&cfg, &kw, refresh)?;
+        }
+        other => bail!("unknown `info` field `{other}` (expected: provider | model | price | balance | sale-price)"),
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `sysenv ai info balance` / `sysenv ai info sale-price` — per-provider
+// official queries (余额 / 官网销售价).
+//
+// balance:  用该 provider 的 api_key 到官方接口查询余额。仅部分平台开放
+//           API Key 余额接口（minimax 的 token_plan/remains、OpenAI 兼容的
+//           dashboard/billing）；其余平台余额只在登录控制台可见，命令会给出
+//           控制台地址。余额查询始终实时（不走缓存）。
+// sale-price:抓取官网定价页（agnes wiki、minimax 开放平台）返回全部模型的
+//           销售价；未接入的平台给出官网定价页地址。定价页 24h 缓存，
+//           `--refresh` 强制重抓。
+// ---------------------------------------------------------------------------
+
+/// Resolve exactly one configured provider by name (exact ci, then substring).
+fn find_provider<'a>(cfg: &'a chat::Config, keyword: &str) -> Result<&'a chat::Provider> {
+    if let Some(p) = cfg.providers.iter().find(|p| ci_eq(&p.name, keyword)) {
+        return Ok(p);
+    }
+    let hits: Vec<&chat::Provider> = cfg
+        .providers
+        .iter()
+        .filter(|p| contains_ci(&p.name, keyword))
+        .collect();
+    match hits.len() {
+        1 => Ok(hits[0]),
+        0 => {
+            let avail: Vec<&str> = cfg.providers.iter().map(|p| p.name.as_str()).collect();
+            bail!("no provider contains `{keyword}` (available: {})", avail.join(", "))
+        }
+        _ => {
+            let names: Vec<&str> = hits.iter().map(|p| p.name.as_str()).collect();
+            bail!("`{keyword}` matches multiple providers: {} (use the exact name)", names.join(", "))
+        }
+    }
+}
+
+/// `sysenv ai info balance PROVIDER` — query the provider's official balance
+/// with its configured api_key.
+fn info_balance(cfg: &chat::Config, keyword: &str) -> Result<()> {
+    let p = find_provider(cfg, keyword)?;
+    println!("== {} 余额 ==", p.name);
+    match p.name.to_ascii_lowercase().as_str() {
+        "minimax" => balance_minimax(p),
+        "agnes" => balance_openai_billing(p),
+        "modelscope" => balance_console_only(p, "https://modelscope.cn（控制台 / 阿里云费用中心）"),
+        "sensenova" => balance_console_only(p, "https://console.sensecore.cn（费用中心）"),
+        "bigmodel" => balance_console_only(p, "https://bigmodel.cn/console（财务总览）"),
+        "amd" => balance_console_only(p, "https://developer.amd.com.cn（控制台）"),
+        "anspire" => balance_console_only(p, "https://open.anspire.cn（用量信息页）"),
+        other => bail!("no balance handler for provider `{other}`"),
+    }
+}
+
+fn balance_console_only(p: &chat::Provider, where_: &str) -> Result<()> {
+    println!("官方未提供 API Key 余额查询接口（该平台余额仅登录控制台可见）。");
+    println!("请到 {where_} 查看 `{}` 的余额。", p.name);
+    Ok(())
+}
+
+/// MiniMax 官方余额接口：GET https://www.minimaxi.com/v1/token_plan/remains
+/// （Bearer api_key）。返回 Token Plan 各模型剩余额度；非 Token Plan 用户
+/// （按量付费）返回 status_msg 提示。
+fn balance_minimax(p: &chat::Provider) -> Result<()> {
+    let url = "https://www.minimaxi.com/v1/token_plan/remains";
+    let resp = reqwest::blocking::Client::new()
+        .get(url)
+        .header(AUTHORIZATION, format!("Bearer {}", p.api_key))
+        .header(CONTENT_TYPE, "application/json")
+        .timeout(Duration::from_secs(20))
+        .send()
+        .with_context(|| format!("cannot query MiniMax balance at {url}"))?;
+    if !resp.status().is_success() {
+        bail!("MiniMax balance API returned HTTP {} at {url}", resp.status());
+    }
+    let v: Value = serde_json::from_str(&resp.text().context("cannot read MiniMax balance response")?)
+        .context("invalid JSON from MiniMax balance API")?;
+    let status = v
+        .pointer("/base_resp/status_code")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(0);
+    let msg = v
+        .pointer("/base_resp/status_msg")
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    if status != 0 && !msg.is_empty() {
+        println!("Token Plan: {msg}");
+    }
+    match v.get("model_remains").and_then(|r| r.as_object()) {
+        Some(remains) if !remains.is_empty() => {
+            for (model, mv) in remains {
+                let remain = mv.get("remain").and_then(|x| x.as_u64());
+                let total = mv.get("total").and_then(|x| x.as_u64());
+                let used = mv.get("used").and_then(|x| x.as_u64());
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(r) = remain {
+                    parts.push(format!("剩余 {r}"));
+                }
+                if let Some(t) = total {
+                    parts.push(format!("总额 {t}"));
+                }
+                if let Some(u) = used {
+                    parts.push(format!("已用 {u}"));
+                }
+                if parts.is_empty() {
+                    parts.push(mv.to_string());
+                }
+                println!("  {model}: {}", parts.join(", "));
+            }
+        }
+        _ => {
+            println!("  该 Key 无有效 Token Plan 订阅（按量付费余额请在 https://platform.minimaxi.com 账户管理 > 余额 查看）。");
+        }
+    }
+    Ok(())
+}
+
+/// OpenAI 兼容账单探测（agnes 等）：依次尝试 credit_grants / subscription /
+/// usage，打印接口实际返回的可用字段；若均无余额字段，提示到控制台查看。
+fn balance_openai_billing(p: &chat::Provider) -> Result<()> {
+    let client = reqwest::blocking::Client::new();
+    let base = p.api_base.trim_end_matches('/');
+    let mut rows: Vec<(String, String)> = Vec::new();
+    let mut balance_field = false;
+
+    for (path, fields, is_balance) in [
+        (
+            "/dashboard/billing/credit_grants",
+            &[("total_available", "可用余额"), ("total_granted", "充值总额"), ("total_used", "已用额度"), ("currency", "币种")][..],
+            true,
+        ),
+        (
+            "/dashboard/billing/subscription",
+            &[("has_payment_method", "已绑定支付"), ("soft_limit_usd", "软限额($)"), ("hard_limit_usd", "硬限额($)")][..],
+            false,
+        ),
+        (
+            "/dashboard/billing/usage",
+            &[("total_usage", "本月用量")][..],
+            false,
+        ),
+    ] {
+        let url = format!("{base}{path}");
+        let resp = match client
+            .get(&url)
+            .header(AUTHORIZATION, format!("Bearer {}", p.api_key))
+            .timeout(Duration::from_secs(20))
+            .send()
+        {
+            Ok(r) if r.status().is_success() => r,
+            _ => continue,
+        };
+        let v: Value = match serde_json::from_str(&resp.text().unwrap_or_default()) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if let Some(o) = v.as_object() {
+            for (k, label) in fields {
+                if let Some(x) = o.get(*k) {
+                    rows.push((label.to_string(), x.to_string()));
+                }
+            }
+        }
+        if is_balance {
+            balance_field = v
+                .as_object()
+                .map(|o| o.contains_key("total_available") || o.contains_key("total_granted"))
+                .unwrap_or(false);
+        }
+    }
+
+    if rows.is_empty() {
+        println!("官方接口未开放余额查询（无可用的账单端点）。");
+    } else {
+        let w = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(4);
+        for (k, v) in rows {
+            println!("{k:>w$}: {v}");
+        }
+    }
+    if !balance_field {
+        println!("提示：官方接口未返回余额字段；余额请在 https://agnes-ai.cn 控制台（Usage / Billing）查看。");
+    }
+    Ok(())
+}
+
+/// `sysenv ai info sale-price PROVIDER` — scrape the provider's official
+/// pricing page and print every listed model's sale price.
+fn info_sale_price(cfg: &chat::Config, keyword: &str, refresh: bool) -> Result<()> {
+    let p = find_provider(cfg, keyword)?;
+    println!("== {} 官网销售价 ==", p.name);
+    match p.name.to_ascii_lowercase().as_str() {
+        "agnes" => sale_price_agnes(refresh),
+        "minimax" => sale_price_minimax(refresh),
+        "modelscope" => sale_price_url(p, "https://modelscope.cn/models（模型详情页含计费说明）"),
+        "sensenova" => sale_price_url(p, "https://console.sensecore.cn/micro/help/docs/model-as-a-service/nova/（产品定价文档）"),
+        "bigmodel" => sale_price_url(p, "https://docs.bigmodel.cn/cn/guide/start/price"),
+        "amd" => sale_price_url(p, "https://developer.amd.com.cn（产品定价）"),
+        "anspire" => sale_price_url(p, "https://open.anspire.cn/document/docs/openPlatform/（产品计费逻辑）"),
+        other => bail!("no sale-price handler for provider `{other}`"),
+    }
+}
+
+fn sale_price_url(p: &chat::Provider, url: &str) -> Result<()> {
+    println!("暂未接入 `{}` 官网价格抓取，请直接访问：{url}", p.name);
+    Ok(())
+}
+
+// --- pricing-page fetch + HTML table parsing ----------------------------------
+
+fn load_text_cache(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta.modified().ok()?;
+    if SystemTime::now().duration_since(mtime).map(|d| d < CACHE_TTL).unwrap_or(false) {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            return Some(content);
+        }
+    }
+    None
+}
+
+fn save_text_cache(path: &Path, text: &str) {
+    let dir = cache_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(path, text);
+}
+
+/// Fetch a pricing page with a 24 h local cache (`--refresh` forces a re-fetch).
+fn fetch_pricing_page(url: &str, cache_key: &str, refresh: bool) -> Result<String> {
+    let file = cache_dir().join(cache_key);
+    if !refresh {
+        if let Some(html) = load_text_cache(&file) {
+            return Ok(html);
+        }
+    }
+    let resp = reqwest::blocking::Client::builder()
+        .user_agent("Mozilla/5.0 (compatible; sysenv)")
+        .build()
+        .context("failed to build HTTP client")?
+        .get(url)
+        .send()
+        .with_context(|| format!("cannot fetch {url} (offline? use a cached copy if available)"))?;
+    if !resp.status().is_success() {
+        bail!("{url} returned HTTP {}", resp.status());
+    }
+    let text = resp.text().with_context(|| format!("cannot read response from {url}"))?;
+    save_text_cache(&file, &text);
+    Ok(text)
+}
+
+/// Strip HTML tags from a cell, decode common entities, turn `<br>` into " | "
+/// and collapse whitespace.
+fn html_text(s: &str) -> String {
+    let s = s.replace("<br/>", " | ").replace("<br>", " | ").replace("</br>", " ");
+    let mut out = String::new();
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Split an HTML document into tables, each table into rows of text cells
+/// (tags stripped; `<td>` cells first, `<th>` fallback for header rows).
+fn extract_tables(html: &str) -> Vec<Vec<Vec<String>>> {
+    let mut tables: Vec<Vec<Vec<String>>> = Vec::new();
+    let mut pos = 0usize;
+    while let Some(rel) = html[pos..].find("<table") {
+        let start = pos + rel;
+        let end = html[start..]
+            .find("</table>")
+            .map(|i| start + i)
+            .unwrap_or(html.len());
+        let body = &html[start..end];
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        let mut rpos = 0usize;
+        while let Some(tr) = body[rpos..].find("<tr") {
+            let tr_start = rpos + tr;
+            let tr_end = body[tr_start..]
+                .find("</tr>")
+                .map(|i| tr_start + i)
+                .unwrap_or(body.len());
+            let row_html = &body[tr_start..tr_end];
+            let mut cells: Vec<String> = Vec::new();
+            let mut cpos = 0usize;
+            while let Some(td) = row_html[cpos..].find("<td") {
+                let td_start = cpos + td;
+                let gt = row_html[td_start..]
+                    .find('>')
+                    .map(|i| td_start + i + 1)
+                    .unwrap_or(td_start);
+                let td_end = row_html[td_start..]
+                    .find("</td>")
+                    .map(|i| td_start + i)
+                    .unwrap_or(row_html.len());
+                cells.push(html_text(&row_html[gt..td_end]));
+                cpos = td_end + 5;
+            }
+            if cells.is_empty() {
+                let mut cpos = 0usize;
+                while let Some(th) = row_html[cpos..].find("<th") {
+                    let th_start = cpos + th;
+                    let gt = row_html[th_start..]
+                        .find('>')
+                        .map(|i| th_start + i + 1)
+                        .unwrap_or(th_start);
+                    let th_end = row_html[th_start..]
+                        .find("</th>")
+                        .map(|i| th_start + i)
+                        .unwrap_or(row_html.len());
+                    cells.push(html_text(&row_html[gt..th_end]));
+                    cpos = th_end + 5;
+                }
+            }
+            if !cells.is_empty() {
+                rows.push(cells);
+            }
+            rpos = tr_end + 5;
+        }
+        if !rows.is_empty() {
+            tables.push(rows);
+        }
+        pos = end + 8;
+    }
+    tables
+}
+
+const AGNES_PRICING_URL: &str = "https://wiki.agnes-ai.cn/zh-Hans/docs/pricing";
+const AGNES_PRICING_CACHE: &str = "agnes-pricing.html";
+
+/// Agnes 中国站定价页：文本/图片/视频模型表（模型 | 计费项 | 刊例价 | 现价），
+/// 人民币价格。模型单元格带 rowspan，后续行继承当前模型。
+fn sale_price_agnes(refresh: bool) -> Result<()> {
+    let html = fetch_pricing_page(AGNES_PRICING_URL, AGNES_PRICING_CACHE, refresh)?;
+    let out = parse_agnes_prices(&html);
+    if out.is_empty() {
+        bail!("未能从 {AGNES_PRICING_URL} 解析出模型价格（页面结构可能已变更，请用 --refresh 重试）");
+    }
+    let w_model = out.iter().map(|r| r.0.chars().count()).max().unwrap_or(12);
+    let w_item = out.iter().map(|r| r.1.chars().count()).max().unwrap_or(8);
+    let w_list = out.iter().map(|r| r.2.chars().count()).max().unwrap_or(10);
+    println!("{:<w_model$}  {:<w_item$}  {:<w_list$}  {}", "模型", "计费项", "刊例价（原价）", "现价（优惠价）");
+    for (m, item, list, sale) in &out {
+        println!("{m:<w_model$}  {item:<w_item$}  {list:<w_list$}  {sale}");
+    }
+    println!("来源：{AGNES_PRICING_URL}");
+    Ok(())
+}
+
+/// Pure parser for the agnes pricing page (kept separate for unit tests).
+fn parse_agnes_prices(html: &str) -> Vec<(String, String, String, String)> {
+    let mut out: Vec<(String, String, String, String)> = Vec::new();
+    for table in extract_tables(html) {
+        let mut cur_model = String::new();
+        for row in table {
+            // 表头行（模型 | 计费项 | 刊例价 | 现价）
+            if row.len() >= 3 && row[0] == "模型" && row.iter().any(|c| c == "计费项") {
+                continue;
+            }
+            let mut cells = row;
+            if cells.len() >= 4 && !cells[0].is_empty() && cells[0] != "计费项" {
+                cur_model = cells[0].clone();
+                cells.remove(0);
+            }
+            if cells.len() >= 3 && !cur_model.is_empty() {
+                out.push((cur_model.clone(), cells[0].clone(), cells[1].clone(), cells[2].clone()));
+            }
+        }
+    }
+    out
+}
+
+const MINIMAX_PRICING_URL: &str = "https://platform.minimaxi.com/docs/pricing";
+const MINIMAX_PRICING_CACHE: &str = "minimax-pricing.html";
+
+/// MiniMax 开放平台定价页：语言模型表（模型 | 输入价格 | 输出价格 | 缓存读取
+/// [| 缓存写入]，元/百万 tokens）。只取表头含「模型」+「输入价格」的表。
+fn sale_price_minimax(refresh: bool) -> Result<()> {
+    let html = fetch_pricing_page(MINIMAX_PRICING_URL, MINIMAX_PRICING_CACHE, refresh)?;
+    let out = parse_minimax_prices(&html);
+    if out.is_empty() {
+        bail!("未能从 {MINIMAX_PRICING_URL} 解析出模型价格（页面结构可能已变更，请用 --refresh 重试）");
+    }
+    let w_model = out.iter().map(|r| r[0].chars().count()).max().unwrap_or(12);
+    println!("{:<w_model$}  {:>10}  {:>10}  {:>10}  {:>10}  (元 / 百万 tokens)", "模型", "输入价格", "输出价格", "缓存读取", "缓存写入");
+    for row in &out {
+        let v = |i: usize| row.get(i).cloned().unwrap_or_else(|| "-".to_string());
+        println!("{:<w_model$}  {:>10}  {:>10}  {:>10}  {:>10}", row[0], v(1), v(2), v(3), v(4));
+    }
+    println!("来源：{MINIMAX_PRICING_URL}");
+    Ok(())
+}
+
+/// Pure parser for the minimax language-model price tables (unit-testable).
+fn parse_minimax_prices(html: &str) -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = Vec::new();
+    for table in extract_tables(html) {
+        let header = table.first().cloned().unwrap_or_default();
+        let joined = header.join(" ");
+        if !joined.contains("模型") || !joined.contains("输入价格") {
+            continue;
+        }
+        for row in table.iter().skip(1) {
+            if row.len() >= 4 && !row[0].is_empty() {
+                out.push(row.clone());
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -2507,5 +2951,99 @@ mod tests {
         let mini = rows.iter().find(|r| r.model_id == "gpt-4.1-mini").unwrap();
         assert_eq!(mini.input, None);
         assert!(info_price_rows(&data, &["nope".to_string()]).is_err());
+    }
+
+    #[test]
+    fn html_text_strips_tags_and_entities() {
+        assert_eq!(
+            html_text("<td rowSpan=\"3\"><del><code>¥0.035 / M</code></del></td>"),
+            "¥0.035 / M"
+        );
+        assert_eq!(
+            html_text("<strong>输入价格</strong><br/> 元/百万 tokens"),
+            "输入价格 | 元/百万 tokens"
+        );
+        assert_eq!(html_text("a&amp;b &lt;c&gt; &quot;d&quot; &#39;e&#39; &nbsp; f"), "a&b <c> \"d\" 'e' f");
+    }
+
+    #[test]
+    fn extract_tables_parses_rows_and_cells() {
+        let html = concat!(
+            "<html><table><thead><tr><th>A</th><th>B</th></tr></thead>",
+            "<tbody><tr><td>1</td><td><strong>2</strong></td></tr></tbody></table></html>"
+        );
+        let tables = extract_tables(html);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].len(), 2);
+        assert_eq!(tables[0][0], vec!["A", "B"]);
+        assert_eq!(tables[0][1], vec!["1", "2"]);
+    }
+
+    #[test]
+    fn parse_agnes_prices_handles_rowspan_and_discounts() {
+        let html = concat!(
+            "<table><tbody>",
+            "<tr><td rowSpan=\"3\" style=\"vertical-align:middle\"><code>agnes-3.0-flash</code></td>",
+            "<td>输入缓存命中</td><td><del><code>¥0.035 / M</code></del></td><td><strong><code>¥0 / M</code></strong></td></tr>",
+            "<tr><td>输入 Token</td><td><del><code>¥0.35 / M</code></del></td><td><strong><code>¥0 / M</code></strong></td></tr>",
+            "<tr><td>输出 Token</td><td><del><code>¥1.00 / M</code></del></td><td><strong><code>¥0 / M</code></strong></td></tr>",
+            "<tr><td rowSpan=\"3\"><code>agnes-3.0-pro</code><br/>即将上线</td>",
+            "<td>输入缓存命中</td><td><code>¥0.30 / M</code></td><td><code>¥0.30 / M</code></td></tr>",
+            "<tr><td>输入 Token</td><td><code>¥3.00 / M</code></td><td><code>¥3.00 / M</code></td></tr>",
+            "<tr><td>输出 Token</td><td><code>¥6.00 / M</code></td><td><code>¥6.00 / M</code></td></tr>",
+            "</tbody></table>"
+        );
+        let rows = parse_agnes_prices(html);
+        assert_eq!(rows.len(), 6);
+        // 优惠价字段带 strong 时被解析为现价
+        assert_eq!(
+            rows[0],
+            (
+                "agnes-3.0-flash".to_string(),
+                "输入缓存命中".to_string(),
+                "¥0.035 / M".to_string(),
+                "¥0 / M".to_string(),
+            )
+        );
+        // rowspan 继承：第 2、3 行仍归属 agnes-3.0-flash
+        assert_eq!(rows[1].0, "agnes-3.0-flash");
+        assert_eq!(rows[2].0, "agnes-3.0-flash");
+        assert_eq!(rows[2].1, "输出 Token");
+        // 下一模型组
+        assert_eq!(rows[3].0, "agnes-3.0-pro | 即将上线");
+        assert_eq!(rows[5], ("agnes-3.0-pro | 即将上线".to_string(), "输出 Token".to_string(), "¥6.00 / M".to_string(), "¥6.00 / M".to_string()));
+    }
+
+    #[test]
+    fn parse_minimax_prices_takes_language_tables_only() {
+        let html = concat!(
+            "<table><thead><tr><th><strong>模型</strong></th><th><strong>输入价格</strong><br/> 元/百万 tokens</th>",
+            "<th><strong>输出价格</strong><br/> 元/百万 tokens</th><th><strong>缓存读取</strong><br/> 元/百万 tokens</th>",
+            "<th><strong>缓存写入</strong><br/> 元/百万 tokens</th></tr></thead><tbody>",
+            "<tr><td><strong>MiniMax-M2.7</strong></td><td data-numeric=\"true\">2.1</td><td data-numeric=\"true\">8.4</td><td data-numeric=\"true\">0.42</td><td data-numeric=\"true\">2.625</td></tr>",
+            "<tr><td><strong>MiniMax-M2.7-highspeed</strong></td><td>4.2</td><td>16.8</td><td>0.42</td><td>2.625</td></tr>",
+            "</tbody></table>",
+            "<table><thead><tr><th><strong>模型/接口</strong></th><th><strong>分辨率</strong></th><th><strong>计费规则</strong></th><th><strong>刊例价</strong></th></tr></thead><tbody>",
+            "<tr><td>video-01</td><td>720P</td><td>按秒</td><td>0.15</td></tr></tbody></table>"
+        );
+        let rows = parse_minimax_prices(html);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0], "MiniMax-M2.7");
+        assert_eq!(rows[0][1], "2.1");
+        assert_eq!(rows[0][4], "2.625");
+        assert_eq!(rows[1][0], "MiniMax-M2.7-highspeed");
+        // 视频表（表头无「输入价格」）被忽略
+        assert!(rows.iter().all(|r| r[0] != "video-01"));
+    }
+
+    #[test]
+    fn find_provider_exact_then_substring() {
+        let cfg = sample_config();
+        assert_eq!(find_provider(&cfg, "agnes").unwrap().name, "agnes");
+        assert_eq!(find_provider(&cfg, "MODEL").unwrap().name, "modelscope");
+        assert!(find_provider(&cfg, "zzz").is_err());
+        // "s" 同时命中 agnes / modelscope → 报歧义
+        let err = find_provider(&cfg, "s").unwrap_err();
+        assert!(err.to_string().contains("matches multiple"));
     }
 }

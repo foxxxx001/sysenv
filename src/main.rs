@@ -36,6 +36,8 @@ Examples:
   sysenv ai info provider
   sysenv ai info model
   sysenv ai info price openai,anthropic
+  sysenv ai info balance minimax
+  sysenv ai info sale-price agnes
   sysenv search \"今天的头条新闻\"
   sysenv task list
   sysenv task kill 1234
@@ -309,7 +311,9 @@ struct AiInfoArgs {
     /// provider KEYWORD: keep only providers whose name contains KEYWORD;
     /// model KEYWORD: keep only models of providers whose name contains KEYWORD
     /// (or `provider:model` / `provider:*` to select specific models);
-    /// price P1,P2,...: comma-separated provider names to look up prices for
+    /// price P1,P2,...: comma-separated provider names to look up models.dev prices;
+    /// balance PROVIDER: query the provider's official balance with its api_key;
+    /// sale-price PROVIDER: scrape the provider's official pricing page
     #[arg(value_name = "PARAM")]
     param: Vec<String>,
     /// Force re-fetching the models.dev price data (otherwise use the 24 h cache)

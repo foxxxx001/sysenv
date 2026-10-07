@@ -37,7 +37,7 @@ Commands:
 | Registry import/export | `path export/import` | `.reg` / JSON / TXT formats; merge or `--replace` full replace; machine migration & backup |
 | Link into PATH | `link` | hard link → symlink → copy fallback chain; Windows `.cmd` shim; custom command name; system or managed directory |
 | Environment variables | `env` | get / set / unset / list; persisted by default; `--temporary` for the current shell only; `machine` scope |
-| AI model lookup | `ai` | `ai model` (models.dev: 226 providers, 8000+ models; 24 h cache; canonical preference; no args lists all; `--date` / `--open` / `--search / --list / --json / --refresh`); `ai cn-model` (datalearner: ~1015 models; `--date` filters by published); `ai info` (local config lookup: `info provider` name/api_base/api_key, `info model` `{provider}:{name}` list, `info price` models.dev prices); `ai chat` (multi-provider weighted round-robin chat, OpenAI / Anthropic compatible); `ai task` (task-template chat) |
+| AI model lookup | `ai` | `ai model` (models.dev: 226 providers, 8000+ models; 24 h cache; canonical preference; no args lists all; `--date` / `--open` / `--search / --list / --json / --refresh`); `ai cn-model` (datalearner: ~1015 models; `--date` filters by published); `ai info` (local config lookup: `info provider` name/api_base/api_key, `info model` `{provider}:{name}` list, `info price` models.dev prices, `info balance` official balance via api_key, `info sale-price` official pricing page scrape); `ai chat` (multi-provider weighted round-robin chat, OpenAI / Anthropic compatible); `ai task` (task-template chat) |
 | Process management | `task` | no args lists all processes; list (PID / name / path, fuzzy name match); `-o` shows the process using a port; kill by PID or name; `-f` force |
 | Web search | `search` | Bocha AI web search API (`POST api.bochaai.com/v1/web-search`): `--freshness` (time filter) / `--summary` (AI summaries) / `--count` (1-50) / `--page` / `--include-domains` / `--exclude-domains`, official parameters; key from the config `search` section; `--json` raw response / `--debug` request & response. `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards (`--no-answer` disables the AI answer) |
 | HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
@@ -304,6 +304,8 @@ Inspects the local config file (default `~/.sysenv/config.yaml`, `-c/--config` o
 - `info provider [KEYWORD]` — lists every provider under `clients` with `name / api_base / api_key`; with KEYWORD only providers whose name contains it are kept (case-insensitive), otherwise an error lists the available names
 - `info model [KEYWORD]` — lists every configured model as `{provider}:{name}`; with KEYWORD only models of providers whose name contains it are kept (`provider:model` / `provider:*` select specific models); when no provider matches, models whose name contains KEYWORD are listed instead
 - `info price P1,P2,...` — model price list (input / output / cache_read per 1M tokens, `$`) for the comma-separated provider names (half- or full-width commas), matched against models.dev ids / names (24 h cache, `--refresh` forces a re-fetch)
+- `info balance PROVIDER` — queries the provider's official balance with its configured `api_key`. minimax uses the official `token_plan/remains` endpoint (Token Plan remainders; without a subscription it points to the pay-as-you-go balance page); agnes uses an OpenAI-compatible billing probe (credit_grants / subscription / usage, with a console hint when no balance field is returned); modelscope / sensenova / bigmodel / amd / anspire expose no API-key balance endpoint, so the command prints the matching console URL. Balance lookups are always live (no cache)
+- `info sale-price PROVIDER` — scrapes the provider's official pricing page and prints every model's sale price. agnes uses `wiki.agnes-ai.cn` (text / image / video models, list + current price in ¥); minimax uses `platform.minimaxi.com` (language-model input / output / cache prices, ¥ per million tokens); other providers print their official pricing-page URL. Pricing pages are cached 24 h, `--refresh` forces a re-fetch
 
 ```
 sysenv ai info provider                     # every configured provider (name/api_base/api_key)
@@ -315,6 +317,8 @@ sysenv ai info model agnes:3.0              # one model: agnes models whose name
 sysenv ai info model modelscope:*           # every modelscope model
 sysenv ai info price openai,anthropic       # model prices of two providers
 sysenv ai info price "openai，deepseek"     # full-width commas work too
+sysenv ai info balance minimax              # query MiniMax's official balance with its api_key
+sysenv ai info sale-price agnes             # scrape agnes' official pricing page (all models)
 ```
 
 ## 6. Process management (`task`)
