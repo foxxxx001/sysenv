@@ -33,6 +33,9 @@ Examples:
   sysenv ai image \"a red fox in the snow\"
   sysenv ai task -t weather country:北京
   sysenv ai provider openai
+  sysenv ai info provider
+  sysenv ai info model
+  sysenv ai info price openai,anthropic
   sysenv search \"今天的头条新闻\"
   sysenv task list
   sysenv task kill 1234
@@ -78,7 +81,7 @@ Flags follow httpie: -j/--json, -f/--form, --multipart, -p/--print,
 Use `sysenv help http` for help (in http subcommand, -h means response headers)."
     )]
     Http(HttpArgs),
-    /// Query AI model info (DataLearner), provider info (models.dev), chat with configured providers
+    /// Query AI model info (DataLearner), provider info (models.dev), inspect the config (info), chat with configured providers
     Ai(AiArgs),
     /// Web search via the configured Bocha AI API (web-search; --ai uses ai-search)
     Search(SearchArgs),
@@ -231,6 +234,8 @@ enum AiCmd {
     CnModel(CnModelArgs),
     /// Query models.dev for provider information by name
     Provider(AiProviderArgs),
+    /// Inspect the local config: providers (name/api_base/api_key), models ({provider}:{name}), model prices (models.dev)
+    Info(AiInfoArgs),
     /// Chat with an LLM configured in ~/.sysenv/config.yaml (OpenAI / Anthropic compatible)
     Chat(ChatArgs),
     /// Generate images via an OpenAI-compatible Images API (/v1/images/generations)
@@ -294,6 +299,25 @@ struct CnModelArgs {
     /// Output format: json (JSON array) or csv (table); default is a formatted text view
     #[arg(short = 'o', long = "output-format", value_name = "FORMAT", value_enum, conflicts_with = "json")]
     output: Option<OutFormat>,
+}
+
+#[derive(Args)]
+struct AiInfoArgs {
+    /// What to show: provider | model | price
+    #[arg(value_name = "FIELD")]
+    field: String,
+    /// provider KEYWORD: keep only providers whose name contains KEYWORD;
+    /// model KEYWORD: keep only models of providers whose name contains KEYWORD
+    /// (or `provider:model` / `provider:*` to select specific models);
+    /// price P1,P2,...: comma-separated provider names to look up prices for
+    #[arg(value_name = "PARAM")]
+    param: Vec<String>,
+    /// Force re-fetching the models.dev price data (otherwise use the 24 h cache)
+    #[arg(long)]
+    refresh: bool,
+    /// Config file path (default: ~/.sysenv/config.yaml)
+    #[arg(short = 'c', long, value_name = "FILE")]
+    config: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -671,6 +695,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             p.output,
             a.refresh,
         ),
+        AiCmd::Info(i) => ai::cmd_info(&i.field, &i.param, i.refresh, i.config.as_deref()),
         AiCmd::Chat(c) => chat::cmd_chat(
             &c.msg,
             c.config.as_deref(),

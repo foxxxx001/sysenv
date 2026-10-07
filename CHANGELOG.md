@@ -2,6 +2,15 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sysenv-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.14（2026-10-07）
+
+### 新增
+- **`sysenv ai info`（`sai info`）**：检查本地配置与模型价格
+  - `info provider [KEYWORD]`：列出配置文件 `clients` 中全部 provider（`name` / `api_base` / `api_key`）；带 KEYWORD 时只保留名称包含该词的 provider（大小写不敏感），无匹配则报错并列出可用名称
+  - `info model [KEYWORD]`：列出全部 provider 下的 model，格式为 `{provider}:{name}`；带 KEYWORD 时按 provider 名称包含匹配（支持 `provider:model` / `provider:*` 精确选择）；无 provider 命中时回退按 model 名称匹配
+  - `info price P1,P2,...`：按逗号分隔的 provider 名称（models.dev id/名称，支持中英文逗号）查询模型价格列表，输出 input / output / cache_read 每 1M token 价格，数据源 models.dev（复用 24h 缓存，`--refresh` 强制刷新；`-c/--config` 可覆盖配置文件路径）
+- 版本 0.4.13 -> 0.4.14
+
 ## v0.4.13（2026-10-06）
 
 ### 新增

@@ -9,11 +9,12 @@
 //!   with a real `published` date are kept.
 
 use anyhow::{Context, Result, bail};
+use crate::chat;
 use crate::OutFormat;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 const DATA_URL: &str = "https://models.dev/api.json";
@@ -1022,6 +1023,287 @@ pub fn cmd_provider(
     }
     if name.is_some() && hits.len() > 1 {
         println!("(showing 1 of {} matches; use -o json or -o csv for more)", hits.len());
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `sysenv ai info` — inspect the local config (providers / models) and the
+// models.dev model prices.
+//
+// - `info provider [KEYWORD]`  lists every provider configured under `clients`
+//   (name / api_base / api_key); with KEYWORD only the providers whose name
+//   contains it are kept.
+// - `info model [KEYWORD]`     lists every configured model as `{provider}:{name}`;
+//   with KEYWORD only the models of providers whose name contains it are kept
+//   (`provider:model` / `provider:*` select one / all models of a provider;
+//   when no provider matches, models whose name contains KEYWORD are listed).
+// - `info price P1,P2,...`     prints the per-1M-token price list (input /
+//   output / cache_read) of the comma-separated providers (source: models.dev,
+//   24 h cache, --refresh to force).
+// ---------------------------------------------------------------------------
+
+/// One row of `info provider` (a configured client).
+struct ProviderInfoRow {
+    name: String,
+    api_base: String,
+    api_key: String,
+}
+
+/// One row of `info model` in `{provider}:{name}` form.
+struct ModelInfoRow {
+    provider: String,
+    name: String,
+}
+
+/// One model of a models.dev provider with its token prices.
+struct PriceRow {
+    provider: String,
+    model_id: String,
+    model_name: String,
+    input: Option<f64>,
+    output: Option<f64>,
+    cache_read: Option<f64>,
+    currency: String,
+    unit: String,
+}
+
+fn info_provider_rows(cfg: &chat::Config, keyword: Option<&str>) -> Result<Vec<ProviderInfoRow>> {
+    let rows: Vec<ProviderInfoRow> = cfg
+        .providers
+        .iter()
+        .filter(|p| keyword.map(|k| contains_ci(&p.name, k)).unwrap_or(true))
+        .map(|p| ProviderInfoRow {
+            name: p.name.clone(),
+            api_base: p.api_base.clone(),
+            api_key: p.api_key.clone(),
+        })
+        .collect();
+    if let Some(k) = keyword {
+        if rows.is_empty() {
+            let avail: Vec<&str> = cfg.providers.iter().map(|p| p.name.as_str()).collect();
+            bail!("no provider contains `{k}` (available: {})", avail.join(", "));
+        }
+    }
+    Ok(rows)
+}
+
+fn info_model_rows(cfg: &chat::Config, keyword: Option<&str>) -> Result<Vec<ModelInfoRow>> {
+    let kw = keyword.map(str::trim).filter(|s| !s.is_empty());
+    let mut rows: Vec<ModelInfoRow> = Vec::new();
+    match kw {
+        None => {
+            for p in &cfg.providers {
+                for m in &p.models {
+                    rows.push(ModelInfoRow { provider: p.name.clone(), name: m.name.clone() });
+                }
+            }
+        }
+        Some(k) if k.contains(':') => {
+            // `provider:model` / `provider:*` — the provider part is a
+            // substring of the provider name, the model part a substring of
+            // the model name (`*` = every model of the provider).
+            let (prov, msel) = k.split_once(':').expect("contains(':') checked");
+            let prov = prov.trim();
+            let msel = msel.trim();
+            let hits: Vec<&chat::Provider> = cfg
+                .providers
+                .iter()
+                .filter(|p| contains_ci(&p.name, prov))
+                .collect();
+            if hits.is_empty() {
+                let avail: Vec<&str> = cfg.providers.iter().map(|p| p.name.as_str()).collect();
+                bail!("no provider contains `{prov}` (available: {})", avail.join(", "));
+            }
+            for p in hits {
+                for m in &p.models {
+                    if msel == "*" || contains_ci(&m.name, msel) {
+                        rows.push(ModelInfoRow { provider: p.name.clone(), name: m.name.clone() });
+                    }
+                }
+            }
+            if rows.is_empty() {
+                bail!("no model contains `{msel}` under provider(s) matching `{prov}`");
+            }
+        }
+        Some(k) => {
+            let hits: Vec<&chat::Provider> = cfg
+                .providers
+                .iter()
+                .filter(|p| contains_ci(&p.name, k))
+                .collect();
+            if hits.is_empty() {
+                // Fall back to matching model names across every provider so
+                // `info model deepseek` still finds the models named deepseek.
+                for p in &cfg.providers {
+                    for m in &p.models {
+                        if contains_ci(&m.name, k) {
+                            rows.push(ModelInfoRow { provider: p.name.clone(), name: m.name.clone() });
+                        }
+                    }
+                }
+                if rows.is_empty() {
+                    let avail: Vec<&str> = cfg.providers.iter().map(|p| p.name.as_str()).collect();
+                    bail!("no provider or model contains `{k}` (providers: {})", avail.join(", "));
+                }
+            } else {
+                for p in hits {
+                    for m in &p.models {
+                        rows.push(ModelInfoRow { provider: p.name.clone(), name: m.name.clone() });
+                    }
+                }
+            }
+        }
+    }
+    Ok(rows)
+}
+
+fn info_price_rows(data: &Value, providers: &[String]) -> Result<Vec<PriceRow>> {
+    let mut rows: Vec<PriceRow> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for q in providers {
+        let hits = search_providers(data, q);
+        if hits.is_empty() {
+            missing.push(q.clone());
+            continue;
+        }
+        for (pid, pv) in hits {
+            let prov_cost = pv.get("cost");
+            let models = pv.get("models").and_then(|m| m.as_object());
+            if let Some(models) = models {
+                for (mid, mv) in models {
+                    let cost = mv.get("cost");
+                    let currency = cost
+                        .or(prov_cost)
+                        .and_then(|c| c.get("currency"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("USD")
+                        .to_string();
+                    let unit = cost
+                        .or(prov_cost)
+                        .and_then(|c| c.get("unit"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("1M")
+                        .to_string();
+                    rows.push(PriceRow {
+                        provider: pid.clone(),
+                        model_id: mid.clone(),
+                        model_name: mv
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?")
+                            .to_string(),
+                        input: cost.and_then(|c| c.get("input")).and_then(|v| v.as_f64()),
+                        output: cost.and_then(|c| c.get("output")).and_then(|v| v.as_f64()),
+                        cache_read: cost.and_then(|c| c.get("cache_read")).and_then(|v| v.as_f64()),
+                        currency,
+                        unit,
+                    });
+                }
+            }
+        }
+    }
+    if !missing.is_empty() {
+        let avail: Vec<&str> = data
+            .as_object()
+            .map(|m| m.keys().map(|k| k.as_str()).collect())
+            .unwrap_or_default();
+        bail!(
+            "no models.dev provider matches {} (available: {})",
+            missing.join(", "),
+            avail.join(", ")
+        );
+    }
+    Ok(rows)
+}
+
+fn fmt_price(v: Option<f64>) -> String {
+    match v {
+        Some(x) => format!("{x:.4}"),
+        None => "-".to_string(),
+    }
+}
+
+fn print_price_rows(rows: &[PriceRow]) {
+    let w_prov = rows.iter().map(|r| r.provider.chars().count()).max().unwrap_or(8).max(8);
+    let w_id = rows.iter().map(|r| r.model_id.chars().count()).max().unwrap_or(5).max(5);
+    let w_nm = rows.iter().map(|r| r.model_name.chars().count()).max().unwrap_or(4).max(4);
+    let currency = rows.first().map(|r| r.currency.as_str()).unwrap_or("USD");
+    let unit = rows.first().map(|r| r.unit.as_str()).unwrap_or("1M");
+    println!(
+        "{:<w_prov$}  {:<w_id$}  {:<w_nm$}  {:>10}  {:>10}  {:>10}    (per {unit} {currency})",
+        "PROVIDER", "MODEL", "NAME", "INPUT", "OUTPUT", "CACHE_READ"
+    );
+    for r in rows {
+        println!(
+            "{:<w_prov$}  {:<w_id$}  {:<w_nm$}  {:>10}  {:>10}  {:>10}",
+            r.provider,
+            r.model_id,
+            r.model_name,
+            fmt_price(r.input),
+            fmt_price(r.output),
+            fmt_price(r.cache_read)
+        );
+    }
+}
+
+/// `sysenv ai info FIELD [PARAM...] [-c FILE] [--refresh]`
+///
+/// FIELD is `provider`, `model` or `price`:
+/// - `provider [KEYWORD]` — every configured provider (name / api_base /
+///   api_key); KEYWORD keeps only the providers whose name contains it.
+/// - `model [KEYWORD]` — every configured model as `{provider}:{name}`;
+///   KEYWORD keeps only the models of providers whose name contains it
+///   (`provider:model` / `provider:*` select specific models; model-name
+///   matching is used as a fallback when no provider matches).
+/// - `price P1,P2,...` — per-1M-token prices (input / output / cache_read)
+///   of the comma-separated providers, fetched from models.dev (24 h cache,
+///   `--refresh` forces a re-fetch).
+pub fn cmd_info(
+    field: &str,
+    param: &[String],
+    refresh: bool,
+    config: Option<&Path>,
+) -> Result<()> {
+    let keyword = {
+        let s = param.join(" ");
+        let s = s.trim();
+        if s.is_empty() { None } else { Some(s.to_string()) }
+    };
+    match field.to_ascii_lowercase().as_str() {
+        "provider" | "providers" => {
+            let (cfg, _) = chat::load_config(config)?;
+            let rows = info_provider_rows(&cfg, keyword.as_deref())?;
+            let w_name = rows.iter().map(|r| r.name.chars().count()).max().unwrap_or(8).max(8);
+            let w_base = rows.iter().map(|r| r.api_base.chars().count()).max().unwrap_or(8).max(8);
+            println!("{:<w_name$}  {:<w_base$}  {}", "PROVIDER", "API_BASE", "API_KEY");
+            for r in &rows {
+                println!("{:<w_name$}  {:<w_base$}  {}", r.name, r.api_base, r.api_key);
+            }
+        }
+        "model" | "models" => {
+            let (cfg, _) = chat::load_config(config)?;
+            let rows = info_model_rows(&cfg, keyword.as_deref())?;
+            for r in &rows {
+                println!("{}:{}", r.provider, r.name);
+            }
+        }
+        "price" | "prices" => {
+            let providers: Vec<String> = param
+                .join(",")
+                .split([',', '，'])
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            if providers.is_empty() {
+                bail!("`info price` needs at least one provider name: `sysenv ai info price openai,anthropic`");
+            }
+            let data = fetch_data(refresh)?;
+            let rows = info_price_rows(&data, &providers)?;
+            print_price_rows(&rows);
+        }
+        other => bail!("unknown `info` field `{other}` (expected: provider | model | price)"),
     }
     Ok(())
 }
@@ -2098,5 +2380,132 @@ mod tests {
         // 暂无数据 is treated as absent.
         let html = r#"<span>上下文长度</span></div><div class="...">暂无数据</div>"#;
         assert_eq!(dl_detail_value(html, "上下文长度"), None);
+    }
+
+    // --- `sysenv ai info` ------------------------------------------------------
+
+    fn sample_config() -> chat::Config {
+        chat::Config {
+            model: None,
+            stream: false,
+            providers: vec![
+                chat::Provider {
+                    kind: "openai".into(),
+                    name: "agnes".into(),
+                    api_base: "https://apihub.agnes-ai.cn/v1".into(),
+                    api_key: "sk-agnes".into(),
+                    models: vec![
+                        chat::Model {
+                            name: "agnes-3.0-flash".into(),
+                            weight: 4,
+                            max_tokens: None,
+                            max_input_tokens: Some(524288),
+                            model_type: Some("text,image".into()),
+                        },
+                        chat::Model {
+                            name: "deepseek-v4-flash".into(),
+                            weight: 1,
+                            max_tokens: None,
+                            max_input_tokens: None,
+                            model_type: None,
+                        },
+                    ],
+                },
+                chat::Provider {
+                    kind: "openai".into(),
+                    name: "modelscope".into(),
+                    api_base: "https://api-inference.modelscope.cn/v1".into(),
+                    api_key: "ms-key".into(),
+                    models: vec![chat::Model {
+                        name: "Qwen/Qwen3.8-Flash-Next".into(),
+                        weight: 1,
+                        max_tokens: None,
+                        max_input_tokens: None,
+                        model_type: None,
+                    }],
+                },
+            ],
+            tasks: Vec::new(),
+            search: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn info_provider_lists_all() {
+        let rows = info_provider_rows(&sample_config(), None).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "agnes");
+        assert_eq!(rows[0].api_base, "https://apihub.agnes-ai.cn/v1");
+        assert_eq!(rows[0].api_key, "sk-agnes");
+        assert_eq!(rows[1].name, "modelscope");
+    }
+
+    #[test]
+    fn info_provider_filters_by_keyword() {
+        let rows = info_provider_rows(&sample_config(), Some("MODEL")).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "modelscope");
+        assert!(info_provider_rows(&sample_config(), Some("zzz")).is_err());
+    }
+
+    #[test]
+    fn info_model_lists_all_in_provider_name_form() {
+        let rows = info_model_rows(&sample_config(), None).unwrap();
+        let fmt: Vec<String> = rows.iter().map(|r| format!("{}:{}", r.provider, r.name)).collect();
+        assert_eq!(
+            fmt,
+            vec![
+                "agnes:agnes-3.0-flash".to_string(),
+                "agnes:deepseek-v4-flash".to_string(),
+                "modelscope:Qwen/Qwen3.8-Flash-Next".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn info_model_filters_by_provider_name() {
+        let rows = info_model_rows(&sample_config(), Some("model")).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].provider, "modelscope");
+        assert_eq!(rows[0].name, "Qwen/Qwen3.8-Flash-Next");
+    }
+
+    #[test]
+    fn info_model_falls_back_to_model_name() {
+        let rows = info_model_rows(&sample_config(), Some("deepseek")).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].provider, "agnes");
+        assert_eq!(rows[0].name, "deepseek-v4-flash");
+        assert!(info_model_rows(&sample_config(), Some("nope")).is_err());
+    }
+
+    #[test]
+    fn info_model_provider_model_selector() {
+        let rows = info_model_rows(&sample_config(), Some("agnes:3.0")).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "agnes-3.0-flash");
+        let all = info_model_rows(&sample_config(), Some("modelscope:*")).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "Qwen/Qwen3.8-Flash-Next");
+        assert!(info_model_rows(&sample_config(), Some("agnes:nope")).is_err());
+        assert!(info_model_rows(&sample_config(), Some("nope:*")).is_err());
+    }
+
+    #[test]
+    fn info_price_reads_model_costs() {
+        let data = sample_data();
+        let rows =
+            info_price_rows(&data, &["openai".to_string(), "groq".to_string()]).unwrap();
+        assert_eq!(rows.len(), 3);
+        let gpt = rows.iter().find(|r| r.model_id == "gpt-4.1").unwrap();
+        assert_eq!(gpt.provider, "openai");
+        assert_eq!(gpt.input, Some(1.6));
+        assert_eq!(gpt.output, Some(6.4));
+        assert_eq!(gpt.cache_read, None);
+        assert_eq!(gpt.currency, "USD");
+        assert_eq!(gpt.unit, "1M");
+        let mini = rows.iter().find(|r| r.model_id == "gpt-4.1-mini").unwrap();
+        assert_eq!(mini.input, None);
+        assert!(info_price_rows(&data, &["nope".to_string()]).is_err());
     }
 }
