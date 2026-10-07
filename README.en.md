@@ -259,7 +259,7 @@ sys ai server --help                   # server status: address/port + configure
 ```
 
 - `sys ai server [ADDR]`: **serves the configured providers as an OpenAI-compatible API** (default `127.0.0.1:10000`; `-c/--config` selects the config file). Exposes `POST /v1/chat/completions` (non-streaming passthrough and SSE streaming via chunked transfer) and `GET /v1/models` (every configured model, id `{provider}:{model}`). The request `model` follows the same selector rules as chat (`provider:model` / `provider:*` / bare model name / `auto` = config default). Only `type: openai` providers are served; anthropic targets get a clear error. The address may be a bare port (`8080` → host default) or a bare IP (`0.0.0.0` → port default).
-- `sys ai server --help`: **queries the server status** — probes that address (GET /v1/models, 2 s timeout) to see whether a server is already running: if so it prints the current address/port, otherwise it says `server is NOT running`; in both cases it then prints the configured info grouped by provider — one provider line (name/api_base/api_key/DOCS/CONSOLE) followed by that provider's indented model lines (`{provider}:{name}`).
+- `sys ai server --help`: **queries the server status** — probes that address (GET /v1/models, 2 s timeout) to see whether a server is already running: if so it prints the current address/port, otherwise it says `server is NOT running`; in both cases it then prints the configured info grouped by provider — one provider line (name/api_base) followed by that provider's indented model lines (`{provider}:{name}`).
 
 #### 5.3 Task templates (`ai task`)
 

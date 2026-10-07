@@ -2,6 +2,12 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.29 (2026-10-07)
+
+### Changed
+- **`sys ai server --help` grouped lines slimmed down**: the provider line keeps only name / api_base (api_key / docs / console removed), still followed by that provider's indented model lines (`{provider}:{name}`)
+- Version 0.4.28 -> 0.4.29
+
 ## v0.4.28 (2026-10-07)
 
 ### Changed

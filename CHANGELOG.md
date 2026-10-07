@@ -2,6 +2,12 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.29（2026-10-07）
+
+### 变更
+- **`sys ai server --help` 分组信息精简**：provider 行只保留 name / api_base（去掉 api_key / docs / console），其后仍缩进列出该 provider 的全部模型 `{provider}:{name}`
+- 版本 0.4.28 -> 0.4.29
+
 ## v0.4.28（2026-10-07）
 
 ### 变更
