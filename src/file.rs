@@ -4,9 +4,13 @@
 //!   sysenv file PATTERN                 search PATTERN in stdin (piped input)
 //!   sysenv file PATTERN PATH            search PATTERN in PATH and its subtree
 //!   sysenv file OLD NEW PATH            replace OLD with NEW in PATH (in place)
+//!   sysenv file NAME.EXT                display a file's content (e.g. me.txt)
 //!   sysenv file -S 2m [PATH]            list files >= 2 MiB under PATH (default .)
 //!   sysenv file --newer TIME [PATH]     list files modified at/after TIME
 //!   sysenv file --older TIME [PATH]     list files modified before TIME
+//!
+//! A single argument is a stdin search unless it is quoted ("me.txt" -> search
+//! the string) or carries an extension (me.txt -> display that file).
 //!
 //! Options:
 //!   -e EXT       filter by file extension (repeatable, dot optional)
@@ -197,6 +201,35 @@ fn passes_attrs(path: &Path, opts: &FileOpts) -> bool {
         }
     }
     true
+}
+
+/// Strip a wrapping `"..."` / `'...'` pair; None when not quoted.
+fn strip_quotes(s: &str) -> Option<&str> {
+    let t = s.trim();
+    if t.len() >= 2 {
+        let b = t.as_bytes();
+        let same = (b[0] == b'"' && b[t.len() - 1] == b'"') || (b[0] == b'\'' && b[t.len() - 1] == b'\'');
+        if same {
+            return Some(&t[1..t.len() - 1]);
+        }
+    }
+    None
+}
+
+/// True when a single-arg token carries a file extension (`me.txt`, `a.b.c`,
+/// `D:\x\y.log`); hidden names like `.env` have none and stay a search pattern.
+fn looks_like_file(s: &str) -> bool {
+    Path::new(s.trim()).extension().is_some()
+}
+
+/// Read a file for display (binary-safe, lossy UTF-8).
+fn read_showable(name: &str) -> Result<String> {
+    let p = Path::new(name);
+    if !p.is_file() {
+        bail!("`{name}` is not a file (no such file?)");
+    }
+    let bytes = fs::read(p).with_context(|| format!("cannot read {}", p.display()))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -626,9 +659,24 @@ pub fn cmd_file(
         0 if has_filter => list_files(".", &opts),
         1 if has_filter => list_files(&args[0], &opts),
         0 => bail!(
-            "usage:\n  sysenv file PATTERN             search PATTERN in stdin (piped)\n  sysenv file PATTERN PATH        search PATTERN in PATH\n  sysenv file OLD NEW PATH        replace OLD with NEW in PATH\n  sysenv file -S SIZE [PATH]      list files by size (e.g. -S 2m)\n  sysenv file --newer TIME [PATH] list files by mtime\noptions: -e EXT (repeatable) -i -t -w -c NUM -S SIZE --newer TIME --older TIME -d NUM"
+            "usage:\n  sysenv file PATTERN             search PATTERN in stdin (piped)\n  sysenv file PATTERN PATH        search PATTERN in PATH\n  sysenv file OLD NEW PATH        replace OLD with NEW in PATH\n  sysenv file NAME.EXT            display a file (e.g. file me.txt)\n  sysenv file -S SIZE [PATH]      list files by size (e.g. -S 2m)\n  sysenv file --newer TIME [PATH] list files by mtime\noptions: -e EXT (repeatable) -i -t -w -c NUM -S SIZE --newer TIME --older TIME -d NUM"
         ),
-        1 => search_stdin(&args[0], &opts),
+        1 => {
+            if let Some(inner) = strip_quotes(&args[0]) {
+                // Quoted string: force the search meaning ("me.txt" -> search).
+                search_stdin(inner, &opts)
+            } else if looks_like_file(&args[0]) {
+                // Token with an extension (me.txt) -> display the file.
+                let text = read_showable(&args[0])?;
+                print!("{text}");
+                if !text.ends_with('\n') {
+                    println!();
+                }
+                Ok(())
+            } else {
+                search_stdin(&args[0], &opts)
+            }
+        }
         2 => search_path(&args[0], &args[1], &opts),
         3 => replace_path(&args[0], &args[1], &args[2], &opts),
         _ => bail!("too many arguments (expected PATTERN [REPLACEMENT] [PATH])"),
@@ -814,6 +862,38 @@ mod tests {
         let mut files = Vec::new();
         walk(&base, &None, false, false, None, 0, &mut files);
         assert_eq!(files.len(), 3);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn single_arg_dispatch_helpers() {
+        // 引号包裹 → 剥引号
+        assert_eq!(strip_quotes("\"hello\""), Some("hello"));
+        assert_eq!(strip_quotes("'me.txt'"), Some("me.txt"));
+        assert_eq!(strip_quotes("  \"x\"  "), Some("x"));
+        assert_eq!(strip_quotes("hello"), None);
+        assert_eq!(strip_quotes("\"unbalanced"), None);
+        assert_eq!(strip_quotes(""), None);
+        // 后缀判断：有扩展名 → 文件显示；无扩展名 / 隐藏名 → 搜索
+        assert!(looks_like_file("me.txt"));
+        assert!(looks_like_file("a.b.c"));
+        assert!(looks_like_file(r"D:\x\y.log"));
+        assert!(looks_like_file("note.md"));
+        assert!(!looks_like_file("hello"));
+        assert!(!looks_like_file("hello world"));
+        assert!(!looks_like_file(".env"));
+        assert!(!looks_like_file("README"));
+    }
+
+    #[test]
+    fn show_file_reads_content() {
+        let base = std::env::temp_dir().join(format!("sysenv_show_{}", std::process::id()));
+        fs::create_dir_all(&base).unwrap();
+        let f = base.join("t.txt");
+        fs::write(&f, "line1\nline2").unwrap();
+        assert_eq!(read_showable(f.to_str().unwrap()).unwrap(), "line1\nline2");
+        // 不存在的文件报错
+        assert!(read_showable(base.join("nope.txt").to_str().unwrap()).is_err());
         fs::remove_dir_all(&base).unwrap();
     }
 

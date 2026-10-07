@@ -1143,7 +1143,7 @@ dependencies = [
 
 [[package]]
 name = "sysenv"
-version = "0.4.21"
+version = "0.4.22"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

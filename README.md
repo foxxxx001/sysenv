@@ -54,7 +54,7 @@ Commands:
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
 | AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key、`info model` 列出 `{provider}:{name}` 模型清单、`info price` 查 models.dev 模型价格、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
-| 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin；2 参在目录树文本/源码文件搜（`-e` 扩展名过滤 / `-i` 忽略大小写 / `-t` 仅文本 / `-w` 整词 / `-c` 上下文）；3 参 OLD NEW PATH 就地替换；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件 |
+| 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin（带扩展名如 `me.txt` 则显示文件，引号包裹强制搜索）；2 参目录树文本/源码搜索（`-e` / `-i` / `-t` / `-w` / `-c`）；3 参 OLD NEW PATH 就地替换；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件 |
 | 格式转换      | `con`                | json / csv / md / yaml 互转：默认读 stdin（`cat a.json | sysenv con`），`-file` 读文件，`-i` 输入格式，`-o` 输出格式，`-out` 写文件；表格类转对象数组（类型推断 + 转义） |
 | 联网搜索      | `search`             | 博查 AI 网页搜索 API（`POST api.bochaai.com/v1/web-search`）：`--freshness`（时间过滤）/ `--summary`（AI 摘要）/ `--count`（1-50）/ `--page` / `--include-domains` / `--exclude-domains`（域名白黑名单），参数与官网接口一致；key 取自配置 `search` 段；`--json` 原始响应 / `--debug` 请求与响应。`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡（`--no-answer` 关闭 AI 答案） |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
@@ -568,7 +568,7 @@ ssearch "五一 放假 安排"                                 # ssearch 垫片�
 
 fd/sd 风格：搜索 stdin 或目录树中的文本/源码文件，或就地替换字符串。匹配在 Unicode 字符层进行（`-i` 逐字符大小写折叠，中文等非 ASCII 同样正确）。
 
-* 1 个参数 `file PATTERN`：从标准输入读取并输出匹配行（管道用法：`type a.txt | sysenv file hello`）
+* 1 个参数 `file PATTERN`：从标准输入读取并输出匹配行（管道用法：`type a.txt | sysenv file hello`）；**带扩展名的参数（如 `me.txt`）改为直接显示该文件内容**（cat 风格），用引号包裹（`"me.txt"`）可强制按字符串搜索
 * 2 个参数 `file PATTERN PATH`：在 PATH（文件或目录树）的所有已知文本与源码文件（txt/md/py/java/c/...）中搜索 PATTERN，输出 `路径:行号:内容`
 * 3 个参数 `file OLD NEW PATH`：在 PATH 树中把 OLD 就地替换为 NEW，输出每个文件的替换数与汇总
 
@@ -592,6 +592,8 @@ fd/sd 风格：搜索 stdin 或目录树中的文本/源码文件，或就地替
 
 ```
 sysenv file hello                              # stdin 管道搜索（type a.txt | sysenv file hello）
+sysenv file me.txt                             # 显示 me.txt 文件内容
+sysenv file "me.txt"                           # 引号包裹：仍按字符串搜索（stdin 中找 me.txt）
 sysenv file hello D:\projects                  # 在 D:\projects 树中搜索
 sysenv file hello D:\projects -e py -e md      # 只搜 .py 和 .md
 sysenv file HELLO D:\projects -i               # 忽略大小写
