@@ -2,6 +2,15 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sysenv-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.17（2026-10-07）
+
+### 新增
+- **`sysenv ai info provider` / `info model` 支持机器可读输出**：
+  - `-o json` / `--output-format json`（或 `--json`）：输出 JSON 数组（provider 为 `{"name","api_base","api_key"}`，model 为 `{"provider","name"}`，`to_string_pretty` 格式化）
+  - `-o csv` / `--output-format csv`：输出 CSV 表（provider：`name,api_base,api_key`；model：`provider,name`）
+  - 与 `info provider [KEYWORD]` 过滤共用；`price` / `balance` / `sale-price` 传入 `-o/--json` 时明确报错提示
+- 版本 0.4.16 -> 0.4.17
+
 ## v0.4.16（2026-10-07）
 
 ### 新增

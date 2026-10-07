@@ -1267,12 +1267,17 @@ fn print_price_rows(rows: &[PriceRow]) {
 ///   print every model's sale price (agnes / minimax scraped; the rest point
 ///   to their official pricing pages). Pages are cached 24 h, `--refresh`
 ///   forces a re-fetch.
+/// - `-o json` / `-o csv` / `--json` — machine-readable output, supported by
+///   `info provider` and `info model` (JSON array or CSV table).
 pub fn cmd_info(
     field: &str,
     param: &[String],
     refresh: bool,
     config: Option<&Path>,
+    out: Option<OutFormat>,
+    json: bool,
 ) -> Result<()> {
+    let fmt = out.or(if json { Some(OutFormat::Json) } else { None });
     let keyword = {
         let s = param.join(" ");
         let s = s.trim();
@@ -1282,21 +1287,60 @@ pub fn cmd_info(
         "provider" | "providers" => {
             let (cfg, _) = chat::load_config(config)?;
             let rows = info_provider_rows(&cfg, keyword.as_deref())?;
-            let w_name = rows.iter().map(|r| r.name.chars().count()).max().unwrap_or(8).max(8);
-            let w_base = rows.iter().map(|r| r.api_base.chars().count()).max().unwrap_or(8).max(8);
-            println!("{:<w_name$}  {:<w_base$}  {}", "PROVIDER", "API_BASE", "API_KEY");
-            for r in &rows {
-                println!("{:<w_name$}  {:<w_base$}  {}", r.name, r.api_base, r.api_key);
+            match fmt {
+                Some(OutFormat::Json) => {
+                    let arr: Vec<Value> = rows
+                        .iter()
+                        .map(|r| {
+                            serde_json::json!({"name": r.name, "api_base": r.api_base, "api_key": r.api_key})
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
+                }
+                Some(OutFormat::Csv) => {
+                    println!("name,api_base,api_key");
+                    for r in &rows {
+                        println!("{},{},{}", r.name, r.api_base, r.api_key);
+                    }
+                }
+                None => {
+                    let w_name = rows.iter().map(|r| r.name.chars().count()).max().unwrap_or(8).max(8);
+                    let w_base = rows.iter().map(|r| r.api_base.chars().count()).max().unwrap_or(8).max(8);
+                    println!("{:<w_name$}  {:<w_base$}  {}", "PROVIDER", "API_BASE", "API_KEY");
+                    for r in &rows {
+                        println!("{:<w_name$}  {:<w_base$}  {}", r.name, r.api_base, r.api_key);
+                    }
+                }
             }
         }
         "model" | "models" => {
             let (cfg, _) = chat::load_config(config)?;
             let rows = info_model_rows(&cfg, keyword.as_deref())?;
-            for r in &rows {
-                println!("{}:{}", r.provider, r.name);
+            match fmt {
+                Some(OutFormat::Json) => {
+                    let arr: Vec<Value> = rows
+                        .iter()
+                        .map(|r| serde_json::json!({"provider": r.provider, "name": r.name}))
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
+                }
+                Some(OutFormat::Csv) => {
+                    println!("provider,name");
+                    for r in &rows {
+                        println!("{},{}", r.provider, r.name);
+                    }
+                }
+                None => {
+                    for r in &rows {
+                        println!("{}:{}", r.provider, r.name);
+                    }
+                }
             }
         }
         "price" | "prices" => {
+            if fmt.is_some() {
+                bail!("`info price` does not support -o/--json (run without it for the price table)");
+            }
             let providers: Vec<String> = param
                 .join(",")
                 .split([',', '，'])
@@ -1312,6 +1356,9 @@ pub fn cmd_info(
             print_price_rows(&rows);
         }
         "balance" => {
+            if fmt.is_some() {
+                bail!("`info balance` does not support -o/--json (run without it for the balance view)");
+            }
             let kw = keyword.ok_or_else(|| {
                 anyhow::anyhow!("`info balance` needs a provider name: `sysenv ai info balance agnes`")
             })?;
@@ -1319,6 +1366,9 @@ pub fn cmd_info(
             info_balance(&cfg, &kw)?;
         }
         "sale-price" | "saleprice" | "sale_price" => {
+            if fmt.is_some() {
+                bail!("`info sale-price` does not support -o/--json (run without it for the price view)");
+            }
             let kw = keyword.ok_or_else(|| {
                 anyhow::anyhow!("`info sale-price` needs a provider name: `sysenv ai info sale-price agnes`")
             })?;

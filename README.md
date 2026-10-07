@@ -501,8 +501,8 @@ sysenv ai image --list-provider --list-model             # 列出配置中的 Pr
 
 检查本地配置文件（默认 `~/.sysenv/config.yaml`，`-c/--config` 覆盖）与 models.dev 模型价格。
 
-* `info provider [KEYWORD]`：列出 `clients` 中全部 provider 的 `name / api_base / api_key`；带 KEYWORD 时只保留名称包含该词的 provider（大小写不敏感），无匹配报错并列出可用名称
-* `info model [KEYWORD]`：列出全部 provider 下的 model，格式 `{provider}:{name}`；带 KEYWORD 时按 provider 名称包含匹配（支持 `provider:model` / `provider:*` 精确选择），无 provider 命中时回退按 model 名称匹配
+* `info provider [KEYWORD]`：列出 `clients` 中全部 provider 的 `name / api_base / api_key`；带 KEYWORD 时只保留名称包含该词的 provider（大小写不敏感），无匹配报错并列出可用名称；`-o json` / `-o csv` / `--json` 输出 JSON 数组或 CSV 表（JSON 字段 `name` / `api_base` / `api_key`）
+* `info model [KEYWORD]`：列出全部 provider 下的 model，格式 `{provider}:{name}`；带 KEYWORD 时按 provider 名称包含匹配（支持 `provider:model` / `provider:*` 精确选择），无 provider 命中时回退按 model 名称匹配；`-o json` / `-o csv` / `--json` 输出 JSON 数组或 CSV 表（JSON 字段 `provider` / `name`）
 * `info price P1,P2,...`：按逗号分隔（支持全角 `，`）的 provider 名称查询模型价格列表，输出 input / output / cache_read 每 1M token 价格（`$`），数据源 models.dev（id/名称均匹配，复用 24h 缓存，`--refresh` 强制刷新）
 * `info balance PROVIDER`：用该 provider 的 `api_key` 到官方接口查询余额。minimax 走官方 `token_plan/remains`（Token Plan 剩余额度；无订阅时给出按量付费余额入口）；agnes 走 OpenAI 兼容 billing 探测（credit_grants / subscription / usage，无余额字段时提示控制台）；alibaba-cn（阿里云百炼）走官方 `models/limits`（Key 级用量限额/限流配额，可验证 Key；官方无 Key 级现金余额接口，提示到百炼控制台）；modelscope / sensenova / bigmodel / amd / anspire 官方未开放 Key 级余额接口，命令给出对应控制台地址。余额实时查询，不走缓存
 * `info sale-price PROVIDER`：抓取官网定价页并列出全部模型销售价。agnes 抓取 `wiki.agnes-ai.cn` 定价页（文本/图片/视频模型，刊例价 + 现价，人民币）；minimax 抓取 `platform.minimaxi.com` 定价页（语言模型输入/输出/缓存价格，元/百万 tokens）；alibaba-cn 给出百炼官方模型列表与计费说明页地址；其余 provider 给出官网定价页地址。定价页 24h 缓存，`--refresh` 强制重抓
@@ -510,6 +510,9 @@ sysenv ai image --list-provider --list-model             # 列出配置中的 Pr
 ```
 sysenv ai info provider                     # 列出配置中全部 provider（name/api_base/api_key）
 sysenv ai info provider agnes               # 只显示名称包含 agnes 的 provider
+sysenv ai info provider -o json             # 全部 provider 的 JSON 数组输出
+sysenv ai info provider agnes -o csv        # 过滤 + CSV 输出
+sysenv ai info provider --json              # 等价于 -o json
 sysenv ai info model                        # 列出全部模型，格式 provider:model
 sysenv ai info model modelscope             # 只显示 modelscope 下的模型
 sysenv ai info model deepseek               # 无 provider 命中时按模型名匹配

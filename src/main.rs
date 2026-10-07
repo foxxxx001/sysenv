@@ -322,6 +322,14 @@ struct AiInfoArgs {
     /// Config file path (default: ~/.sysenv/config.yaml)
     #[arg(short = 'c', long, value_name = "FILE")]
     config: Option<PathBuf>,
+    /// Print the raw JSON (as a JSON array) instead of the formatted view
+    /// (supported by `info provider` and `info model`)
+    #[arg(long)]
+    json: bool,
+    /// Output format: json (JSON array) or csv (table); default is a formatted
+    /// text view (supported by `info provider` and `info model`)
+    #[arg(short = 'o', long = "output-format", value_name = "FORMAT", value_enum, conflicts_with = "json")]
+    output: Option<OutFormat>,
 }
 
 #[derive(Args)]
@@ -699,7 +707,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             p.output,
             a.refresh,
         ),
-        AiCmd::Info(i) => ai::cmd_info(&i.field, &i.param, i.refresh, i.config.as_deref()),
+        AiCmd::Info(i) => ai::cmd_info(&i.field, &i.param, i.refresh, i.config.as_deref(), i.output, i.json),
         AiCmd::Chat(c) => chat::cmd_chat(
             &c.msg,
             c.config.as_deref(),
