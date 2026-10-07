@@ -1049,6 +1049,40 @@ struct ProviderInfoRow {
     name: String,
     api_base: String,
     api_key: String,
+    /// Official help-docs URL of the provider ("" when unknown).
+    docs: String,
+    /// Official web console URL of the provider ("" when unknown).
+    console: String,
+}
+
+/// Official help-docs / console URLs keyed by provider name (case-insensitive
+/// substring match, like the `info provider` keyword filter). Every URL below
+/// was verified reachable on 2026-10-07. Unknown providers get "" / "".
+fn provider_links(name: &str) -> (String, String) {
+    let n = name.to_ascii_lowercase();
+    let hit: Option<(&str, &str)> = if contains_ci(&n, "agnes") {
+        Some(("https://wiki.agnes-ai.cn/zh-Hans/docs", "https://platform.agnes-ai.cn"))
+    } else if contains_ci(&n, "alibaba") || contains_ci(&n, "dashscope") || contains_ci(&n, "bailian") {
+        Some(("https://help.aliyun.com/zh/model-studio/", "https://bailian.console.aliyun.com"))
+    } else if contains_ci(&n, "minimax") {
+        Some(("https://platform.minimax.cn/docs", "https://platform.minimax.cn"))
+    } else if contains_ci(&n, "modelscope") {
+        Some(("https://modelscope.cn/docs", "https://modelscope.cn"))
+    } else if contains_ci(&n, "anspire") {
+        Some(("https://open.anspire.cn/document/docs/", "https://open.anspire.cn"))
+    } else if contains_ci(&n, "sensenova") || contains_ci(&n, "sensecore") {
+        Some(("https://console.sensecore.cn/micro/help/docs/model-as-a-service/nova/", "https://console.sensecore.cn"))
+    } else if contains_ci(&n, "bigmodel") || contains_ci(&n, "zhipu") {
+        Some(("https://docs.bigmodel.cn", "https://bigmodel.cn/console"))
+    } else if contains_ci(&n, "amd") {
+        Some(("https://developer.amd.com.cn", "https://developer.amd.com.cn"))
+    } else {
+        None
+    };
+    match hit {
+        Some((docs, console)) => (docs.to_string(), console.to_string()),
+        None => (String::new(), String::new()),
+    }
 }
 
 /// One row of `info model` in `{provider}:{name}` form.
@@ -1074,10 +1108,15 @@ fn info_provider_rows(cfg: &chat::Config, keyword: Option<&str>) -> Result<Vec<P
         .providers
         .iter()
         .filter(|p| keyword.map(|k| contains_ci(&p.name, k)).unwrap_or(true))
-        .map(|p| ProviderInfoRow {
-            name: p.name.clone(),
-            api_base: p.api_base.clone(),
-            api_key: p.api_key.clone(),
+        .map(|p| {
+            let (docs, console) = provider_links(&p.name);
+            ProviderInfoRow {
+                name: p.name.clone(),
+                api_base: p.api_base.clone(),
+                api_key: p.api_key.clone(),
+                docs,
+                console,
+            }
         })
         .collect();
     if let Some(k) = keyword {
@@ -1252,7 +1291,9 @@ fn print_price_rows(rows: &[PriceRow]) {
 ///
 /// FIELD is `provider`, `model` or `price`:
 /// - `provider [KEYWORD]` — every configured provider (name / api_base /
-///   api_key); KEYWORD keeps only the providers whose name contains it.
+///   api_key / docs / console); the official help-docs and console URLs are
+///   looked up per provider name. KEYWORD keeps only the providers whose name
+///   contains it.
 /// - `model [KEYWORD]` — every configured model as `{provider}:{name}`;
 ///   KEYWORD keeps only the models of providers whose name contains it
 ///   (`provider:model` / `provider:*` select specific models; model-name
@@ -1292,23 +1333,33 @@ pub fn cmd_info(
                     let arr: Vec<Value> = rows
                         .iter()
                         .map(|r| {
-                            serde_json::json!({"name": r.name, "api_base": r.api_base, "api_key": r.api_key})
+                            serde_json::json!({
+                                "name": r.name,
+                                "api_base": r.api_base,
+                                "api_key": r.api_key,
+                                "docs": r.docs,
+                                "console": r.console,
+                            })
                         })
                         .collect();
                     println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
                 }
                 Some(OutFormat::Csv) => {
-                    println!("name,api_base,api_key");
+                    println!("name,api_base,api_key,docs,console");
                     for r in &rows {
-                        println!("{},{},{}", r.name, r.api_base, r.api_key);
+                        println!("{},{},{},{},{}", r.name, r.api_base, r.api_key, r.docs, r.console);
                     }
                 }
                 None => {
                     let w_name = rows.iter().map(|r| r.name.chars().count()).max().unwrap_or(8).max(8);
                     let w_base = rows.iter().map(|r| r.api_base.chars().count()).max().unwrap_or(8).max(8);
-                    println!("{:<w_name$}  {:<w_base$}  {}", "PROVIDER", "API_BASE", "API_KEY");
+                    let w_docs = rows.iter().map(|r| r.docs.chars().count()).max().unwrap_or(4).max(4);
+                    let w_console = rows.iter().map(|r| r.console.chars().count()).max().unwrap_or(7).max(7);
+                    println!("{:<w_name$}  {:<w_base$}  {:<w_docs$}  {:<w_console$}  {}", "PROVIDER", "API_BASE", "DOCS", "CONSOLE", "API_KEY");
                     for r in &rows {
-                        println!("{:<w_name$}  {:<w_base$}  {}", r.name, r.api_base, r.api_key);
+                        let docs = if r.docs.is_empty() { "-".to_string() } else { r.docs.clone() };
+                        let console = if r.console.is_empty() { "-".to_string() } else { r.console.clone() };
+                        println!("{:<w_name$}  {:<w_base$}  {:<w_docs$}  {:<w_console$}  {}", r.name, r.api_base, docs, console, r.api_key);
                     }
                 }
             }
@@ -3003,7 +3054,28 @@ mod tests {
         assert_eq!(rows[0].name, "agnes");
         assert_eq!(rows[0].api_base, "https://apihub.agnes-ai.cn/v1");
         assert_eq!(rows[0].api_key, "sk-agnes");
+        assert_eq!(rows[0].docs, "https://wiki.agnes-ai.cn/zh-Hans/docs");
+        assert_eq!(rows[0].console, "https://platform.agnes-ai.cn");
         assert_eq!(rows[1].name, "modelscope");
+        assert_eq!(rows[1].docs, "https://modelscope.cn/docs");
+        assert_eq!(rows[1].console, "https://modelscope.cn");
+    }
+
+    #[test]
+    fn provider_links_matches_known_and_unknown() {
+        assert_eq!(
+            provider_links("alibaba-cn"),
+            ("https://help.aliyun.com/zh/model-studio/".to_string(), "https://bailian.console.aliyun.com".to_string())
+        );
+        assert_eq!(
+            provider_links("MiniMax"),
+            ("https://platform.minimax.cn/docs".to_string(), "https://platform.minimax.cn".to_string())
+        );
+        assert_eq!(
+            provider_links("bigmodel"),
+            ("https://docs.bigmodel.cn".to_string(), "https://bigmodel.cn/console".to_string())
+        );
+        assert_eq!(provider_links("some-future-provider"), (String::new(), String::new()));
     }
 
     #[test]

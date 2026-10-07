@@ -2,6 +2,14 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sysenv-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.18（2026-10-07）
+
+### 新增
+- **`sysenv ai info provider` 增加 DOCS / CONSOLE 列**：按 provider 名称匹配官方帮助文档与控制台地址（agnes / alibaba-cn / minimax / modelscope / anspire / sensenova / bigmodel / amd 已收录，URL 均已实测可达；未收录的 provider 显示 `-`）
+  - 文本输出新增 `DOCS`、`CONSOLE` 两列（API_KEY 移至末列）
+  - `-o json` 每条增加 `docs` / `console` 字段；`-o csv` 增加 `docs,console` 列
+- 版本 0.4.17 -> 0.4.18
+
 ## v0.4.17（2026-10-07）
 
 ### 新增

@@ -501,7 +501,7 @@ sysenv ai image --list-provider --list-model             # 列出配置中的 Pr
 
 检查本地配置文件（默认 `~/.sysenv/config.yaml`，`-c/--config` 覆盖）与 models.dev 模型价格。
 
-* `info provider [KEYWORD]`：列出 `clients` 中全部 provider 的 `name / api_base / api_key`；带 KEYWORD 时只保留名称包含该词的 provider（大小写不敏感），无匹配报错并列出可用名称；`-o json` / `-o csv` / `--json` 输出 JSON 数组或 CSV 表（JSON 字段 `name` / `api_base` / `api_key`）
+* `info provider [KEYWORD]`：列出 `clients` 中全部 provider 的 `name / api_base / api_key` 及官方 `DOCS`（帮助文档）与 `CONSOLE`（控制台）地址（按 provider 名称匹配内置收录表，未收录显示 `-`）；带 KEYWORD 时只保留名称包含该词的 provider（大小写不敏感），无匹配报错并列出可用名称；`-o json` / `-o csv` / `--json` 输出 JSON 数组或 CSV 表（JSON 字段 `name` / `api_base` / `api_key` / `docs` / `console`）
 * `info model [KEYWORD]`：列出全部 provider 下的 model，格式 `{provider}:{name}`；带 KEYWORD 时按 provider 名称包含匹配（支持 `provider:model` / `provider:*` 精确选择），无 provider 命中时回退按 model 名称匹配；`-o json` / `-o csv` / `--json` 输出 JSON 数组或 CSV 表（JSON 字段 `provider` / `name`）
 * `info price P1,P2,...`：按逗号分隔（支持全角 `，`）的 provider 名称查询模型价格列表，输出 input / output / cache_read 每 1M token 价格（`$`），数据源 models.dev（id/名称均匹配，复用 24h 缓存，`--refresh` 强制刷新）
 * `info balance PROVIDER`：用该 provider 的 `api_key` 到官方接口查询余额。minimax 走官方 `token_plan/remains`（Token Plan 剩余额度；无订阅时给出按量付费余额入口）；agnes 走 OpenAI 兼容 billing 探测（credit_grants / subscription / usage，无余额字段时提示控制台）；alibaba-cn（阿里云百炼）走官方 `models/limits`（Key 级用量限额/限流配额，可验证 Key；官方无 Key 级现金余额接口，提示到百炼控制台）；modelscope / sensenova / bigmodel / amd / anspire 官方未开放 Key 级余额接口，命令给出对应控制台地址。余额实时查询，不走缓存
