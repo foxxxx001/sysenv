@@ -1,4 +1,4 @@
-//! `sys ai chat --server [ADDR]` — serve the configured providers as an
+//! `sys ai server [ADDR]` — serve the configured providers as an
 //! OpenAI-compatible chat-completions API.
 //!
 //! - Default bind address: `127.0.0.1:10000`.

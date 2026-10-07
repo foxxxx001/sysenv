@@ -52,7 +52,7 @@ Commands:
 | 注册表导入导出   | `path export/import` | `.reg` / JSON / TXT 三种格式；合并或 `--replace` 整体替换；跨机迁移备份                                   |
 | 链接到 PATH  | `link`               | 硬链接 → 符号链接 → 拷贝三级自动回退；Windows `.cmd` 垫片；自定义命令名；系统目录或托管目录                               |
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
-| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key、`info model` 列出 `{provider}:{name}` 模型清单、`info price` 查 models.dev 模型价格、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页）；`ai config`（导出配置为 codex / opencode / litellm / freellmapi 格式，支持 `provider:*` / `provider:model` 选择与 `-f` 写文件）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`、`--server` 以 OpenAI 兼容 API 对外提供 `/v1/chat/completions` 与 `/v1/models` 服务（默认 127.0.0.1:10000，可只给端口/IP），请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
+| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key、`info model` 列出 `{provider}:{name}` 模型清单、`info price` 查 models.dev 模型价格、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页）；`ai config`（导出配置为 codex / opencode / litellm / freellmapi 格式，支持 `provider:*` / `provider:model` 选择与 `-f` 写文件）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai server`（`sys ai server [ADDR]` 以 OpenAI 兼容 API 对外提供 `/v1/chat/completions` 与 `/v1/models` 服务（默认 127.0.0.1:10000，可只给端口/IP；`--help` 查询服务状态并打印配置的 provider/model））；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
 | 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin（带扩展名如 `me.txt` 则显示文件，引号包裹强制搜索）；2 参目录树文本/源码搜索（`-e` / `-i` / `-t` / `-w` / `-c`）；3 参 OLD NEW PATH 就地替换；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件 |
 | 格式转换      | `con`                | json / csv / md / yaml 互转：默认读 stdin（`cat a.json | sys con`），`-file` 读文件，`-i` 输入格式，`-o` 输出格式，`-out` 写文件；表格类转对象数组（类型推断 + 转义） |
@@ -377,15 +377,15 @@ sys ai chat "你好" -m agnes:agnes-3.0-flash   # 覆盖顶层 model，只用 ag
 sys ai chat "你好" -m "agnes:*,claude:claude-3-5-sonnet"  # 多模型逗号分隔，加权轮询
 sys ai chat --list-provider            # 列出配置中的 Provider
 sys ai chat --list-model               # 列出配置中的所有模型（含权重）
-sys ai chat --server                   # 以 OpenAI 兼容 API 对外提供聊天服务（默认 127.0.0.1:10000）
-sys ai chat --server 8080              # 只给端口，host 用默认 127.0.0.1
-sys ai chat --server 0.0.0.0           # 只给 IP，端口用默认 10000（对外网开放）
-sys ai chat --server 0.0.0.0:9000      # 同时指定 IP 与端口
-sys ai chat --server --help             # 查询服务是否已启动：地址/端口 + 配置的 provider/model
+sys ai server                          # 以 OpenAI 兼容 API 对外提供聊天服务（默认 127.0.0.1:10000）
+sys ai server 8080                     # 只给端口，host 用默认 127.0.0.1
+sys ai server 0.0.0.0                  # 只给 IP，端口用默认 10000（对外网开放）
+sys ai server 0.0.0.0:9000             # 同时指定 IP 与端口
+sys ai server --help                   # 查询服务是否已启动：地址/端口 + 配置的 provider/model
 ```
 
-* `--server [ADDR]`：**把配置中的 Provider 以 OpenAI 兼容格式对外提供**（本地 HTTP 服务，默认 `127.0.0.1:10000`）。提供 `POST /v1/chat/completions`（非流式与 SSE 流式透传到上游 Provider）与 `GET /v1/models`（列出全部已配置模型，ID 为 `{provider}:{model}`）。请求中的 `model` 使用与聊天相同的选择规则（`provider:model` / `provider:*` / 裸模型名 / `auto` = 配置默认）。仅支持 `type: openai` 的 Provider，anthropic 目标返回明确错误。地址可只给端口（如 `8080`，host 用默认）或只给 IP（如 `0.0.0.0`，端口用默认）。
-* `--server --help`：**查询服务状态**——先探测该地址（GET /v1/models，2 秒超时）是否已有服务在运行：已启动则打印当前地址/端口，未启动则提示 `server is NOT running`；两种情况都会继续打印当前配置的 provider 表（name/api_base/api_key/DOCS/CONSOLE）与全部模型清单（`{provider}:{name}`）。不带 `--server` 的 `chat --help` 显示本命令用法。
+* `sys ai server [ADDR]`：**把配置中的 Provider 以 OpenAI 兼容格式对外提供**（本地 HTTP 服务，默认 `127.0.0.1:10000`；`-c/--config` 指定配置文件）。提供 `POST /v1/chat/completions`（非流式与 SSE 流式透传到上游 Provider）与 `GET /v1/models`（列出全部已配置模型，ID 为 `{provider}:{model}`）。请求中的 `model` 使用与聊天相同的选择规则（`provider:model` / `provider:*` / 裸模型名 / `auto` = 配置默认）。仅支持 `type: openai` 的 Provider，anthropic 目标返回明确错误。地址可只给端口（如 `8080`，host 用默认）或只给 IP（如 `0.0.0.0`，端口用默认）。
+* `sys ai server --help`：**查询服务状态**——先探测该地址（GET /v1/models，2 秒超时）是否已有服务在运行：已启动则打印当前地址/端口，未启动则提示 `server is NOT running`；两种情况都会继续打印当前配置的 provider 表（name/api_base/api_key/DOCS/CONSOLE）与全部模型清单（`{provider}:{name}`）。
 
 #### 5.3 任务模板聊天（`ai task`）
 

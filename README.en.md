@@ -37,7 +37,7 @@ Commands:
 | Registry import/export | `path export/import` | `.reg` / JSON / TXT formats; merge or `--replace` full replace; machine migration & backup |
 | Link into PATH | `link` | hard link → symlink → copy fallback chain; Windows `.cmd` shim; custom command name; system or managed directory |
 | Environment variables | `env` | get / set / unset / list; persisted by default; `--temporary` for the current shell only; `machine` scope |
-| AI model lookup | `ai` | `ai model` (models.dev: 226 providers, 8000+ models; 24 h cache; canonical preference; no args lists all; `--date` / `--open` / `--search / --list / --json / --refresh`); `ai cn-model` (datalearner: ~1015 models; `--date` filters by published); `ai info` (local config lookup: `info provider` name/api_base/api_key, `info model` `{provider}:{name}` list, `info price` models.dev prices, `info balance` official balance via api_key, `info sale-price` official pricing page scrape); `ai chat` (multi-provider weighted round-robin chat, OpenAI / Anthropic compatible); `ai task` (task-template chat) |
+| AI model lookup | `ai` | `ai model` (models.dev: 226 providers, 8000+ models; 24 h cache; canonical preference; no args lists all; `--date` / `--open` / `--search / --list / --json / --refresh`); `ai cn-model` (datalearner: ~1015 models; `--date` filters by published); `ai info` (local config lookup: `info provider` name/api_base/api_key, `info model` `{provider}:{name}` list, `info price` models.dev prices, `info balance` official balance via api_key, `info sale-price` official pricing page scrape); `ai chat` (multi-provider weighted round-robin chat, OpenAI / Anthropic compatible); `ai server` (`sys ai server [ADDR]` serves an OpenAI-compatible API — `/v1/chat/completions` + `/v1/models`, default 127.0.0.1:10000, bare port/IP allowed; `--help` reports the server status and prints the configured providers/models); `ai task` (task-template chat) |
 | Process management | `task` | no args lists all processes; list (PID / name / path, fuzzy name match); `-o` shows the process using a port; kill by PID or name; `-f` force |
 | Web search | `search` | Bocha AI web search API (`POST api.bochaai.com/v1/web-search`): `--freshness` (time filter) / `--summary` (AI summaries) / `--count` (1-50) / `--page` / `--include-domains` / `--exclude-domains`, official parameters; key from the config `search` section; `--json` raw response / `--debug` request & response. `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards (`--no-answer` disables the AI answer) |
 | Text search & replace | `file` | fd/sd-style: 1 arg searches stdin (an extension like `me.txt` displays that file; quotes force search); 2 args search a directory tree of text/source files (`-e` / `-i` / `-t` / `-w` / `-c`); 3 args OLD NEW PATH replace in place; `-S` size / `--newer` / `--older` time / `-d` depth filters; lists files when no PATTERN is given |
@@ -251,15 +251,15 @@ echo "summarize this" | sys ai chat    # pipe via stdin
 sys ai chat "hi" -c doc/config.yaml    # explicit config file
 sys ai chat "hi" --no-stream           # disable streaming
 sys ai chat "hi" --debug               # print the actual request & response (incl. headers)
-sys ai chat --server                   # serve an OpenAI-compatible API (default 127.0.0.1:10000)
-sys ai chat --server 8080              # bare port: host stays 127.0.0.1
-sys ai chat --server 0.0.0.0           # bare IP: port stays 10000 (exposed to the network)
-sys ai chat --server 0.0.0.0:9000      # full address
-sys ai chat --server --help            # server status: address/port + configured providers/models
+sys ai server                          # serve an OpenAI-compatible API (default 127.0.0.1:10000)
+sys ai server 8080                     # bare port: host stays 127.0.0.1
+sys ai server 0.0.0.0                  # bare IP: port stays 10000 (exposed to the network)
+sys ai server 0.0.0.0:9000             # full address
+sys ai server --help                   # server status: address/port + configured providers/models
 ```
 
-- `--server [ADDR]`: **serves the configured providers as an OpenAI-compatible API** (default `127.0.0.1:10000`). Exposes `POST /v1/chat/completions` (non-streaming passthrough and SSE streaming via chunked transfer) and `GET /v1/models` (every configured model, id `{provider}:{model}`). The request `model` follows the same selector rules as chat (`provider:model` / `provider:*` / bare model name / `auto` = config default). Only `type: openai` providers are served; anthropic targets get a clear error. The address may be a bare port (`8080` → host default) or a bare IP (`0.0.0.0` → port default).
-- `--server --help`: **queries the server status** — probes that address (GET /v1/models, 2 s timeout) to see whether a server is already running: if so it prints the current address/port, otherwise it says `server is NOT running`; in both cases it then prints the configured provider table (name/api_base/api_key/DOCS/CONSOLE) and the full model list (`{provider}:{name}`). `chat --help` without `--server` shows this command's usage.
+- `sys ai server [ADDR]`: **serves the configured providers as an OpenAI-compatible API** (default `127.0.0.1:10000`; `-c/--config` selects the config file). Exposes `POST /v1/chat/completions` (non-streaming passthrough and SSE streaming via chunked transfer) and `GET /v1/models` (every configured model, id `{provider}:{model}`). The request `model` follows the same selector rules as chat (`provider:model` / `provider:*` / bare model name / `auto` = config default). Only `type: openai` providers are served; anthropic targets get a clear error. The address may be a bare port (`8080` → host default) or a bare IP (`0.0.0.0` → port default).
+- `sys ai server --help`: **queries the server status** — probes that address (GET /v1/models, 2 s timeout) to see whether a server is already running: if so it prints the current address/port, otherwise it says `server is NOT running`; in both cases it then prints the configured provider table (name/api_base/api_key/DOCS/CONSOLE) and the full model list (`{provider}:{name}`).
 
 #### 5.3 Task templates (`ai task`)
 

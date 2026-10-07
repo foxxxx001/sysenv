@@ -2,6 +2,12 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.27 (2026-10-07)
+
+### Changed
+- **`sys ai chat --server` became the `sys ai server` subcommand**: starting the server moved from `sys ai chat --server [ADDR]` to `sys ai server [ADDR]` (default `127.0.0.1:10000`, a bare port/IP keeps the other default, new `-c/--config` selects the config file); `sys ai chat --server --help` moved to `sys ai server --help` (probes whether a server is already running — running prints the address/port, not-running says `server is NOT running`, both then print the configured provider table and model list); `chat` dropped `--server` / the custom `--help` and its default clap help is back
+- Version 0.4.26 -> 0.4.27
+
 ## v0.4.26 (2026-10-07)
 
 ### Added

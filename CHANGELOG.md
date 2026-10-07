@@ -2,6 +2,12 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.27（2026-10-07）
+
+### 变更
+- **`sys ai chat --server` 改为 `sys ai server` 子命令**：启动方式由 `sys ai chat --server [ADDR]` 迁移为 `sys ai server [ADDR]`（默认 `127.0.0.1:10000`，只给端口/IP 各保留另一默认，新增 `-c/--config` 指定配置文件）；`sys ai chat --server --help` 迁移为 `sys ai server --help`（探测服务是否已启动：已启动打印地址/端口，未启动提示 `server is NOT running`，两种情况均打印配置的 provider 表与模型清单）；`chat` 子命令移除 `--server` / 自定义 `--help`，恢复 clap 默认帮助
+- 版本 0.4.26 -> 0.4.27
+
 ## v0.4.26（2026-10-07）
 
 ### 新增
