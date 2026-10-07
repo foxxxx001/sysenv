@@ -1044,6 +1044,26 @@ pub fn cmd_provider(
 //   24 h cache, --refresh to force).
 // ---------------------------------------------------------------------------
 
+/// Grouped view used by `sys ai server --help`: one line per configured
+/// provider (name / api_base / api_key / docs / console), followed by one
+/// indented `{provider}:{name}` line per model of that provider.
+pub fn print_server_config(config: Option<&Path>) -> Result<()> {
+    let (cfg, _) = chat::load_config(config)?;
+    for p in &cfg.providers {
+        let (docs, console) = provider_links(&p.name);
+        let docs = if docs.is_empty() { "-".to_string() } else { docs };
+        let console = if console.is_empty() { "-".to_string() } else { console };
+        println!(
+            "[{}] api_base={} api_key={} docs={} console={}",
+            p.name, p.api_base, p.api_key, docs, console
+        );
+        for m in &p.models {
+            println!("  {}:{}", p.name, m.name);
+        }
+    }
+    Ok(())
+}
+
 /// One row of `info provider` (a configured client).
 struct ProviderInfoRow {
     name: String,

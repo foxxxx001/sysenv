@@ -830,7 +830,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
                         "sys: server is NOT running at http://{bind} — start it with `sys ai server [ADDR]`"
                     );
                 }
-                ai::cmd_info(None, &[], false, s.config.as_deref(), None, false)
+                ai::print_server_config(s.config.as_deref())
             } else {
                 server::serve(s.config.as_deref(), &bind)
             }
