@@ -311,7 +311,7 @@ ssearch "holiday schedule"                              # ssearch shim == sys se
 
 Inspects the local config file (default `~/.sysenv/config.yaml`, `-c/--config` overrides) and the models.dev model prices. **With no FIELD argument it prints the provider table (name/api_base/api_key/DOCS/CONSOLE) and the full model list (`{provider}:{name}`) together.**
 
-- `info provider [KEYWORD]` — lists every provider under `clients` with `name / api_base / api_key` plus the official `DOCS` (help docs) and `CONSOLE` URLs (matched by provider name against a built-in table; unknown providers show `-`); with KEYWORD only providers whose name contains it are kept (case-insensitive), otherwise an error lists the available names; `-o json` / `-o csv` / `--json` print a JSON array or CSV table (JSON fields `name` / `api_base` / `api_key` / `docs` / `console`)
+- `info provider [KEYWORD]` — lists every provider under `clients` with `name / api_base / api_key` plus the official `DOCS` (help docs) and `CONSOLE` URLs (matched by provider name against a built-in table; unknown providers show `-`); with KEYWORD only providers whose name contains it are kept (case-insensitive), otherwise an error lists the available names; **defaults to a YAML list** (`-o yaml` is equivalent), `-o json` / `--json` print a JSON array and `-o csv` a CSV table (JSON/YAML fields `name` / `api_base` / `api_key` / `docs` / `console`)
 - `info model [KEYWORD]` — lists every configured model as `{provider}:{name}`; with KEYWORD only models of providers whose name contains it are kept (`provider:model` / `provider:*` select specific models); when no provider matches, models whose name contains KEYWORD are listed instead; `-o json` / `-o csv` / `--json` print a JSON array or CSV table (JSON fields `provider` / `name`)
 - `info price P1,P2,...` — model price list (input / output / cache_read per 1M tokens, `$`) for the comma-separated provider names (half- or full-width commas), matched against models.dev ids / names (24 h cache, `--refresh` forces a re-fetch)
 - `info balance PROVIDER` — queries the provider's official balance with its configured `api_key`. minimax uses the official `token_plan/remains` endpoint (Token Plan remainders; without a subscription it points to the pay-as-you-go balance page); agnes uses an OpenAI-compatible billing probe (credit_grants / subscription / usage, with a console hint when no balance field is returned); alibaba-cn (Alibaba Bailian / DashScope) uses the official `models/limits` endpoint (per-model usage quotas / rate limits, which also verify the key; no API-key cash-balance endpoint exists, so it points to the Bailian console); modelscope / sensenova / bigmodel / amd / anspire expose no API-key balance endpoint, so the command prints the matching console URL. Balance lookups are always live (no cache)
@@ -319,8 +319,9 @@ Inspects the local config file (default `~/.sysenv/config.yaml`, `-c/--config` o
 
 ```
 sys ai info                              # no field: provider table + full model list
-sys ai info provider                     # every configured provider (name/api_base/api_key)
-sys ai info provider agnes               # only providers whose name contains agnes
+sys ai info provider                     # default YAML: every configured provider
+sys ai info provider -o yaml             # same as the default (YAML list)
+sys ai info provider agnes               # only providers whose name contains agnes (YAML)
 sys ai info provider -o json             # every provider as a JSON array
 sys ai info provider agnes -o csv        # filtered + CSV output
 sys ai info provider --json              # same as -o json

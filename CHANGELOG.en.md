@@ -2,6 +2,12 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.30 (2026-10-07)
+
+### Added
+- **`sys ai info provider` gained `-o yaml`, now the default format**: without `-o` it prints a YAML list (one `- name:` entry per provider with api_base / api_key / docs / console); `-o yaml` is the explicit equivalent; `-o json` / `--json` and `-o csv` are unchanged; the other `-o` commands (`ai model` / `ai provider` / `ai cn-model` / `ai info` no-field & model) also accept yaml now
+- Version 0.4.29 -> 0.4.30
+
 ## v0.4.29 (2026-10-07)
 
 ### Changed

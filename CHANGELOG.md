@@ -2,6 +2,12 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.30（2026-10-07）
+
+### 新增
+- **`sys ai info provider` 支持 `-o yaml` 并作为默认格式**：无 `-o` 时默认输出 YAML 列表（每个 provider 一个 `- name:` 条目，含 api_base / api_key / docs / console），`-o yaml` 显式等价；`-o json` / `--json`、`-o csv` 行为不变；`ai model` / `ai provider` / `ai cn-model` / `ai info`（无参与 model）等其余命令的 `-o` 同步支持 yaml 输出
+- 版本 0.4.29 -> 0.4.30
+
 ## v0.4.29（2026-10-07）
 
 ### 变更

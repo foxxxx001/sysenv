@@ -582,6 +582,10 @@ pub fn cmd_model(
                 let arr: Vec<Value> = hits.into_iter().take(take).map(|(_, m)| m).collect();
                 println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
             }
+            Some(OutFormat::Yaml) => {
+                let arr: Vec<Value> = hits.into_iter().take(take).map(|(_, m)| m).collect();
+                println!("{}", serde_yaml::to_string(&Value::Array(arr))?);
+            }
             Some(OutFormat::Csv) => {
                 println!("{MODEL_CSV_HEADER}");
                 for (pid, m) in hits.iter().take(take) {
@@ -643,6 +647,10 @@ pub fn cmd_model(
                 let arr: Vec<Value> = hits.into_iter().take(take).map(|(_, m)| m).collect();
                 println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
             }
+            Some(OutFormat::Yaml) => {
+                let arr: Vec<Value> = hits.into_iter().take(take).map(|(_, m)| m).collect();
+                println!("{}", serde_yaml::to_string(&Value::Array(arr))?);
+            }
             Some(OutFormat::Csv) => {
                 println!("{MODEL_CSV_HEADER}");
                 for (pid, m) in hits.iter().take(take) {
@@ -683,6 +691,9 @@ pub fn cmd_model(
                 Some(OutFormat::Json) => {
                     println!("{}", serde_json::to_string_pretty(&Value::Array(vec![hit]))?);
                 }
+                Some(OutFormat::Yaml) => {
+                    println!("{}", serde_yaml::to_string(&Value::Array(vec![hit]))?);
+                }
                 Some(OutFormat::Csv) => {
                     println!("{MODEL_CSV_HEADER}");
                     println!("{}", model_csv_row(&hit));
@@ -701,6 +712,10 @@ pub fn cmd_model(
             Some(OutFormat::Json) => {
                 let arr: Vec<Value> = hits.into_iter().map(|(_, m)| m).collect();
                 println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
+            }
+            Some(OutFormat::Yaml) => {
+                let arr: Vec<Value> = hits.into_iter().map(|(_, m)| m).collect();
+                println!("{}", serde_yaml::to_string(&Value::Array(arr))?);
             }
             Some(OutFormat::Csv) => {
                 println!("{MODEL_CSV_HEADER}");
@@ -722,6 +737,9 @@ pub fn cmd_model(
     match fmt {
         Some(OutFormat::Json) => {
             println!("{}", serde_json::to_string_pretty(&Value::Array(vec![hit]))?);
+        }
+        Some(OutFormat::Yaml) => {
+            println!("{}", serde_yaml::to_string(&Value::Array(vec![hit]))?);
         }
         Some(OutFormat::Csv) => {
             println!("{MODEL_CSV_HEADER}");
@@ -901,6 +919,19 @@ pub fn cmd_provider(
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
             }
+            Some(OutFormat::Yaml) => {
+                let arr: Vec<Value> = providers
+                    .iter()
+                    .take(take)
+                    .map(|(id, v)| {
+                        let mut o = v.clone();
+                        o.as_object_mut()
+                            .map(|m| m.insert("id".into(), Value::String(id.clone())));
+                        o
+                    })
+                    .collect();
+                println!("{}", serde_yaml::to_string(&Value::Array(arr))?);
+            }
             Some(OutFormat::Csv) => {
                 println!("{PROVIDER_CSV_HEADER}");
                 for (id, v) in providers.iter().take(take) {
@@ -947,6 +978,19 @@ pub fn cmd_provider(
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
             }
+            Some(OutFormat::Yaml) => {
+                let arr: Vec<Value> = hits
+                    .iter()
+                    .take(take)
+                    .map(|(id, v)| {
+                        let mut o = v.clone();
+                        o.as_object_mut()
+                            .map(|m| m.insert("id".into(), Value::String(id.clone())));
+                        o
+                    })
+                    .collect();
+                println!("{}", serde_yaml::to_string(&Value::Array(arr))?);
+            }
             Some(OutFormat::Csv) => {
                 println!("{PROVIDER_CSV_HEADER}");
                 for (id, v) in hits.iter().take(take) {
@@ -987,6 +1031,17 @@ pub fn cmd_provider(
                 })
                 .collect();
             println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
+            return Ok(());
+        }
+        Some(OutFormat::Yaml) => {
+            let arr: Vec<Value> = hits
+                .into_iter()
+                .map(|(id, mut v)| {
+                    v.as_object_mut().map(|m| m.insert("id".into(), Value::String(id)));
+                    v
+                })
+                .collect();
+            println!("{}", serde_yaml::to_string(&Value::Array(arr))?);
             return Ok(());
         }
         Some(OutFormat::Csv) => {
@@ -1059,6 +1114,7 @@ pub fn print_server_config(config: Option<&Path>) -> Result<()> {
 }
 
 /// One row of `info provider` (a configured client).
+#[derive(serde::Serialize)]
 struct ProviderInfoRow {
     name: String,
     api_base: String,
@@ -1388,6 +1444,31 @@ pub fn cmd_info(
                 Some(OutFormat::Csv) => {
                     bail!("`sys ai info` without a field does not support CSV; use `info provider` / `info model` for CSV, or run `sys ai info` for the combined text view")
                 }
+                Some(OutFormat::Yaml) => {
+                    let providers: Vec<Value> = provs
+                        .iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "name": r.name,
+                                "api_base": r.api_base,
+                                "api_key": r.api_key,
+                                "docs": r.docs,
+                                "console": r.console,
+                            })
+                        })
+                        .collect();
+                    let models: Vec<Value> = mods
+                        .iter()
+                        .map(|r| serde_json::json!({"provider": r.provider, "name": r.name}))
+                        .collect();
+                    println!(
+                        "{}",
+                        serde_yaml::to_string(&serde_json::json!({
+                            "providers": providers,
+                            "models": models,
+                        }))?
+                    );
+                }
                 None => {
                     print_provider_table(&provs);
                     println!();
@@ -1423,8 +1504,9 @@ pub fn cmd_info(
                         println!("{},{},{},{},{}", r.name, r.api_base, r.api_key, r.docs, r.console);
                     }
                 }
-                None => {
-                    print_provider_table(&rows);
+                // YAML is the default view of `info provider`.
+                Some(OutFormat::Yaml) | None => {
+                    println!("{}", serde_yaml::to_string(&rows)?);
                 }
             }
         }
@@ -1444,6 +1526,13 @@ pub fn cmd_info(
                     for r in &rows {
                         println!("{},{}", r.provider, r.name);
                     }
+                }
+                Some(OutFormat::Yaml) => {
+                    let arr: Vec<Value> = rows
+                        .iter()
+                        .map(|r| serde_json::json!({"provider": r.provider, "name": r.name}))
+                        .collect();
+                    println!("{}", serde_yaml::to_string(&Value::Array(arr))?);
                 }
                 None => {
                     for r in &rows {
@@ -2495,6 +2584,10 @@ fn output_dl(hits: &[DlModel], take: usize, fmt: Option<OutFormat>, list_mode: b
         Some(OutFormat::Json) => {
             let arr: Vec<&DlModel> = hits.iter().take(take).collect();
             println!("{}", serde_json::to_string_pretty(&arr)?);
+        }
+        Some(OutFormat::Yaml) => {
+            let arr: Vec<&DlModel> = hits.iter().take(take).collect();
+            println!("{}", serde_yaml::to_string(&arr)?);
         }
         Some(OutFormat::Csv) => {
             println!("{DL_CSV_HEADER}");

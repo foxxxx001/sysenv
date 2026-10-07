@@ -487,6 +487,8 @@ enum OutFormat {
     Json,
     /// CSV table output
     Csv,
+    /// YAML list output
+    Yaml,
 }
 
 #[derive(Args)]
