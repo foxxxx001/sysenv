@@ -1374,6 +1374,7 @@ fn info_balance(cfg: &chat::Config, keyword: &str) -> Result<()> {
     match p.name.to_ascii_lowercase().as_str() {
         "minimax" => balance_minimax(p),
         "agnes" => balance_openai_billing(p),
+        "alibaba-cn" | "alibaba" | "dashscope" | "bailian" => balance_alibaba(p),
         "modelscope" => balance_console_only(p, "https://modelscope.cn（控制台 / 阿里云费用中心）"),
         "sensenova" => balance_console_only(p, "https://console.sensecore.cn（费用中心）"),
         "bigmodel" => balance_console_only(p, "https://bigmodel.cn/console（财务总览）"),
@@ -1444,6 +1445,76 @@ fn balance_minimax(p: &chat::Provider) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// 阿里云百炼（DashScope）：官方 `GET /api/v1/models/limits` 返回该 Key 下
+/// 各模型的用量限额（限流配额），可验证 Key 有效性；官方无 Key 级现金余额
+/// API，账户余额/费用需登录控制台查看。
+fn balance_alibaba(p: &chat::Provider) -> Result<()> {
+    let url = "https://dashscope.aliyuncs.com/api/v1/models/limits?page_no=1&page_size=100";
+    let resp = reqwest::blocking::Client::new()
+        .get(url)
+        .header(AUTHORIZATION, format!("Bearer {}", p.api_key))
+        .header(CONTENT_TYPE, "application/json")
+        .timeout(Duration::from_secs(20))
+        .send()
+        .with_context(|| format!("cannot query Alibaba (DashScope) limits at {url}"))?;
+    if !resp.status().is_success() {
+        bail!("Alibaba (DashScope) limits API returned HTTP {} at {url}", resp.status());
+    }
+    let v: Value = serde_json::from_str(&resp.text().context("cannot read Alibaba limits response")?)
+        .context("invalid JSON from Alibaba limits API")?;
+    let total = v
+        .pointer("/output/total")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(0);
+    let rows = alibaba_limits_rows(&v);
+    println!("官方未提供 API Key 现金余额查询接口；以下为该 Key 可查的用量限额（限流配额，非余额）：");
+    if rows.is_empty() {
+        println!("  （接口返回空，请在控制台查看）");
+    } else {
+        let w_model = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(12);
+        println!("{:<w_model$}  {:>14}  {:>22}", "模型", "请求频率", "用量限制(tokens/周期)");
+        for (model, req, usage) in rows.iter().take(20) {
+            println!("{model:<w_model$}  {req:>14}  {usage:>22}");
+        }
+        if rows.len() > 20 {
+            println!("  …共 {total} 个模型（仅显示前 20 个，完整列表见百炼控制台）");
+        }
+    }
+    println!("账户余额 / 费用明细请在 https://bailian.console.aliyun.com 控制台查看。");
+    Ok(())
+}
+
+/// Extract (model, request-limit, usage-limit) rows from the limits response
+/// (pure, unit-testable).
+fn alibaba_limits_rows(v: &Value) -> Vec<(String, String, String)> {
+    let quotas = v.pointer("/output/quotas").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+    quotas
+        .iter()
+        .filter_map(|q| {
+            let model = q.get("model").and_then(|x| x.as_str()).unwrap_or("?").to_string();
+            let ml = q.get("model_limit").and_then(|x| x.as_object());
+            let req = ml.and_then(|m| m.get("request_limit")).and_then(|x| x.as_u64());
+            let req_period = ml.and_then(|m| m.get("request_limit_period")).and_then(|x| x.as_u64());
+            let usage = ml.and_then(|m| m.get("usage_limit")).and_then(|x| x.as_u64());
+            let usage_period = ml.and_then(|m| m.get("usage_limit_period")).and_then(|x| x.as_u64());
+            let req_s = match (req, req_period) {
+                (Some(r), Some(1)) => format!("{r}/s"),
+                (Some(r), Some(60)) => format!("{r}/min"),
+                (Some(r), Some(6)) => format!("{r}/6s"),
+                (Some(r), Some(per)) => format!("{r}/{per}s"),
+                (Some(r), None) => format!("{r}"),
+                _ => "-".to_string(),
+            };
+            let usage_s = match (usage, usage_period) {
+                (Some(u), Some(per)) => format!("{u}/{per}s"),
+                (Some(u), None) => format!("{u}"),
+                _ => "-".to_string(),
+            };
+            Some((model, req_s, usage_s))
+        })
+        .collect()
 }
 
 /// OpenAI 兼容账单探测（agnes 等）：依次尝试 credit_grants / subscription /
@@ -1522,6 +1593,7 @@ fn info_sale_price(cfg: &chat::Config, keyword: &str, refresh: bool) -> Result<(
     match p.name.to_ascii_lowercase().as_str() {
         "agnes" => sale_price_agnes(refresh),
         "minimax" => sale_price_minimax(refresh),
+        "alibaba-cn" | "alibaba" | "dashscope" | "bailian" => sale_price_url(p, "https://help.aliyun.com/zh/model-studio/models（模型列表与计费说明）"),
         "modelscope" => sale_price_url(p, "https://modelscope.cn/models（模型详情页含计费说明）"),
         "sensenova" => sale_price_url(p, "https://console.sensecore.cn/micro/help/docs/model-as-a-service/nova/（产品定价文档）"),
         "bigmodel" => sale_price_url(p, "https://docs.bigmodel.cn/cn/guide/start/price"),
@@ -3045,5 +3117,59 @@ mod tests {
         // "s" 同时命中 agnes / modelscope → 报歧义
         let err = find_provider(&cfg, "s").unwrap_err();
         assert!(err.to_string().contains("matches multiple"));
+    }
+
+    #[test]
+    fn alibaba_limits_parses_quota_rows() {
+        // 结构与实测 https://dashscope.aliyuncs.com/api/v1/models/limits 一致
+        let v: Value = serde_json::json!({
+            "code": null,
+            "success": true,
+            "output": {
+                "total": 519,
+                "quotas": [
+                    {
+                        "model": "qwen3.8-max",
+                        "workspace_id": "ws-bvxqb1qp3jh8j2ha",
+                        "model_limit": {
+                            "request_limit": null,
+                            "request_limit_period": null,
+                            "usage_limit": 500000,
+                            "usage_limit_field": "total_tokens",
+                            "usage_limit_period": 6,
+                            "async_user_queue_limit": null,
+                            "async_user_concurrency_limit": null
+                        },
+                        "workspace_limit": null
+                    },
+                    {
+                        "model": "qwen-image-max",
+                        "workspace_id": "ws-bvxqb1qp3jh8j2ha",
+                        "model_limit": {
+                            "request_limit": 2,
+                            "request_limit_period": 60,
+                            "usage_limit": 1000000,
+                            "usage_limit_field": "total_tokens",
+                            "usage_limit_period": 60,
+                            "async_user_queue_limit": null,
+                            "async_user_concurrency_limit": null
+                        },
+                        "workspace_limit": null
+                    },
+                    {
+                        "model": "no-limits-model",
+                        "model_limit": null,
+                        "workspace_limit": null
+                    }
+                ]
+            }
+        });
+        let rows = alibaba_limits_rows(&v);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], ("qwen3.8-max".into(), "-".into(), "500000/6s".into()));
+        assert_eq!(rows[1], ("qwen-image-max".into(), "2/min".into(), "1000000/60s".into()));
+        assert_eq!(rows[2], ("no-limits-model".into(), "-".into(), "-".into()));
+        // 空响应
+        assert!(alibaba_limits_rows(&serde_json::json!({"output": {"quotas": []}})).is_empty());
     }
 }

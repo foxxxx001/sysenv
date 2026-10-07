@@ -2,6 +2,15 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sysenv-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.16（2026-10-07）
+
+### 新增
+- **`sysenv ai info` 支持阿里云百炼（`alibaba-cn`）**：
+  - `info balance alibaba-cn`：调用官方 `GET /api/v1/models/limits` 验证 Key 并列出各模型用量限额（限流配额，非现金余额）；官方无 Key 级余额接口，明确提示到百炼控制台查看账户余额/费用
+  - `info sale-price alibaba-cn`：给出百炼官方模型列表与计费说明页地址（未接入自动抓取）
+  - `info price alibaba-cn`：models.dev 已有 `alibaba-cn`（Alibaba (China)，91 个模型）条目，直接命中
+- 版本 0.4.15 -> 0.4.16
+
 ## v0.4.15（2026-10-07）
 
 ### 新增

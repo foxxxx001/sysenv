@@ -304,8 +304,8 @@ Inspects the local config file (default `~/.sysenv/config.yaml`, `-c/--config` o
 - `info provider [KEYWORD]` — lists every provider under `clients` with `name / api_base / api_key`; with KEYWORD only providers whose name contains it are kept (case-insensitive), otherwise an error lists the available names
 - `info model [KEYWORD]` — lists every configured model as `{provider}:{name}`; with KEYWORD only models of providers whose name contains it are kept (`provider:model` / `provider:*` select specific models); when no provider matches, models whose name contains KEYWORD are listed instead
 - `info price P1,P2,...` — model price list (input / output / cache_read per 1M tokens, `$`) for the comma-separated provider names (half- or full-width commas), matched against models.dev ids / names (24 h cache, `--refresh` forces a re-fetch)
-- `info balance PROVIDER` — queries the provider's official balance with its configured `api_key`. minimax uses the official `token_plan/remains` endpoint (Token Plan remainders; without a subscription it points to the pay-as-you-go balance page); agnes uses an OpenAI-compatible billing probe (credit_grants / subscription / usage, with a console hint when no balance field is returned); modelscope / sensenova / bigmodel / amd / anspire expose no API-key balance endpoint, so the command prints the matching console URL. Balance lookups are always live (no cache)
-- `info sale-price PROVIDER` — scrapes the provider's official pricing page and prints every model's sale price. agnes uses `wiki.agnes-ai.cn` (text / image / video models, list + current price in ¥); minimax uses `platform.minimaxi.com` (language-model input / output / cache prices, ¥ per million tokens); other providers print their official pricing-page URL. Pricing pages are cached 24 h, `--refresh` forces a re-fetch
+- `info balance PROVIDER` — queries the provider's official balance with its configured `api_key`. minimax uses the official `token_plan/remains` endpoint (Token Plan remainders; without a subscription it points to the pay-as-you-go balance page); agnes uses an OpenAI-compatible billing probe (credit_grants / subscription / usage, with a console hint when no balance field is returned); alibaba-cn (Alibaba Bailian / DashScope) uses the official `models/limits` endpoint (per-model usage quotas / rate limits, which also verify the key; no API-key cash-balance endpoint exists, so it points to the Bailian console); modelscope / sensenova / bigmodel / amd / anspire expose no API-key balance endpoint, so the command prints the matching console URL. Balance lookups are always live (no cache)
+- `info sale-price PROVIDER` — scrapes the provider's official pricing page and prints every model's sale price. agnes uses `wiki.agnes-ai.cn` (text / image / video models, list + current price in ¥); minimax uses `platform.minimaxi.com` (language-model input / output / cache prices, ¥ per million tokens); alibaba-cn prints the official Bailian model list & billing page; other providers print their official pricing-page URL. Pricing pages are cached 24 h, `--refresh` forces a re-fetch
 
 ```
 sysenv ai info provider                     # every configured provider (name/api_base/api_key)
@@ -318,6 +318,7 @@ sysenv ai info model modelscope:*           # every modelscope model
 sysenv ai info price openai,anthropic       # model prices of two providers
 sysenv ai info price "openai，deepseek"     # full-width commas work too
 sysenv ai info balance minimax              # query MiniMax's official balance with its api_key
+sysenv ai info balance alibaba-cn           # Alibaba Bailian: official limits + console hint
 sysenv ai info sale-price agnes             # scrape agnes' official pricing page (all models)
 ```
 
