@@ -1,7 +1,8 @@
 //! `sys short` — install shell shims for every subcommand so it can be
 //! invoked from anywhere with a short name:
 //!   spath = sys path, senv = sys env, slink = sys link,
-//!   shttp = sys http, sai = sys ai, ssearch = sys search
+//!   shttp = sys http, sai = sys ai, ssearch = sys search,
+//!   stask = sys task, sfile = sys file, scon = sys con
 
 use crate::link;
 use crate::store::common;
@@ -18,6 +19,8 @@ pub const SHIMS: &[(&str, &str)] = &[
     ("sai", "ai"),
     ("ssearch", "search"),
     ("stask", "task"),
+    ("sfile", "file"),
+    ("scon", "con"),
 ];
 
 fn shim_filename(name: &str) -> String {
@@ -115,11 +118,11 @@ mod tests {
 
     #[test]
     fn shim_names_and_targets() {
-        assert_eq!(SHIMS.len(), 7);
+        assert_eq!(SHIMS.len(), 9);
         let subs: Vec<&str> = SHIMS.iter().map(|(_, s)| *s).collect();
-        assert_eq!(subs, vec!["path", "env", "link", "http", "ai", "search", "task"]);
+        assert_eq!(subs, vec!["path", "env", "link", "http", "ai", "search", "task", "file", "con"]);
         let names: Vec<&str> = SHIMS.iter().map(|(n, _)| *n).collect();
-        assert_eq!(names, vec!["spath", "senv", "slink", "shttp", "sai", "ssearch", "stask"]);
+        assert_eq!(names, vec!["spath", "senv", "slink", "shttp", "sai", "ssearch", "stask", "sfile", "scon"]);
     }
 
     #[cfg(windows)]

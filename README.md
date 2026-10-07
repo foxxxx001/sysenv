@@ -18,7 +18,7 @@
 
 * **httpie 兼容 HTTP 客户端**：参数与 httpie 保持一致
 
-* **快捷命令垫片**：一键生成 `spath / senv / slink / shttp / sai / ssearch / stask` 短命令
+* **快捷命令垫片**：一键生成 `spath / senv / slink / shttp / sai / ssearch / stask / sfile / scon` 短命令
 
 
 
@@ -35,7 +35,7 @@ Commands:
   ai     Query the models.dev database of AI models & providers
   search Web search via the configured Bocha AI API (web-search; --ai uses ai-search)
   task   Query and kill processes (list PID/name/path; kill by PID or name)
-  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask)
+  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon)
 ```
 
 
@@ -58,7 +58,7 @@ Commands:
 | 格式转换      | `con`                | json / csv / md / yaml 互转：默认读 stdin（`cat a.json | sys con`），`-file` 读文件，`-i` 输入格式，`-o` 输出格式，`-out` 写文件；表格类转对象数组（类型推断 + 转义） |
 | 联网搜索      | `search`             | 博查 AI 网页搜索 API（`POST api.bochaai.com/v1/web-search`）：`--freshness`（时间过滤）/ `--summary`（AI 摘要）/ `--count`（1-50）/ `--page` / `--include-domains` / `--exclude-domains`（域名白黑名单），参数与官网接口一致；key 取自配置 `search` 段；`--json` 原始响应 / `--debug` 请求与响应。`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡（`--no-answer` 关闭 AI 答案） |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
-| 快捷垫片      | `short`              | 一键安装七种短命令（spath/senv/slink/shttp/sai/ssearch/stask）；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
+| 快捷垫片      | `short`              | 一键安装九种短命令（spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon）；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
 
 
 
@@ -809,6 +809,8 @@ sys http --verify no https://self-signed.example  # 跳过证书校验
 | `shttp` | `sys http` |
 | `sai`   | `sys ai`   |
 | `stask` | `sys task` |
+| `sfile` | `sys file` |
+| `scon`  | `sys con`  |
 
 ### 示例
 

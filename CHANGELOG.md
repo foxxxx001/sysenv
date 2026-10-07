@@ -2,6 +2,12 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.31（2026-10-07）
+
+### 新增
+- **`sys file` / `sys con` 快捷垫片 `sfile` / `scon`**：`sys short` 现在安装九个短命令（spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon），`sfile` 等价 `sys file`（文本搜索/替换/文件查看），`scon` 等价 `sys con`（json/csv/md/yaml 转换）
+- 版本 0.4.30 -> 0.4.31
+
 ## v0.4.30（2026-10-07）
 
 ### 新增

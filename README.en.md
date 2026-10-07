@@ -9,7 +9,7 @@ A cross-platform (Windows / Ubuntu) system Http client & AI model lookup & PATH 
 - **AI model lookup**: query model & provider information from models.dev by name
 - **Web search**: `sys search` runs web searches through the Bocha AI API (`api.bochaai.com/v1/web-search`) with official request parameters; `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards
 - **httpie-compatible HTTP client**: flags follow httpie conventions
-- **Shortcut shims**: install `spath / senv / slink / shttp / sai / ssearch / stask` short commands with one command
+- **Shortcut shims**: install `spath / senv / slink / shttp / sai / ssearch / stask / sfile / scon` short commands with one command
 
 ```
 sys 0.4.13 (Made by Gary-china)
@@ -24,7 +24,7 @@ Commands:
   ai     Query the models.dev database of AI models & providers
   search Web search via the configured Bocha AI API (web-search; --ai uses ai-search)
   task   Query and kill processes (list PID/name/path; kill by PID or name)
-  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask)
+  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon)
 ```
 
 ---
@@ -43,7 +43,7 @@ Commands:
 | Text search & replace | `file` | fd/sd-style: 1 arg searches stdin (an extension like `me.txt` displays that file; quotes force search); 2 args search a directory tree of text/source files (`-e` / `-i` / `-t` / `-w` / `-c`); 3 args OLD NEW PATH replace in place; `-S` size / `--newer` / `--older` time / `-d` depth filters; lists files when no PATTERN is given |
 | Format conversion | `con` | json / csv / md / yaml interconversion: stdin by default (`cat a.json | sys con`), `-file` reads a file, `-i` input format, `-o` output format, `-out` writes a file; tables map to/from object arrays (type inference + escaping) |
 | HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
-| Shortcut shims | `short` | installs seven short commands at once (spath/senv/slink/shttp/sai/ssearch/stask); Windows `.cmd` / Linux sh scripts; auto PATH registration |
+| Shortcut shims | `short` | installs nine short commands at once (spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon); Windows `.cmd` / Linux sh scripts; auto PATH registration |
 
 ---
 
@@ -534,6 +534,8 @@ sys http --verify no https://self-signed.example  # skip certificate verificatio
 | `shttp` | `sys http` |
 | `sai` | `sys ai` |
 | `stask` | `sys task` |
+| `sfile` | `sys file` |
+| `scon` | `sys con` |
 
 ### Examples
 

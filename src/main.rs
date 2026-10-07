@@ -22,7 +22,7 @@ use std::process::ExitCode;
     name = "sys",
     version = concat!(env!("CARGO_PKG_VERSION"), " (Made by Gary-china)"),
     about = "System PATH & environment manager + httpie-compatible HTTP client (Windows / Ubuntu)",
-    long_about = "sys manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, runs web searches through the Bocha AI API (config `search` section), installs command shims (spath/senv/slink/shttp/sai/stask/ssearch), and ships an httpie-compatible HTTP client.
+    long_about = "sys manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, runs web searches through the Bocha AI API (config `search` section), installs command shims (spath/senv/slink/shttp/sai/stask/ssearch/sfile/scon), and ships an httpie-compatible HTTP client.
 
 Examples:
   sys path list
@@ -96,7 +96,7 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     File(FileArgs),
     /// Convert between json / csv / md / yaml (stdin or -file; -i input; -o output; -out writes a file)
     Con(ConArgs),
-    /// Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask)
+    /// Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask/ssearch/sfile/scon)
     Short(ShortArgs),
 }
 

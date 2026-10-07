@@ -2,6 +2,12 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.31 (2026-10-07)
+
+### Added
+- **`sfile` / `scon` shortcut shims for `sys file` / `sys con`**: `sys short` now installs nine short commands (spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon); `sfile` ≡ `sys file` (text search/replace/file view), `scon` ≡ `sys con` (json/csv/md/yaml conversion)
+- Version 0.4.30 -> 0.4.31
+
 ## v0.4.30 (2026-10-07)
 
 ### Added
