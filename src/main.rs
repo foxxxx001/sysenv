@@ -297,6 +297,9 @@ struct AiModelArgs {
     /// Show only models of providers whose id or name contains this value (case-insensitive substring)
     #[arg(long, value_name = "PROVIDER")]
     provider: Option<String>,
+    /// Show only models whose cost.input and cost.output are both <= PRICE (default 0 = free only; missing cost counts as 0)
+    #[arg(long, value_name = "PRICE")]
+    price: Option<f64>,
     /// Show only models with open_weights enabled
     #[arg(long)]
     open: bool,
@@ -793,6 +796,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             m.open,
             m.model_type.as_deref(),
             m.provider.as_deref(),
+            m.price,
         ),
         AiCmd::CnModel(m) => ai::cmd_cn_model(
             m.name.as_deref(),

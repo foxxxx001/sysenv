@@ -349,6 +349,28 @@ fn filter_by_provider(models: Vec<ModelHit>, data: &Value, provider: &str) -> Ve
         .collect()
 }
 
+/// Keep only models whose `cost.input` and `cost.output` are both <= `price`
+/// (per 1M tokens). Models without a `cost` field (or missing one side) count
+/// as 0, so `--price 0` keeps free and unpriced models alike.
+fn filter_by_price(models: Vec<ModelHit>, price: f64) -> Vec<ModelHit> {
+    models
+        .into_iter()
+        .filter(|(_, m)| {
+            let cost_in = m
+                .get("cost")
+                .and_then(|c| c.get("input"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let cost_out = m
+                .get("cost")
+                .and_then(|c| c.get("output"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            cost_in <= price && cost_out <= price
+        })
+        .collect()
+}
+
 /// The modality family of a model, e.g. `text,image` (union of input and
 /// output modalities; empty when unknown).
 fn model_modalities(m: &Value) -> String {
@@ -570,9 +592,12 @@ pub fn cmd_model(
     open: bool,
     model_type: Option<&str>,
     provider: Option<&str>,
+    price: Option<f64>,
 ) -> Result<()> {
     let data = fetch_data(refresh)?;
     let fmt = out.or(if json { Some(OutFormat::Json) } else { None });
+    // `--price` defaults to 0: keep only free (or unpriced) models.
+    let price = price.unwrap_or(0.0);
 
     // `sai model` with no arguments defaults to listing every model.
     let bare = name.is_none() && search.is_none() && !list;
@@ -598,6 +623,7 @@ pub fn cmd_model(
             Some(p) => filter_by_provider(hits, &data, p),
             None => hits,
         };
+        let hits = filter_by_price(hits, price);
         let total_hits = hits.len();
         let take = limit.unwrap_or(default_limit).max(1);
         match fmt {
@@ -631,6 +657,7 @@ pub fn cmd_model(
                 if let Some(p) = provider {
                     footer.push_str(&format!(" of providers containing `{p}`"));
                 }
+                footer.push_str(&format!(" with input/output cost <= {price}"));
                 if total_hits > shown {
                     footer.push_str(" (use --limit to show more)");
                 }
@@ -655,6 +682,7 @@ pub fn cmd_model(
         Some(p) => filter_by_provider(hits, &data, p),
         None => hits,
     };
+    let hits = filter_by_price(hits, price);
     if hits.is_empty() {
         let mut msg = format!("no model matches `{query}`");
         if let Some(d) = &date {
@@ -669,6 +697,7 @@ pub fn cmd_model(
         if let Some(p) = provider {
             msg.push_str(&format!(" of providers containing `{p}`"));
         }
+        msg.push_str(&format!(" with input/output cost <= {price}"));
         bail!("{msg} (source: {DATA_URL})");
     }
 
@@ -3061,6 +3090,20 @@ mod tests {
         assert_eq!(filter_by_provider(all.clone(), &data, "Groq").len(), 1);
         // no match
         assert!(filter_by_provider(all.clone(), &data, "zzz").is_empty());
+    }
+
+    #[test]
+    fn filter_by_price_input_output_le() {
+        let data = sample_data();
+        let all = all_models(&data);
+        // default 0: only models without a cost field (counted as 0) pass
+        assert_eq!(filter_by_price(all.clone(), 0.0).len(), 2);
+        // input 1.6 <= 2 but output 6.4 > 2 -> gpt-4.1 excluded
+        assert_eq!(filter_by_price(all.clone(), 2.0).len(), 2);
+        // price above both sides keeps every model
+        assert_eq!(filter_by_price(all.clone(), 10.0).len(), 3);
+        // exact equality counts (<=)
+        assert_eq!(filter_by_price(all.clone(), 6.4).len(), 3);
     }
 
     #[test]
