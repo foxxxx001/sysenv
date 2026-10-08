@@ -2,6 +2,12 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.35 (2026-10-09)
+
+### Changed
+- **`sys ai info list-model` text view shows `CREATED` as local date-time**: the unix-second timestamp returned by OpenAI-compatible providers is now displayed as local `YYYY-MM-DD HH:MM:SS` (system timezone) in the text view; Anthropic ISO `created_at` and empty / non-numeric values pass through unchanged; `-o json` / `-o csv` keep the API's raw timestamp (machine-readable). Added a pure `fmt_created` helper with a round-trip unit test
+- Version 0.4.34 -> 0.4.35
+
 ## v0.4.34 (2026-10-09)
 
 ### Added

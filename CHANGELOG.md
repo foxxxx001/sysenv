@@ -2,6 +2,12 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.35（2026-10-09）
+
+### 变更
+- **`sys ai info list-model` 文本视图的 `CREATED` 时间戳转为本地日期时间**：openai 兼容 provider 返回的 unix 秒级时间戳在文本视图自动显示为本地时间 `YYYY-MM-DD HH:MM:SS`（基于系统时区）；anthropic 的 ISO `created_at` 及空/非数字值原样透传；`-o json` / `-o csv` 保持 API 原始时间戳不变（机器可读）。新增 `fmt_created` 纯函数并附带往返校验单元测试
+- 版本 0.4.34 -> 0.4.35
+
 ## v0.4.34（2026-10-09）
 
 ### 新增

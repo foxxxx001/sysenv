@@ -1761,6 +1761,19 @@ fn model_list_rows(v: &Value) -> Vec<ModelListRow> {
         .collect()
 }
 
+/// Convert a model's created value for display: a unix timestamp (seconds)
+/// becomes the local date-time `YYYY-MM-DD HH:MM:SS`; anything else (Anthropic
+/// ISO `created_at`, empty, non-numeric) passes through unchanged.
+fn fmt_created(raw: &str) -> String {
+    if let Ok(ts) = raw.parse::<i64>() {
+        if let Some(dt) = chrono::DateTime::from_timestamp(ts, 0) {
+            let local = dt.with_timezone(&chrono::Local);
+            return local.format("%Y-%m-%d %H:%M:%S").to_string();
+        }
+    }
+    raw.to_string()
+}
+
 /// `sys ai info list-model PROVIDER` — fetch the provider's model list from
 /// its own models API and print it.
 fn info_model_list(cfg: &chat::Config, keyword: &str, fmt: Option<OutFormat>) -> Result<()> {
@@ -1841,7 +1854,7 @@ fn info_model_list(cfg: &chat::Config, keyword: &str, fmt: Option<OutFormat>) ->
             let w_own = rows.iter().map(|r| r.owned_by.chars().count()).max().unwrap_or(8).max(8);
             println!("{:<w_id$}  {:<w_own$}  {}", "MODEL", "OWNED_BY", "CREATED");
             for r in &rows {
-                println!("{:<w_id$}  {:<w_own$}  {}", r.id, r.owned_by, r.created);
+                println!("{:<w_id$}  {:<w_own$}  {}", r.id, r.owned_by, fmt_created(&r.created));
             }
         }
     }
@@ -3821,6 +3834,28 @@ mod tests {
         // Empty / malformed responses yield no rows.
         assert!(model_list_rows(&serde_json::json!({"data": []})).is_empty());
         assert!(model_list_rows(&serde_json::json!({"error": "x"})).is_empty());
+    }
+
+    #[test]
+    fn fmt_created_converts_unix_timestamp_to_local_datetime() {
+        // A unix timestamp becomes a local "YYYY-MM-DD HH:MM:SS" string that
+        // round-trips back to the same instant (timezone-independent check).
+        let s = fmt_created("1785767088");
+        assert_eq!(s.len(), 19);
+        assert_eq!(&s[4..5], "-");
+        assert_eq!(&s[10..11], " ");
+        let dt = chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S").unwrap();
+        let local = chrono::TimeZone::from_local_datetime(&chrono::Local, &dt)
+            .single()
+            .unwrap();
+        assert_eq!(local.timestamp(), 1785767088);
+        // Anthropic ISO created_at passes through unchanged.
+        assert_eq!(fmt_created("2024-10-22T00:00:00Z"), "2024-10-22T00:00:00Z");
+        // Empty / non-numeric values pass through unchanged.
+        assert_eq!(fmt_created(""), "");
+        assert_eq!(fmt_created("n/a"), "n/a");
+        // Out-of-range unix values (e.g. 99999999999999) fall back to raw.
+        assert_eq!(fmt_created("99999999999999"), "99999999999999");
     }
 
     #[test]
