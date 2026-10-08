@@ -37,7 +37,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 const DEFAULT_MAX_TOKENS: u64 = 1024;
-const ANTHROPIC_VERSION: &str = "2023-06-01";
+pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
 const STREAM_TIMEOUT: Duration = Duration::from_secs(600);
 pub(crate) const USER_AGENT_STR: &str = concat!("sys/", env!("CARGO_PKG_VERSION"));
 

@@ -2,6 +2,24 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.34 (2026-10-09)
+
+### Added
+- **`sys ai info` gained `list-model PROVIDER`**: queries the provider's own models API for the models its configured api_key can actually use — OpenAI-compatible providers hit `GET {api_base}/models` (Bearer api_key), anthropic providers hit `GET {api_base}/v1/models` (`{api_base}/models` when api_base already ends with `/v1`; x-api-key / anthropic-version); Anthropic `next_page` pagination is followed automatically (up to 20 pages). The text view prints an aligned `MODEL / OWNED_BY / CREATED` table (OpenAI `owned_by` / `created` and Anthropic `display_name` / `created_at` are normalized into the same columns); `-o json` / `-o csv` / `--json` print a JSON array or CSV table (fields `id` / `owned_by` / `created`). Always live, no cache
+- Version 0.4.33 -> 0.4.34
+
+## v0.4.33 (2026-10-08)
+
+### Added
+- **`sys ai model --price PRICE`**: keeps only models whose `cost.input` and `cost.output` are both <= PRICE (USD per 1M tokens; a missing cost counts as 0); optional, defaults to 0 = free / unpriced models only; combines with `--provider` / `--model-type` / `--date` / `--open` and name search; the text view footer and the no-match hint annotate the price condition
+- Version 0.4.32 -> 0.4.33
+
+## v0.4.32 (2026-10-08)
+
+### Added
+- **`sys ai model --provider PROVIDER`**: keeps only models whose provider id or name contains the value (case-insensitive substring, e.g. `--provider openai` / `--provider 阿里`), stacks with the `--model-type` / `--date` / `--open` filters; works with the no-arg list, `NAME` and `--search`; the text view footer and the no-match hint annotate the provider filter
+- Version 0.4.31 -> 0.4.32
+
 ## v0.4.31 (2026-10-07)
 
 ### Added

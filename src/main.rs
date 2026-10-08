@@ -41,6 +41,7 @@ Examples:
   sys ai info price openai,anthropic
   sys ai info balance minimax
   sys ai info sale-price agnes
+  sys ai info list-model agnes
   sys search \"今天的头条新闻\"
   sys task list
   sys task kill 1234
@@ -340,7 +341,7 @@ struct CnModelArgs {
 
 #[derive(Args)]
 struct AiInfoArgs {
-    /// What to show: provider | model | price (omitted: the configured providers and models together)
+    /// What to show: provider | model | price | list-model (omitted: the configured providers and models together)
     #[arg(value_name = "FIELD")]
     field: Option<String>,
     /// provider KEYWORD: keep only providers whose name contains KEYWORD;
@@ -348,7 +349,9 @@ struct AiInfoArgs {
     /// (or `provider:model` / `provider:*` to select specific models);
     /// price P1,P2,...: comma-separated provider names to look up models.dev prices;
     /// balance PROVIDER: query the provider's official balance with its api_key;
-    /// sale-price PROVIDER: scrape the provider's official pricing page
+    /// sale-price PROVIDER: scrape the provider's official pricing page;
+    /// list-model PROVIDER: query the provider's own models API and list the
+    /// models its configured api_key can use
     #[arg(value_name = "PARAM")]
     param: Vec<String>,
     /// Force re-fetching the models.dev price data (otherwise use the 24 h cache)
@@ -358,11 +361,11 @@ struct AiInfoArgs {
     #[arg(short = 'c', long, value_name = "FILE")]
     config: Option<PathBuf>,
     /// Print the raw JSON (as a JSON array) instead of the formatted view
-    /// (supported by `info provider` and `info model`)
+    /// (supported by `info provider`, `info model` and `info list-model`)
     #[arg(long)]
     json: bool,
     /// Output format: json (JSON array) or csv (table); default is a formatted
-    /// text view (supported by `info provider` and `info model`)
+    /// text view (supported by `info provider`, `info model` and `info list-model`)
     #[arg(short = 'o', long = "output-format", value_name = "FORMAT", value_enum, conflicts_with = "json")]
     output: Option<OutFormat>,
 }

@@ -2,6 +2,12 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.34（2026-10-09）
+
+### 新增
+- **`sys ai info` 新增 `list-model PROVIDER`**：用该 provider 自己的 models 接口实时查询其可用模型列表——OpenAI 兼容 provider 请求 `GET {api_base}/models`（Bearer api_key），anthropic 类型请求 `GET {api_base}/v1/models`（api_base 已以 `/v1` 结尾时直接用 `{api_base}/models`，x-api-key / anthropic-version）；Anthropic `next_page` 分页自动翻页（上限 20 页）。文本视图打印 `MODEL / OWNED_BY / CREATED` 对齐表（openai 的 `owned_by` / `created`、anthropic 的 `display_name` / `created_at` 自动归一为同列）；`-o json` / `-o csv` / `--json` 输出 JSON 数组或 CSV 表（字段 `id` / `owned_by` / `created`）。实时查询，不走缓存
+- 版本 0.4.33 -> 0.4.34
+
 ## v0.4.33（2026-10-08）
 
 ### 新增

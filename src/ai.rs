@@ -1159,6 +1159,10 @@ pub fn cmd_provider(
 // - `info price P1,P2,...`     prints the per-1M-token price list (input /
 //   output / cache_read) of the comma-separated providers (source: models.dev,
 //   24 h cache, --refresh to force).
+// - `info list-model PROVIDER`  queries the provider's own models API
+//   (`GET {api_base}/models` for OpenAI-compatible, `{api_base}/v1/models` for
+//   Anthropic) and prints the models the configured api_key can actually use
+//   (live query, no cache; Anthropic `next_page` pagination is followed).
 // ---------------------------------------------------------------------------
 
 /// Grouped view used by `sys ai server --help`: one line per configured
@@ -1454,8 +1458,13 @@ fn print_provider_table(rows: &[ProviderInfoRow]) {
 ///   print every model's sale price (agnes / minimax scraped; the rest point
 ///   to their official pricing pages). Pages are cached 24 h, `--refresh`
 ///   forces a re-fetch.
+/// - `list-model PROVIDER` — query the provider's own models API and print
+///   the models its configured api_key can use (`GET {api_base}/models` for
+///   OpenAI-compatible providers, `{api_base}/v1/models` for Anthropic; live
+///   query, no cache; Anthropic `next_page` pagination is followed).
 /// - `-o json` / `-o csv` / `--json` — machine-readable output, supported by
-///   `info provider` and `info model` (JSON array or CSV table).
+///   `info provider`, `info model` and `info list-model` (JSON array or CSV
+///   table).
 pub fn cmd_info(
     field: Option<&str>,
     param: &[String],
@@ -1641,7 +1650,14 @@ pub fn cmd_info(
             let (cfg, _) = chat::load_config(config)?;
             info_sale_price(&cfg, &kw, refresh)?;
         }
-        Some(other) => bail!("unknown `info` field `{other}` (expected: provider | model | price | balance | sale-price)"),
+        Some("list-model") | Some("list-models") => {
+            let kw = keyword.ok_or_else(|| {
+                anyhow::anyhow!("`info list-model` needs a provider name: `sys ai info list-model agnes`")
+            })?;
+            let (cfg, _) = chat::load_config(config)?;
+            info_model_list(&cfg, &kw, fmt)?;
+        }
+        Some(other) => bail!("unknown `info` field `{other}` (expected: provider | model | price | balance | sale-price | list-model)"),
     }
     Ok(())
 }
@@ -1680,6 +1696,156 @@ fn find_provider<'a>(cfg: &'a chat::Config, keyword: &str) -> Result<&'a chat::P
             bail!("`{keyword}` matches multiple providers: {} (use the exact name)", names.join(", "))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// `sys ai info list-model` — query a provider's own models API and list the
+// models its configured api_key can actually use.
+//
+// OpenAI 兼容 provider：GET {api_base}/models（Bearer api_key）；
+// Anthropic provider：GET {api_base}/v1/models（api_base 已以 /v1 结尾时
+// 直接用 {api_base}/models，x-api-key / anthropic-version）。实时查询，不走
+// 缓存；Anthropic 分页（next_page）自动翻页（上限 20 页）。
+// ---------------------------------------------------------------------------
+
+/// One row of `info list-model` (a model entry returned by the models API).
+struct ModelListRow {
+    id: String,
+    owned_by: String,
+    created: String,
+}
+
+/// Models list URL of a provider, mirroring `chat::chat_url`'s rules.
+fn models_url(p: &chat::Provider) -> String {
+    let base = p.api_base.trim_end_matches('/');
+    if p.kind == "anthropic" {
+        if base.ends_with("/v1") {
+            format!("{base}/models")
+        } else {
+            format!("{base}/v1/models")
+        }
+    } else {
+        format!("{base}/models")
+    }
+}
+
+/// Normalize a models API response into rows. Standard shape is `data[]`
+/// (`id` / `owned_by` / `created` on OpenAI, `display_name` / `created_at`
+/// on Anthropic); a bare `models[]` array is accepted as a fallback for
+/// non-standard compatible providers.
+fn model_list_rows(v: &Value) -> Vec<ModelListRow> {
+    let items = v
+        .get("data")
+        .and_then(|d| d.as_array())
+        .or_else(|| v.get("models").and_then(|m| m.as_array()))
+        .cloned()
+        .unwrap_or_default();
+    items
+        .iter()
+        .filter_map(|m| {
+            let id = m.get("id").and_then(|x| x.as_str())?;
+            let owned_by = m
+                .get("owned_by")
+                .and_then(|x| x.as_str())
+                .or_else(|| m.get("display_name").and_then(|x| x.as_str()))
+                .unwrap_or("")
+                .to_string();
+            let created = m
+                .get("created")
+                .and_then(|x| x.as_u64())
+                .map(|t| t.to_string())
+                .or_else(|| m.get("created_at").and_then(|x| x.as_str()).map(str::to_string))
+                .unwrap_or_default();
+            Some(ModelListRow { id: id.to_string(), owned_by, created })
+        })
+        .collect()
+}
+
+/// `sys ai info list-model PROVIDER` — fetch the provider's model list from
+/// its own models API and print it.
+fn info_model_list(cfg: &chat::Config, keyword: &str, fmt: Option<OutFormat>) -> Result<()> {
+    let p = find_provider(cfg, keyword)?;
+    let client = reqwest::blocking::Client::new();
+    let mut headers = reqwest::header::HeaderMap::new();
+    if p.kind == "anthropic" {
+        headers.insert(
+            "x-api-key",
+            reqwest::header::HeaderValue::from_str(&p.api_key).context("invalid api_key")?,
+        );
+        headers.insert(
+            "anthropic-version",
+            reqwest::header::HeaderValue::from_static(chat::ANTHROPIC_VERSION),
+        );
+    } else {
+        let auth = format!("Bearer {}", p.api_key);
+        headers.insert(
+            AUTHORIZATION,
+            reqwest::header::HeaderValue::from_str(&auth).context("invalid api_key")?,
+        );
+    }
+
+    let base_url = models_url(p);
+    let mut url = base_url.clone();
+    let mut rows: Vec<ModelListRow> = Vec::new();
+    let mut pages = 0;
+    loop {
+        let resp = client
+            .get(&url)
+            .headers(headers.clone())
+            .timeout(Duration::from_secs(20))
+            .send()
+            .with_context(|| format!("cannot query model list of `{}` at {url}", p.name))?;
+        if !resp.status().is_success() {
+            bail!("model list API of `{}` returned HTTP {} at {url}", p.name, resp.status());
+        }
+        let v: Value = serde_json::from_str(&resp.text().context("cannot read model list response")?)
+            .context("invalid JSON from model list API")?;
+        rows.extend(model_list_rows(&v));
+        pages += 1;
+        let next = v.get("next_page").and_then(|n| n.as_str());
+        match next {
+            Some(n) if pages < 20 && !n.is_empty() => {
+                url = format!("{base_url}?next_page={n}");
+            }
+            _ => break,
+        }
+    }
+    match fmt {
+        Some(OutFormat::Json) => {
+            let arr: Vec<Value> = rows
+                .iter()
+                .map(|r| serde_json::json!({"id": r.id, "owned_by": r.owned_by, "created": r.created}))
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
+        }
+        Some(OutFormat::Csv) => {
+            println!("id,owned_by,created");
+            for r in &rows {
+                println!("{},{},{}", r.id, r.owned_by, r.created);
+            }
+        }
+        Some(OutFormat::Yaml) => {
+            let arr: Vec<Value> = rows
+                .iter()
+                .map(|r| serde_json::json!({"id": r.id, "owned_by": r.owned_by, "created": r.created}))
+                .collect();
+            println!("{}", serde_yaml::to_string(&Value::Array(arr))?);
+        }
+        None => {
+            println!("== {} 可用模型（api_base: {}，共 {} 个）==", p.name, p.api_base, rows.len());
+            if rows.is_empty() {
+                println!("  （models 接口返回空，请检查 api_key 权限）");
+                return Ok(());
+            }
+            let w_id = rows.iter().map(|r| r.id.chars().count()).max().unwrap_or(4).max(4);
+            let w_own = rows.iter().map(|r| r.owned_by.chars().count()).max().unwrap_or(8).max(8);
+            println!("{:<w_id$}  {:<w_own$}  {}", "MODEL", "OWNED_BY", "CREATED");
+            for r in &rows {
+                println!("{:<w_id$}  {:<w_own$}  {}", r.id, r.owned_by, r.created);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `sys ai info balance PROVIDER` — query the provider's official balance
@@ -3593,6 +3759,68 @@ mod tests {
         assert_eq!(all[0].name, "Qwen/Qwen3.8-Flash-Next");
         assert!(info_model_rows(&sample_config(), Some("agnes:nope")).is_err());
         assert!(info_model_rows(&sample_config(), Some("nope:*")).is_err());
+    }
+
+    #[test]
+    fn models_url_formats() {
+        let cfg = sample_config();
+        // OpenAI-compatible: {api_base}/models.
+        assert_eq!(models_url(&cfg.providers[0]), "https://apihub.agnes-ai.cn/v1/models");
+        // Anthropic: {api_base}/v1/models unless api_base already ends with /v1.
+        let mut p = chat::Provider {
+            kind: "anthropic".into(),
+            name: "anthropic".into(),
+            api_base: "https://api.anthropic.com".into(),
+            api_key: "sk-ant".into(),
+            models: Vec::new(),
+        };
+        assert_eq!(models_url(&p), "https://api.anthropic.com/v1/models");
+        p.api_base = "https://api.anthropic.com/v1".into();
+        assert_eq!(models_url(&p), "https://api.anthropic.com/v1/models");
+    }
+
+    #[test]
+    fn model_list_rows_normalizes_openai_and_anthropic() {
+        // OpenAI-compatible shape: data[] with id / owned_by / created (unix).
+        let openai = serde_json::json!({
+            "object": "list",
+            "data": [
+                {"id": "gpt-4.1", "object": "model", "created": 1734567890, "owned_by": "openai"},
+                {"id": "gpt-4.1-mini", "object": "model", "created": 1734567890, "owned_by": "system"}
+            ]
+        });
+        let rows = model_list_rows(&openai);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "gpt-4.1");
+        assert_eq!(rows[0].owned_by, "openai");
+        assert_eq!(rows[0].created, "1734567890");
+
+        // Anthropic shape: data[] with id / display_name / created_at (ISO).
+        let ant = serde_json::json!({
+            "data": [
+                {"type": "model", "id": "claude-3-5-sonnet-20241022", "display_name": "Claude 3.5 Sonnet", "created_at": "2024-10-22T00:00:00Z"}
+            ]
+        });
+        let rows = model_list_rows(&ant);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "claude-3-5-sonnet-20241022");
+        assert_eq!(rows[0].owned_by, "Claude 3.5 Sonnet");
+        assert_eq!(rows[0].created, "2024-10-22T00:00:00Z");
+
+        // Non-standard fallback: bare models[] array; entries without an id
+        // are skipped.
+        let odd = serde_json::json!({
+            "models": [{"id": "m1"}, {"name": "no-id"}, {"id": "m2", "owned_by": "x"}]
+        });
+        let rows = model_list_rows(&odd);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "m1");
+        assert_eq!(rows[1].id, "m2");
+        assert_eq!(rows[1].owned_by, "x");
+
+        // Empty / malformed responses yield no rows.
+        assert!(model_list_rows(&serde_json::json!({"data": []})).is_empty());
+        assert!(model_list_rows(&serde_json::json!({"error": "x"})).is_empty());
     }
 
     #[test]
