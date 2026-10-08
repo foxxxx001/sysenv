@@ -2,6 +2,12 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.32（2026-10-08）
+
+### 新增
+- **`sys ai model` 新增 `--provider PROVIDER`**：只列出 provider id 或名称包含该值的模型（大小写不敏感子串匹配，如 `--provider openai` / `--provider 阿里`），与 `--model-type` / `--date` / `--open` 等过滤叠加生效；无参列表与 `NAME` / `--search` 查询均适用，文本视图页脚与无匹配提示会标注 provider 过滤条件
+- 版本 0.4.31 -> 0.4.32
+
 ## v0.4.31（2026-10-07）
 
 ### 新增

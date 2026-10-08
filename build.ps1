@@ -16,14 +16,14 @@ $env:Path = "D:\rust\.cargo\bin;" + $env:Path
 
 # Read version from Cargo.toml ([package] section)
 $ver = ((Get-Content Cargo.toml | Select-String '^version = ' | Select-Object -First 1).ToString() -split '"')[1]
-$out = "dist\sysenv-windows-x86_64_v${ver}.exe"
+$out = "dist\sys-windows-x86_64_v${ver}.exe"
 
 Write-Host "== cargo build --release (v$ver) =="
 cargo build --release
 
 Write-Host "== UPX compress -> $out =="
 New-Item -ItemType Directory -Force dist | Out-Null
-upx --best --force -o $out "target\release\sysenv.exe"
+upx --best --force -o $out "target\release\sys.exe"
 
 Write-Host "== smoke test =="
 & $out --version

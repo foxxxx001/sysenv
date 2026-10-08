@@ -331,6 +331,24 @@ fn filter_by_model_type(models: Vec<ModelHit>, types: &[String]) -> Vec<ModelHit
         .collect()
 }
 
+/// Keep only models whose provider id or provider name contains `provider`
+/// (case-insensitive substring).
+fn filter_by_provider(models: Vec<ModelHit>, data: &Value, provider: &str) -> Vec<ModelHit> {
+    models
+        .into_iter()
+        .filter(|(pid, _)| {
+            if contains_ci(pid, provider) {
+                return true;
+            }
+            data.get(pid)
+                .and_then(|pv| pv.get("name"))
+                .and_then(|n| n.as_str())
+                .map(|n| contains_ci(n, provider))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
 /// The modality family of a model, e.g. `text,image` (union of input and
 /// output modalities; empty when unknown).
 fn model_modalities(m: &Value) -> String {
@@ -551,6 +569,7 @@ pub fn cmd_model(
     updated_after: Option<&str>,
     open: bool,
     model_type: Option<&str>,
+    provider: Option<&str>,
 ) -> Result<()> {
     let data = fetch_data(refresh)?;
     let fmt = out.or(if json { Some(OutFormat::Json) } else { None });
@@ -573,6 +592,10 @@ pub fn cmd_model(
         let hits = apply_filters(all, date.as_deref(), open);
         let hits = match &mt {
             Some(ts) => filter_by_model_type(hits, ts),
+            None => hits,
+        };
+        let hits = match provider {
+            Some(p) => filter_by_provider(hits, &data, p),
             None => hits,
         };
         let total_hits = hits.len();
@@ -605,6 +628,9 @@ pub fn cmd_model(
                 if let Some(ts) = &mt {
                     footer.push_str(&format!(" with modalities {}", ts.join(",")));
                 }
+                if let Some(p) = provider {
+                    footer.push_str(&format!(" of providers containing `{p}`"));
+                }
                 if total_hits > shown {
                     footer.push_str(" (use --limit to show more)");
                 }
@@ -625,6 +651,10 @@ pub fn cmd_model(
         Some(ts) => filter_by_model_type(hits, ts),
         None => hits,
     };
+    let hits = match provider {
+        Some(p) => filter_by_provider(hits, &data, p),
+        None => hits,
+    };
     if hits.is_empty() {
         let mut msg = format!("no model matches `{query}`");
         if let Some(d) = &date {
@@ -635,6 +665,9 @@ pub fn cmd_model(
         }
         if let Some(ts) = &mt {
             msg.push_str(&format!(" with modalities {}", ts.join(",")));
+        }
+        if let Some(p) = provider {
+            msg.push_str(&format!(" of providers containing `{p}`"));
         }
         bail!("{msg} (source: {DATA_URL})");
     }
@@ -3014,6 +3047,20 @@ mod tests {
         assert_eq!(search_providers(&sample_data(), "openai").len(), 1);
         assert_eq!(search_providers(&sample_data(), "GROQ").len(), 1);
         assert_eq!(search_providers(&sample_data(), "o").len(), 2);
+    }
+
+    #[test]
+    fn filter_by_provider_id_name_ci() {
+        let data = sample_data();
+        let all = all_models(&data);
+        // id substring, case-insensitive
+        assert_eq!(filter_by_provider(all.clone(), &data, "openai").len(), 2);
+        assert_eq!(filter_by_provider(all.clone(), &data, "OPEN").len(), 2);
+        assert_eq!(filter_by_provider(all.clone(), &data, "gro").len(), 1);
+        // provider name substring, case-insensitive
+        assert_eq!(filter_by_provider(all.clone(), &data, "Groq").len(), 1);
+        // no match
+        assert!(filter_by_provider(all.clone(), &data, "zzz").is_empty());
     }
 
     #[test]

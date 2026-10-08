@@ -294,6 +294,9 @@ struct AiModelArgs {
     /// Show only models supporting this modality: text | image | audio | video | pdf (or 文本/图像/语音/视频)
     #[arg(long, value_name = "TYPE")]
     model_type: Option<String>,
+    /// Show only models of providers whose id or name contains this value (case-insensitive substring)
+    #[arg(long, value_name = "PROVIDER")]
+    provider: Option<String>,
     /// Show only models with open_weights enabled
     #[arg(long)]
     open: bool,
@@ -789,6 +792,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             m.date.as_deref(),
             m.open,
             m.model_type.as_deref(),
+            m.provider.as_deref(),
         ),
         AiCmd::CnModel(m) => ai::cmd_cn_model(
             m.name.as_deref(),
