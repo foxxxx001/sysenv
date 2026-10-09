@@ -340,21 +340,24 @@ sys ai info list-model agnes             # live model list from agnes' own model
 sys ai info list-model anthropic -o json # anthropic: /v1/models, JSON array output
 ```
 
-#### 5.6 Config export (`ai config`)
+#### 5.6 Config export / apply (`ai config` / `env config`)
 
-Exports the local config's `clients` section into another tool's format:
+Exports the local config's `clients` section into another tool's format, or applies it straight to that software's config file (`env config` and `ai config` share the same arguments and behavior):
 
-* `ai config FORMAT [SELECT] [-f FILE] [-c FILE]`; `FORMAT`:
+* `ai config FORMAT [SELECT] [-f FILE] [-c FILE] [--show]`; `FORMAT`:
   * **`codex`** (TOML): one `[model_providers.<name>]` table per provider (`name` / `base_url` / `env_key` / `wire_api = "chat"`). codex reads keys from env vars only, so the export names them `SYS_<PROVIDER>_API_KEY` and prints `export` hints to stderr; the top-level `model` selects the first model as `provider.model`
   * **`opencode`** (JSON): one provider entry per configured provider (`npm: "@ai-sdk/openai-compatible"` + `options.baseURL` / `options.apiKey` inline + `models` map) — mergeable into `opencode.json`
   * **`litellm`** (YAML): one `model_list` entry per model; the exposed name is `{provider}:{model}` (collision-free) routing to `openai/{model}`, with `api_base` / `api_key` inline
   * **`freellmapi`** (JSON): a `customProviders` array, one `baseUrl` / `label` / `models` entry per provider (`supportsTools: true`) — mergeable into `freellmapi.config.json`
 * `SELECT`: omitted = **every provider's every model**; `provider:*` = a provider's whole model list; `provider:model` = one specific model (no match → clear error)
-* `-f/--file FILE` writes to a file (stdout by default); `-c/--config` selects the config file
+* `--show`: **inspect only, no write** — prints the target software's config file path first (codex → `~/.codex/config.toml`, opencode → `~/.config/opencode/opencode.json`, litellm → `~/.litellm/config.yaml`, freellmapi → `freellmapi.config.json` in the current directory; a missing default path prompts `-f FILE`), then prints the config that would be applied to that software
+* `-f/--file FILE` **writes the file** (stdout by default): the existing file is first backed up to `FILE.bak-YYYYMMDD-HHMMSS` (same directory), then the actual change is reported after writing (exported model count / target file path / backup file path); a missing target file is created and reported; `-c/--config` selects the config file
 
 ```
+sys env config codex --show               # print codex config path + config to apply (no write)
+sys env config codex -f ~/.codex/config.toml   # back up old config → write → report the change
 sys ai config codex                      # all models as codex TOML (stdout)
-sys ai config opencode -f opencode.json  # write to a file
+sys ai config opencode -f opencode.json  # write to a file (previous file backed up)
 sys ai config litellm "agnes:*"          # only agnes' models
 sys ai config freellmapi "minimax:MiniMax-M2.7"  # one specific model
 ```

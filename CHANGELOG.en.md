@@ -2,6 +2,15 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.36 (2026-10-09)
+
+### Added
+- **`sys env config` subcommand**: same arguments and implementation as `sys ai config`, for inspecting / applying software config exports (`codex` | `opencode` | `litellm` | `freellmapi`):
+  - **`--show`**: prints the target software's config file path first (codex → `~/.codex/config.toml`, opencode → `~/.config/opencode/opencode.json`, litellm → `~/.litellm/config.yaml`, freellmapi → `freellmapi.config.json` in the current directory; a missing default path prompts `-f FILE`), then prints the config that would be applied to that software — no file is touched
+  - **`-f FILE` apply mode**: before writing, the existing config file is backed up to `FILE.bak-YYYYMMDD-HHMMSS` (same directory); after writing, the actual change is reported — exported model count / target file path / backup file path; when the target file did not exist, it reports "created a new config file"
+  - `sys ai config` gained the same `--show` and backup behavior; both entries stay consistent
+- Version 0.4.35 -> 0.4.36
+
 ## v0.4.35 (2026-10-09)
 
 ### Changed

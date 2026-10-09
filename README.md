@@ -540,21 +540,24 @@ sys ai info list-model agnes             # 用 agnes 的 models 接口查询可�
 sys ai info list-model anthropic -o json # anthropic 类型：/v1/models，JSON 数组输出
 ```
 
-#### 5.6 配置导出（`ai config`）
+#### 5.6 配置导出 / 应用（`ai config` / `env config`）
 
-把本地配置（`~/.sysenv/config.yaml` 的 `clients` 段）导出为其他 AI 工具的配置格式：
+把本地配置（`~/.sysenv/config.yaml` 的 `clients` 段）导出为其他 AI 工具的配置格式，或直接应用到该软件的配置文件（`env config` 与 `ai config` 参数、行为完全一致）：
 
-* `ai config FORMAT [SELECT] [-f FILE] [-c FILE]`，`FORMAT` 支持：
+* `ai config FORMAT [SELECT] [-f FILE] [-c FILE] [--show]`，`FORMAT` 支持：
   * **`codex`**（TOML）：每个 Provider 一个 `[model_providers.<name>]` 段（`name` / `base_url` / `env_key` / `wire_api = "chat"`）；codex 只从环境变量读 key，导出时生成 `SYS_<PROVIDER>_API_KEY` 命名并打印 `export` 提示到 stderr；顶层 `model` 选中第一个模型的 `provider.model`
   * **`opencode`**（JSON）：每个 Provider 一个条目（`npm: "@ai-sdk/openai-compatible"` + `options.baseURL` / `options.apiKey` 内联 + `models` 映射），可直接合并进 `opencode.json`
   * **`litellm`**（YAML）：每个模型一条 `model_list` 条目，暴露名 `{provider}:{model}`（防冲突），路由到 `openai/{model}`，`api_base` / `api_key` 内联
   * **`freellmapi`**（JSON）：`customProviders` 数组，每个 Provider 一个 `baseUrl` / `label` / `models` 条目（`supportsTools: true`），可合并进 `freellmapi.config.json`
 * `SELECT` 选择导出范围：缺省 = **全部 Provider 的全部模型**；`provider:*` = 指定 Provider 的全部模型；`provider:model` = 指定 Provider 的单个模型（无匹配明确报错）
-* `-f/--file FILE` 写入文件（缺省打印到 stdout）；`-c/--config` 指定配置文件
+* `--show`：**只查看不写入**——先打印对应软件的配置文件地址（codex → `~/.codex/config.toml`、opencode → `~/.config/opencode/opencode.json`、litellm → `~/.litellm/config.yaml`、freellmapi → 当前目录 `freellmapi.config.json`；无默认路径时提示用 `-f` 指定），再打印将要写入该软件的配置信息
+* `-f/--file FILE` **写入文件**（缺省打印到 stdout）：写入前先把已有文件备份为 `FILE.bak-YYYYMMDD-HHMMSS`（同目录），写入后打印实际修改信息（导出的模型数 / 目标文件路径 / 备份文件路径）；目标文件不存在时新建并注明；`-c/--config` 指定配置文件
 
 ```
+sys env config codex --show               # 打印 codex 配置文件地址 + 将写入的配置（不写入）
+sys env config codex -f ~/.codex/config.toml   # 备份原配置 → 写入 → 打印实际修改信息
 sys ai config codex                      # 全部模型导出为 codex TOML（stdout）
-sys ai config opencode -f opencode.json  # 写入文件
+sys ai config opencode -f opencode.json  # 写入文件（自动备份原文件）
 sys ai config litellm "agnes:*"          # 只导出 agnes 的模型
 sys ai config freellmapi "minimax:MiniMax-M2.7"   # 只导出 minimax 的单个模型
 ```

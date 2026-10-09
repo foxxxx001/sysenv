@@ -3153,6 +3153,7 @@ pub fn cmd_config(
     selector: Option<&str>,
     out_file: Option<&Path>,
     config: Option<&Path>,
+    show: bool,
 ) -> Result<()> {
     let (cfg, _) = chat::load_config(config)?;
     let pairs = select_models(&cfg, selector)?;
@@ -3168,6 +3169,16 @@ pub fn cmd_config(
             "unknown format `{other}` (supported: codex, opencode, litellm, freellmapi)"
         ),
     };
+    if show {
+        // Show mode: print the target software's config file path first, then the
+        // config that would be applied — without touching any file.
+        match software_config_path(format) {
+            Some(p) => println!("config file: {}", p.display()),
+            None => println!("config file: <no default path; choose one with -f FILE>"),
+        }
+        print!("{text}");
+        return Ok(());
+    }
     match out_file {
         Some(path) => {
             if let Some(parent) = path.parent() {
@@ -3175,12 +3186,64 @@ pub fn cmd_config(
                     bail!("output directory does not exist: {}", parent.display());
                 }
             }
+            // Apply mode: back up the previous config file before writing, then
+            // report what actually changed.
+            let existed = path.exists();
+            let backup = if existed {
+                Some(backup_file(path)?)
+            } else {
+                None
+            };
             std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
             eprintln!("sys: exported {} model(s) to {}", pairs.len(), path.display());
+            match (backup, existed) {
+                (Some(b), _) => {
+                    eprintln!("sys: previous config backed up to {}", b.display())
+                }
+                (None, false) => eprintln!(
+                    "sys: {} did not exist; created a new config file",
+                    path.display()
+                ),
+                (None, true) => {}
+            }
         }
         None => print!("{text}"),
     }
     Ok(())
+}
+
+/// Default config file of the target software for `ai config` exports.
+/// Paths are the tools' usual conventions; `-f FILE` always overrides them.
+fn software_config_path(format: &str) -> Option<PathBuf> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from);
+    let home = home?;
+    match format.to_ascii_lowercase().as_str() {
+        "codex" => Some(home.join(".codex").join("config.toml")),
+        "opencode" | "openxode" => {
+            Some(home.join(".config").join("opencode").join("opencode.json"))
+        }
+        "litellm" => Some(home.join(".litellm").join("config.yaml")),
+        "freellmapi" => std::env::current_dir()
+            .ok()
+            .map(|d| d.join("freellmapi.config.json")),
+        _ => None,
+    }
+}
+
+/// Copy `path` to `path.bak-YYYYMMDD-HHMMSS` in the same directory so a
+/// previous config can always be restored; returns the backup path.
+fn backup_file(path: &Path) -> Result<PathBuf> {
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let file_name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "config".to_string());
+    let backup = path.with_file_name(format!("{file_name}.bak-{stamp}"));
+    std::fs::copy(path, &backup)
+        .with_context(|| format!("cannot back up {} to {}", path.display(), backup.display()))?;
+    Ok(backup)
 }
 
 // ---------------------------------------------------------------------------

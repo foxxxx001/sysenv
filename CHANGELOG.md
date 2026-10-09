@@ -2,6 +2,15 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.36（2026-10-09）
+
+### 新增
+- **`sys env config` 子命令**：与 `sys ai config` 同参数、同实现，用于查看 / 应用软件配置导出（`codex` | `opencode` | `litellm` | `freellmapi`）：
+  - **`--show`**：先打印对应软件的配置文件地址（codex → `~/.codex/config.toml`、opencode → `~/.config/opencode/opencode.json`、litellm → `~/.litellm/config.yaml`、freellmapi → 当前目录 `freellmapi.config.json`，无默认路径时提示用 `-f` 指定），再打印将要写入该软件的配置信息，不触碰任何文件
+  - **`-f FILE` 实际修改**：写入前先把已有配置文件备份为 `FILE.bak-YYYYMMDD-HHMMSS`（同目录），写入后打印实际修改信息——导出的模型数 / 目标文件路径 / 备份文件路径；目标文件原本不存在时打印“新建配置文件”
+  - `sys ai config` 同步新增 `--show` 与备份逻辑，两入口行为一致
+- 版本 0.4.35 -> 0.4.36
+
 ## v0.4.35（2026-10-09）
 
 ### 变更
