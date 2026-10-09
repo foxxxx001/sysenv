@@ -21,9 +21,8 @@ clients:
     models:
       - name: agnes-3.0-flash
         weight: 1          # 轮询权重，取值范围 0-9，缺省 1；请求失败自动 -1（最低 1），替补成功自动 +1（最高 9），并写回本配置
-        # max_input_tokens / type 可手动填写；缺失时发送请求前自动从 models.dev 按模型名查询并写回（max_input_tokens=context，type=模态并集）
+        # max_input_tokens 可选手动填写：用于发送前截断超长消息；缺失时不截断，且不查询任何外部数据、不写回配置（chat 只读本地配置）
         # max_input_tokens: 524288
-        # type: text,image
   # Anthropic 示例（Claude API 标准：/v1/messages，x-api-key）
   - type: anthropic
     name: claude

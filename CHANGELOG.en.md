@@ -2,6 +2,14 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.38 (2026-10-09)
+
+### Changed
+- **`sys ai chat` / `sys ai task` fully decoupled from models.dev**: the pre-request "capability auto-fill" (`ensure_model_capabilities`) is removed — when a model lacks `max_input_tokens` / `type`, chat no longer queries models.dev (network or 24 h cache) and no longer writes back to the config; capability fields now come only from the config file (absent `max_input_tokens` = no truncation, absent `type` does not affect the request)
+- Removed `lookup_model_capabilities` from ai.rs (no longer used); `Model.type` (the per-model modality field) had no consumers left and was removed too — existing `type: text,image` lines in configs stay harmless and are ignored by the parser
+- `config.example.yaml` and README 5.2 updated accordingly
+- Version 0.4.37 -> 0.4.38
+
 ## v0.4.37 (2026-10-09)
 
 ### Changed

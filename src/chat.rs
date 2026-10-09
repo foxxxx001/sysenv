@@ -78,12 +78,9 @@ pub(crate) struct Model {
     pub(crate) name: String,
     pub(crate) weight: u32,
     pub(crate) max_tokens: Option<u64>,
-    /// Max input length (chars) enforced before sending; when absent it is
-    /// filled from the models.dev `limit.context` of the first matching model
-    /// and persisted back into the config file.
+    /// Max input length (chars) enforced before sending; when absent no
+    /// truncation happens (values come from the config only, never fetched).
     pub(crate) max_input_tokens: Option<u64>,
-    /// Modality type (e.g. `text,image`); filled from models.dev when absent.
-    pub(crate) model_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -366,17 +363,11 @@ fn provider_from_yaml(c: &YVal) -> Result<Provider> {
                     .get("max_input_tokens")
                     .and_then(|v| v.scalar())
                     .and_then(|s| s.parse::<u64>().ok());
-                let model_type = item
-                    .get("type")
-                    .and_then(|v| v.scalar())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string);
                 models.push(Model {
                     name: mname.to_string(),
                     weight,
                     max_tokens,
                     max_input_tokens,
-                    model_type,
                 });
                 last = Some(models.len() - 1);
             } else if let Some(w) = item.get("weight").and_then(|v| v.scalar()) {
@@ -1272,7 +1263,6 @@ fn route_tasks(cfg: &mut Config, path: &Path, input: &str, debug: bool) -> Resul
     let mut errors: Vec<String> = Vec::new();
     for ti in order {
         let t = &targets[ti];
-        ensure_model_capabilities(cfg, path, t.provider, t.model);
         let p = &cfg.providers[t.provider];
         let m = &p.models[t.model];
         eprintln!("sys: using {} / {} ({})", p.name, m.name, p.kind);
@@ -2334,48 +2324,6 @@ fn resolve_task_msg(task: &Task, params: &[String]) -> Result<String> {
     Ok(substitute(&raw, &map))
 }
 
-/// Complete the target model's capabilities in memory and in the config file:
-/// when `max_input_tokens` or `type` is missing, look them up in models.dev by
-/// model name (first match) and persist the values. Best effort: lookup or
-/// persistence failures only warn and never block the request.
-fn ensure_model_capabilities(cfg: &mut Config, path: &Path, pi: usize, mi: usize) {
-    let (ctx, modl) = {
-        let m = &cfg.providers[pi].models[mi];
-        if m.max_input_tokens.is_some() && m.model_type.is_some() {
-            return;
-        }
-        crate::ai::lookup_model_capabilities(&m.name)
-    };
-    let need_ctx = cfg.providers[pi].models[mi].max_input_tokens.is_none() && ctx.is_some();
-    let need_type = cfg.providers[pi].models[mi].model_type.is_none() && modl.is_some();
-    if !need_ctx && !need_type {
-        return;
-    }
-    let pname = cfg.providers[pi].name.clone();
-    let mname = cfg.providers[pi].models[mi].name.clone();
-    let model = &mut cfg.providers[pi].models[mi];
-    if need_ctx {
-        model.max_input_tokens = ctx;
-    }
-    if need_type {
-        model.model_type = modl.clone();
-    }
-    if need_ctx {
-        if let Some(c) = ctx {
-            if let Err(e) = update_model_field_in_config(path, &pname, &mname, "max_input_tokens", &c.to_string()) {
-                eprintln!("sys: warning: cannot persist max_input_tokens for {pname} / {mname}: {e:#}");
-            }
-        }
-    }
-    if need_type {
-        if let Some(t) = &modl {
-            if let Err(e) = update_model_field_in_config(path, &pname, &mname, "type", t) {
-                eprintln!("sys: warning: cannot persist type for {pname} / {mname}: {e:#}");
-            }
-        }
-    }
-}
-
 /// Truncate `msg` to `limit` characters when a limit is set; otherwise the
 /// message passes through unchanged. A notice is printed when truncation
 /// actually happens.
@@ -2395,10 +2343,10 @@ fn truncate_to_limit(msg: &str, limit: Option<u64>) -> String {
 }
 
 /// One chat round-trip through the weighted rotation. Before each HTTP request
-/// the target model's capabilities are completed (`max_input_tokens` / `type`
-/// looked up in models.dev and persisted when missing) and the message is
-/// truncated to the model's input limit. Returns the model's reply text (which
-/// has already been streamed to stdout when streaming is active).
+/// the message is truncated to the model's configured input limit
+/// (`max_input_tokens` from the config; absent = no truncation). Returns the
+/// model's reply text (which has already been streamed to stdout when
+/// streaming is active).
 fn chat_once(
     cfg: &mut Config,
     path: &Path,
@@ -2428,7 +2376,6 @@ fn chat_once(
     let mut errors: Vec<String> = Vec::new();
     for ti in order {
         let t = &targets[ti];
-        ensure_model_capabilities(cfg, path, t.provider, t.model);
         let p = &cfg.providers[t.provider];
         let m = &p.models[t.model];
         eprintln!("sys: using {} / {} ({})", p.name, m.name, p.kind);
@@ -3375,7 +3322,7 @@ clients:
         update_model_field_in_config(&p, "agnes", "m1", "weight", "5").unwrap();
         let t = std::fs::read_to_string(&p).unwrap();
         assert!(t.contains("        weight: 5"));
-        // Insert the type field.
+        // Insert the type field (generic key editing; not read back into Model).
         update_model_field_in_config(&p, "agnes", "m1", "type", "text,image").unwrap();
         let t = std::fs::read_to_string(&p).unwrap();
         assert!(t.contains("        type: text,image"));
@@ -3384,7 +3331,6 @@ clients:
         let cfg = config_from_yaml(&y).unwrap();
         let m = &cfg.providers[0].models[0];
         assert_eq!(m.max_input_tokens, Some(1048576));
-        assert_eq!(m.model_type.as_deref(), Some("text,image"));
         assert_eq!(m.weight, 5);
         // Unknown model still errors.
         assert!(update_model_field_in_config(&p, "agnes", "nope", "type", "text").is_err());
@@ -3427,7 +3373,6 @@ clients:
         let cfg = config_from_yaml(&y).unwrap();
         let m = &cfg.providers[0].models[0];
         assert_eq!(m.max_input_tokens, Some(4096));
-        assert_eq!(m.model_type.as_deref(), Some("text,image"));
         assert_eq!(m.max_tokens, None);
     }
 

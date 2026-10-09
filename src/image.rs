@@ -366,7 +366,6 @@ mod tests {
             weight: 1,
             max_tokens: None,
             max_input_tokens: None,
-            model_type: None,
         }
     }
 

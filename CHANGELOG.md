@@ -2,6 +2,14 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.38（2026-10-09）
+
+### 变更
+- **`sys ai chat` / `sys ai task` 彻底解耦 models.dev**：移除发送请求前的「自动补齐能力字段」逻辑（`ensure_model_capabilities`），模型缺 `max_input_tokens` / `type` 时**不再查询 models.dev（联网或 24h 缓存）也不再写回配置**；能力字段完全只读配置文件——缺 `max_input_tokens` 即不截断消息，`type` 缺失不影响请求
+- 删除 ai.rs 中因此不再被使用的 `lookup_model_capabilities`；`Model.type`（模型级模态字段）无任何消费者，一并移除（配置里已有的 `type: text,image` 行仍可保留，解析时自动忽略）
+- 示例配置 `config.example.yaml` 与 README 5.2 同步更新说明
+- 版本 0.4.37 -> 0.4.38
+
 ## v0.4.37（2026-10-09）
 
 ### 变更

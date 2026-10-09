@@ -234,6 +234,7 @@ Chats with the configured providers using the OpenAI `/v1/chat/completions` or t
 
 - Config file defaults to **`~/.sysenv/config.yaml`** (a clear message is shown when missing); `-c/--config FILE` overrides it. The format is documented in `doc/config.yaml`; the sanitized template is `doc/config.example.yaml`
 - `clients` holds the providers: required `name / api_base / api_key / models` (each `models` entry has `name` plus optional `weight`, default 1, and optional `max_tokens`); `type` is `openai` (default; `open` is accepted) or `anthropic`, and the request follows the OpenAI or the Claude API standard accordingly
+- Capability fields (`max_input_tokens` / `type`) come **only from the config**: missing values are never fetched from models.dev and never written back; chat works fully offline from external data sources. `max_input_tokens` limits the message truncation (absent = no truncation)
 - Top-level `model` selects the model:
   - missing → the first model of the first provider
   - `provider:model` → the model whose provider name and model name both match
