@@ -2,6 +2,17 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.37 (2026-10-09)
+
+### Changed
+- **Removed the `sys env config` subcommand** (added in v0.4.36, out of scope): the `--show` / backup / report behavior of `ai config` now lives only under `sys ai config`; `sys env` is back to get / set / unset / list
+- **`sys ai config` finalized**:
+  - `--show` preview: prints the target software's config file path first, then the config that would be applied (no file is touched); when `-f FILE` is also given, an extra `write target` line is printed
+  - `-f FILE` apply report now prints **provider count + model count + target path** (previously models only); backup info unchanged
+  - `backup_file` appends a `-N` suffix on name collisions, so repeated backups within the same second never overwrite each other
+  - Added deterministic unit tests for `software_config_path_in` / `backup_file` (format mapping, backup naming and content preservation)
+- Version 0.4.36 -> 0.4.37
+
 ## v0.4.36 (2026-10-09)
 
 ### Added

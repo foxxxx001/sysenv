@@ -198,31 +198,6 @@ enum EnvCmd {
     },
     /// List all environment variables of the current process
     List,
-    /// Inspect / apply a software config export (codex | opencode | litellm | freellmapi):
-    /// --show prints the target software's config file path then the config to apply;
-    /// -f writes it (backing up the previous file first, then reporting what changed)
-    Config(EnvConfigArgs),
-}
-
-#[derive(Args)]
-struct EnvConfigArgs {
-    /// Target format: codex (TOML) | opencode (JSON) | litellm (YAML) | freellmapi (JSON)
-    #[arg(value_name = "FORMAT")]
-    format: String,
-    /// Select models: omit for all; `provider:*` = a provider's whole model list;
-    /// `provider:model` = one specific model
-    #[arg(value_name = "SELECT")]
-    provider: Option<String>,
-    /// Write the export to this file instead of stdout (the previous file is backed up first)
-    #[arg(short = 'f', long, value_name = "FILE")]
-    file: Option<PathBuf>,
-    /// Config file path (default: ~/.sysenv/config.yaml)
-    #[arg(short = 'c', long, value_name = "FILE")]
-    config: Option<PathBuf>,
-    /// Show mode: print the target software's config file path, then the config
-    /// that would be applied (no file is written)
-    #[arg(long)]
-    show: bool,
 }
 
 #[derive(Args)]
@@ -280,7 +255,8 @@ enum AiCmd {
     Image(ImageArgs),
     /// Run a chat task template from the config (no -t lists the tasks)
     Task(AiTaskArgs),
-    /// Export the local config to another tool's format (codex | opencode | litellm | freellmapi)
+    /// Export the local config to another tool's format (codex | opencode | litellm | freellmapi);
+    /// --show previews the target config file path and content, -f writes with a backup
     Config(AiConfigArgs),
 }
 
@@ -797,13 +773,6 @@ fn run_env(e: EnvArgs) -> anyhow::Result<()> {
         }
         EnvCmd::Unset { name, temporary, scope } => env::cmd_unset(&name, scope, temporary),
         EnvCmd::List => env::cmd_list(),
-        EnvCmd::Config(g) => ai::cmd_config(
-            &g.format,
-            g.provider.as_deref(),
-            g.file.as_deref(),
-            g.config.as_deref(),
-            g.show,
-        ),
     }
 }
 

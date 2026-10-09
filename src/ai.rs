@@ -3142,12 +3142,18 @@ fn export_freellmapi(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<Str
     Ok(serde_json::to_string_pretty(&json!({ "customProviders": list }))?)
 }
 
-/// `sys ai config FORMAT [SELECT] [-f FILE] [-c FILE]`
+/// `sys ai config FORMAT [SELECT] [--show] [-f FILE] [-c FILE]`
 ///
 /// FORMAT: `codex` (TOML) | `opencode` (JSON) | `litellm` (YAML) |
 /// `freellmapi` (JSON). SELECT: omit for all models, `provider:*` for a whole
 /// provider, `provider:model` for one model. The export goes to stdout unless
 /// `-f/--file FILE` is given.
+///
+/// `--show` previews without touching any file: it prints the target
+/// software's default config file path first, then the config that would be
+/// applied (and the `-f` write target when one is given). Writing with `-f`
+/// backs up an existing file to `FILE.bak-YYYYMMDD-HHMMSS` first, then
+/// overwrites it and prints what actually changed.
 pub fn cmd_config(
     format: &str,
     selector: Option<&str>,
@@ -3176,6 +3182,9 @@ pub fn cmd_config(
             Some(p) => println!("config file: {}", p.display()),
             None => println!("config file: <no default path; choose one with -f FILE>"),
         }
+        if let Some(path) = out_file {
+            println!("write target: {}", path.display());
+        }
         print!("{text}");
         return Ok(());
     }
@@ -3195,16 +3204,20 @@ pub fn cmd_config(
                 None
             };
             std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
-            eprintln!("sys: exported {} model(s) to {}", pairs.len(), path.display());
-            match (backup, existed) {
-                (Some(b), _) => {
-                    eprintln!("sys: previous config backed up to {}", b.display())
-                }
-                (None, false) => eprintln!(
+            let n_providers = pairs.iter().map(|(pi, _)| *pi).collect::<HashSet<_>>().len();
+            eprintln!(
+                "sys: wrote {} provider(s), {} model(s) to {}",
+                n_providers,
+                pairs.len(),
+                path.display()
+            );
+            match backup {
+                Some(b) => eprintln!("sys: previous config backed up to {}", b.display()),
+                None if !existed => eprintln!(
                     "sys: {} did not exist; created a new config file",
                     path.display()
                 ),
-                (None, true) => {}
+                _ => {}
             }
         }
         None => print!("{text}"),
@@ -3217,8 +3230,12 @@ pub fn cmd_config(
 fn software_config_path(format: &str) -> Option<PathBuf> {
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from);
-    let home = home?;
+        .map(PathBuf::from)?;
+    software_config_path_in(&home, format)
+}
+
+/// Mapping from a format to its software's usual config file, given `home`.
+fn software_config_path_in(home: &Path, format: &str) -> Option<PathBuf> {
     match format.to_ascii_lowercase().as_str() {
         "codex" => Some(home.join(".codex").join("config.toml")),
         "opencode" | "openxode" => {
@@ -3233,14 +3250,21 @@ fn software_config_path(format: &str) -> Option<PathBuf> {
 }
 
 /// Copy `path` to `path.bak-YYYYMMDD-HHMMSS` in the same directory so a
-/// previous config can always be restored; returns the backup path.
+/// previous config can always be restored; appends `-N` when the name is
+/// already taken, so an earlier backup is never overwritten. Returns the
+/// backup path.
 fn backup_file(path: &Path) -> Result<PathBuf> {
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let file_name = path
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "config".to_string());
-    let backup = path.with_file_name(format!("{file_name}.bak-{stamp}"));
+    let mut backup = path.with_file_name(format!("{file_name}.bak-{stamp}"));
+    let mut n = 1;
+    while backup.exists() {
+        backup = path.with_file_name(format!("{file_name}.bak-{stamp}-{n}"));
+        n += 1;
+    }
     std::fs::copy(path, &backup)
         .with_context(|| format!("cannot back up {} to {}", path.display(), backup.display()))?;
     Ok(backup)
@@ -4180,5 +4204,61 @@ mod tests {
         let all = select_models(&cfg, None).unwrap();
         let err = export_freellmapi(&cfg, &all).err(); // no-op sanity
         assert!(err.is_none());
+    }
+
+    #[test]
+    fn software_config_path_maps_each_format() {
+        let home = PathBuf::from("C:\\users\\tester");
+        assert_eq!(
+            software_config_path_in(&home, "codex"),
+            Some(home.join(".codex").join("config.toml"))
+        );
+        assert_eq!(
+            software_config_path_in(&home, "opencode"),
+            Some(home.join(".config").join("opencode").join("opencode.json"))
+        );
+        assert_eq!(
+            software_config_path_in(&home, "openxode"),
+            Some(home.join(".config").join("opencode").join("opencode.json"))
+        );
+        assert_eq!(
+            software_config_path_in(&home, "litellm"),
+            Some(home.join(".litellm").join("config.yaml"))
+        );
+        assert_eq!(
+            software_config_path_in(&home, "freellmapi"),
+            std::env::current_dir().ok().map(|d| d.join("freellmapi.config.json"))
+        );
+        // case-insensitive like the export dispatch
+        assert_eq!(
+            software_config_path_in(&home, "CODEX"),
+            Some(home.join(".codex").join("config.toml"))
+        );
+        // unknown formats have no default path
+        assert_eq!(software_config_path_in(&home, "nope"), None);
+    }
+
+    #[test]
+    fn backup_file_copies_with_suffix_and_never_overwrites() {
+        let dir = std::env::temp_dir().join(format!("sysenv-backup-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("config.yaml");
+        std::fs::write(&target, "model_list: []\n").unwrap();
+
+        let backup = backup_file(&target).unwrap();
+        assert!(backup.starts_with(&dir));
+        let name = backup.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with("config.yaml.bak-"), "unexpected backup name {name}");
+        // content preserved, original untouched
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "model_list: []\n");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "model_list: []\n");
+
+        // a second backup in the same second gets a distinct name (-N suffix)
+        let backup2 = backup_file(&target).unwrap();
+        assert_ne!(backup, backup2);
+        assert!(backup2.exists());
+        assert_eq!(std::fs::read_to_string(&backup2).unwrap(), "model_list: []\n");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

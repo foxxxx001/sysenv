@@ -52,7 +52,7 @@ Commands:
 | 注册表导入导出   | `path export/import` | `.reg` / JSON / TXT 三种格式；合并或 `--replace` 整体替换；跨机迁移备份                                   |
 | 链接到 PATH  | `link`               | 硬链接 → 符号链接 → 拷贝三级自动回退；Windows `.cmd` 垫片；自定义命令名；系统目录或托管目录                               |
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
-| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key、`info model` 列出 `{provider}:{name}` 模型清单、`info price` 查 models.dev 模型价格、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页、`info list-model` 用 provider 的 models 接口查可用模型）；`ai config`（导出配置为 codex / opencode / litellm / freellmapi 格式，支持 `provider:*` / `provider:model` 选择与 `-f` 写文件）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai server`（`sys ai server [ADDR]` 以 OpenAI 兼容 API 对外提供 `/v1/chat/completions` 与 `/v1/models` 服务（默认 127.0.0.1:10000，可只给端口/IP；`--help` 查询服务状态并打印配置的 provider/model））；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
+| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key、`info model` 列出 `{provider}:{name}` 模型清单、`info price` 查 models.dev 模型价格、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页、`info list-model` 用 provider 的 models 接口查可用模型）；`ai config`（导出配置为 codex / opencode / litellm / freellmapi 格式，支持 `provider:*` / `provider:model` 选择、`--show` 预览目标配置文件地址与内容、`-f` 写文件且写入前自动备份）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前自动补齐 max_input_tokens/type 并截断超长消息，OpenAI / Anthropic 兼容）；`ai server`（`sys ai server [ADDR]` 以 OpenAI 兼容 API 对外提供 `/v1/chat/completions` 与 `/v1/models` 服务（默认 127.0.0.1:10000，可只给端口/IP；`--help` 查询服务状态并打印配置的 provider/model））；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
 | 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin（带扩展名如 `me.txt` 则显示文件，引号包裹强制搜索）；2 参目录树文本/源码搜索（`-e` / `-i` / `-t` / `-w` / `-c`）；3 参 OLD NEW PATH 就地替换；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件 |
 | 格式转换      | `con`                | json / csv / md / yaml 互转：默认读 stdin（`cat a.json | sys con`），`-file` 读文件，`-i` 输入格式，`-o` 输出格式，`-out` 写文件；表格类转对象数组（类型推断 + 转义） |
@@ -540,9 +540,9 @@ sys ai info list-model agnes             # 用 agnes 的 models 接口查询可�
 sys ai info list-model anthropic -o json # anthropic 类型：/v1/models，JSON 数组输出
 ```
 
-#### 5.6 配置导出 / 应用（`ai config` / `env config`）
+#### 5.6 配置导出 / 应用（`ai config`）
 
-把本地配置（`~/.sysenv/config.yaml` 的 `clients` 段）导出为其他 AI 工具的配置格式，或直接应用到该软件的配置文件（`env config` 与 `ai config` 参数、行为完全一致）：
+把本地配置（`~/.sysenv/config.yaml` 的 `clients` 段）导出为其他 AI 工具的配置格式，或直接应用到该软件的配置文件：
 
 * `ai config FORMAT [SELECT] [-f FILE] [-c FILE] [--show]`，`FORMAT` 支持：
   * **`codex`**（TOML）：每个 Provider 一个 `[model_providers.<name>]` 段（`name` / `base_url` / `env_key` / `wire_api = "chat"`）；codex 只从环境变量读 key，导出时生成 `SYS_<PROVIDER>_API_KEY` 命名并打印 `export` 提示到 stderr；顶层 `model` 选中第一个模型的 `provider.model`
@@ -554,8 +554,8 @@ sys ai info list-model anthropic -o json # anthropic 类型：/v1/models，JSON 
 * `-f/--file FILE` **写入文件**（缺省打印到 stdout）：写入前先把已有文件备份为 `FILE.bak-YYYYMMDD-HHMMSS`（同目录），写入后打印实际修改信息（导出的模型数 / 目标文件路径 / 备份文件路径）；目标文件不存在时新建并注明；`-c/--config` 指定配置文件
 
 ```
-sys env config codex --show               # 打印 codex 配置文件地址 + 将写入的配置（不写入）
-sys env config codex -f ~/.codex/config.toml   # 备份原配置 → 写入 → 打印实际修改信息
+sys ai config codex --show               # 打印 codex 配置文件地址 + 将写入的配置（不写入）
+sys ai config codex -f ~/.codex/config.toml   # 备份原配置 → 写入 → 打印实际修改信息
 sys ai config codex                      # 全部模型导出为 codex TOML（stdout）
 sys ai config opencode -f opencode.json  # 写入文件（自动备份原文件）
 sys ai config litellm "agnes:*"          # 只导出 agnes 的模型

@@ -340,9 +340,9 @@ sys ai info list-model agnes             # live model list from agnes' own model
 sys ai info list-model anthropic -o json # anthropic: /v1/models, JSON array output
 ```
 
-#### 5.6 Config export / apply (`ai config` / `env config`)
+#### 5.6 Config export / apply (`ai config`)
 
-Exports the local config's `clients` section into another tool's format, or applies it straight to that software's config file (`env config` and `ai config` share the same arguments and behavior):
+Exports the local config's `clients` section into another tool's format, or applies it straight to that software's config file:
 
 * `ai config FORMAT [SELECT] [-f FILE] [-c FILE] [--show]`; `FORMAT`:
   * **`codex`** (TOML): one `[model_providers.<name>]` table per provider (`name` / `base_url` / `env_key` / `wire_api = "chat"`). codex reads keys from env vars only, so the export names them `SYS_<PROVIDER>_API_KEY` and prints `export` hints to stderr; the top-level `model` selects the first model as `provider.model`
@@ -354,8 +354,8 @@ Exports the local config's `clients` section into another tool's format, or appl
 * `-f/--file FILE` **writes the file** (stdout by default): the existing file is first backed up to `FILE.bak-YYYYMMDD-HHMMSS` (same directory), then the actual change is reported after writing (exported model count / target file path / backup file path); a missing target file is created and reported; `-c/--config` selects the config file
 
 ```
-sys env config codex --show               # print codex config path + config to apply (no write)
-sys env config codex -f ~/.codex/config.toml   # back up old config → write → report the change
+sys ai config codex --show               # print codex config path + config to apply (no write)
+sys ai config codex -f ~/.codex/config.toml   # back up old config → write → report the change
 sys ai config codex                      # all models as codex TOML (stdout)
 sys ai config opencode -f opencode.json  # write to a file (previous file backed up)
 sys ai config litellm "agnes:*"          # only agnes' models
