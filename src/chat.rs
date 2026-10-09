@@ -79,8 +79,12 @@ pub(crate) struct Model {
     pub(crate) weight: u32,
     pub(crate) max_tokens: Option<u64>,
     /// Max input length (chars) enforced before sending; when absent no
-    /// truncation happens (values come from the config only, never fetched).
+    /// truncation happens (values come from the config only, never fetched
+    /// unless `sys ai chat --update` is given).
     pub(crate) max_input_tokens: Option<u64>,
+    /// Modality type (e.g. `text,image`) read from the config as-is; only
+    /// `sys ai chat --update` consults it to decide whether to fill it in.
+    pub(crate) model_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -363,11 +367,17 @@ fn provider_from_yaml(c: &YVal) -> Result<Provider> {
                     .get("max_input_tokens")
                     .and_then(|v| v.scalar())
                     .and_then(|s| s.parse::<u64>().ok());
+                let model_type = item
+                    .get("type")
+                    .and_then(|v| v.scalar())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
                 models.push(Model {
                     name: mname.to_string(),
                     weight,
                     max_tokens,
                     max_input_tokens,
+                    model_type,
                 });
                 last = Some(models.len() - 1);
             } else if let Some(w) = item.get("weight").and_then(|v| v.scalar()) {
@@ -2184,7 +2194,7 @@ fn route_and_execute(cfg: &mut Config, path: &Path, input: &str, debug: bool, no
         None => format!("任务说明：{}\n\n用户请求：{}", task.desc, user_arg),
     };
     println!("\n→ 执行任务 {tname}");
-    chat_with(cfg, path, &exec_msg, debug, no_stream, None)
+    chat_with(cfg, path, &exec_msg, debug, no_stream, None, false)
 }
 
 /// `-key` / `--key` 风格参数项（`-area` 是，纯数字 `-39.9` 不是）
@@ -2342,11 +2352,59 @@ fn truncate_to_limit(msg: &str, limit: Option<u64>) -> String {
     }
 }
 
+/// Which capability fields are missing for a model: `(max_input_tokens, type)`.
+/// `--update` fills exactly the missing ones.
+fn missing_capability_fields(m: &Model) -> (bool, bool) {
+    (m.max_input_tokens.is_none(), m.model_type.is_none())
+}
+
+/// `--update`: fill the target model's missing `max_input_tokens` / `type`
+/// from models.dev (24 h cache) and persist them into the config file. Only
+/// the missing fields are written, and only when the lookup finds a value.
+/// Best effort: lookup or persistence failures only warn and never block the
+/// request. Returns the fields that were actually filled (for reporting).
+fn update_model_capabilities(cfg: &mut Config, path: &Path, pi: usize, mi: usize) -> (Option<u64>, Option<String>) {
+    let m = &cfg.providers[pi].models[mi];
+    let (need_ctx, need_type) = missing_capability_fields(m);
+    if !need_ctx && !need_type {
+        return (None, None);
+    }
+    let (ctx, modl) = crate::ai::lookup_model_capabilities(&m.name);
+    let pname = cfg.providers[pi].name.clone();
+    let mname = cfg.providers[pi].models[mi].name.clone();
+    let model = &mut cfg.providers[pi].models[mi];
+    let mut filled_ctx = None;
+    let mut filled_type = None;
+    if need_ctx {
+        if let Some(c) = ctx {
+            model.max_input_tokens = Some(c);
+            if let Err(e) = update_model_field_in_config(path, &pname, &mname, "max_input_tokens", &c.to_string()) {
+                eprintln!("sys: warning: cannot persist max_input_tokens for {pname} / {mname}: {e:#}");
+            } else {
+                filled_ctx = Some(c);
+            }
+        }
+    }
+    if need_type {
+        if let Some(t) = &modl {
+            model.model_type = Some(t.clone());
+            if let Err(e) = update_model_field_in_config(path, &pname, &mname, "type", t) {
+                eprintln!("sys: warning: cannot persist type for {pname} / {mname}: {e:#}");
+            } else {
+                filled_type = Some(t.clone());
+            }
+        }
+    }
+    (filled_ctx, filled_type)
+}
+
 /// One chat round-trip through the weighted rotation. Before each HTTP request
 /// the message is truncated to the model's configured input limit
-/// (`max_input_tokens` from the config; absent = no truncation). Returns the
-/// model's reply text (which has already been streamed to stdout when
-/// streaming is active).
+/// (`max_input_tokens` from the config; absent = no truncation). With
+/// `update` set, the target model's missing `max_input_tokens` / `type` are
+/// first filled from models.dev and persisted (see `update_model_capabilities`).
+/// Returns the model's reply text (which has already been streamed to stdout
+/// when streaming is active).
 fn chat_once(
     cfg: &mut Config,
     path: &Path,
@@ -2354,6 +2412,7 @@ fn chat_once(
     debug: bool,
     no_stream: bool,
     model_override: Option<&str>,
+    update: bool,
 ) -> Result<String> {
     let selector = model_override.or(cfg.model.as_deref()).unwrap_or("<default>");
     let targets = resolve_targets(cfg, selector)?;
@@ -2376,6 +2435,23 @@ fn chat_once(
     let mut errors: Vec<String> = Vec::new();
     for ti in order {
         let t = &targets[ti];
+        if update {
+            let (ctx, typ) = update_model_capabilities(cfg, path, t.provider, t.model);
+            if ctx.is_some() || typ.is_some() {
+                let p = &cfg.providers[t.provider];
+                let m = &p.models[t.model];
+                eprintln!(
+                    "sys: update: filled {} for {} / {} (from models.dev)",
+                    [ctx.map(|c| format!("max_input_tokens={c}")), typ.map(|t| format!("type={t}"))]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    p.name,
+                    m.name
+                );
+            }
+        }
         let p = &cfg.providers[t.provider];
         let m = &p.models[t.model];
         eprintln!("sys: using {} / {} ({})", p.name, m.name, p.kind);
@@ -2409,8 +2485,8 @@ fn chat_once(
 
 /// `sys ai chat` core: runs `chat_once` and prints the reply when the
 /// request was non-streaming (streaming already printed to stdout).
-fn chat_with(cfg: &mut Config, path: &Path, msg: &str, debug: bool, no_stream: bool, model_override: Option<&str>) -> Result<()> {
-    let text = chat_once(cfg, path, msg, debug, no_stream, model_override)?;
+fn chat_with(cfg: &mut Config, path: &Path, msg: &str, debug: bool, no_stream: bool, model_override: Option<&str>, update: bool) -> Result<()> {
+    let text = chat_once(cfg, path, msg, debug, no_stream, model_override, update)?;
     let stream = cfg.stream && !debug && !no_stream;
     if !stream {
         println!("{text}");
@@ -2445,12 +2521,14 @@ pub(crate) fn print_models(cfg: &Config) {
     }
 }
 
-/// `sys ai chat [MSG...] [-m MODEL] [--list-model] [--list-provider] [-c FILE] [--debug] [--no-stream]`
+/// `sys ai chat [MSG...] [-m MODEL] [--list-model] [--list-provider] [-c FILE] [--debug] [--no-stream] [--update]`
 ///
 /// `-m/--model` overrides the top-level `model` from the config (same
 /// `{provider}:{model}` / `{model}` / comma-separated rules). `--list-model`
 /// prints every configured model (grouped by provider); `--list-provider`
-/// prints every configured provider.
+/// prints every configured provider. `--update` fills the target models'
+/// missing `max_input_tokens` / `type` from models.dev into the config file
+/// (best effort) before the request.
 pub fn cmd_chat(
     words: &[String],
     config: Option<&Path>,
@@ -2459,6 +2537,7 @@ pub fn cmd_chat(
     model: Option<&str>,
     list_model: bool,
     list_provider: bool,
+    update: bool,
 ) -> Result<()> {
     let (mut cfg, path) = load_config(config)?;
 
@@ -2487,7 +2566,7 @@ pub fn cmd_chat(
     } else {
         bail!("provide a message: `sys ai chat \"your message\"` (or pipe text via stdin)");
     };
-    chat_with(&mut cfg, &path, &msg, debug, no_stream, model)
+    chat_with(&mut cfg, &path, &msg, debug, no_stream, model, update)
 }
 
 /// `sys search QUERY [-c FILE] [--ai] [--no-answer] [--freshness VALUE]`
@@ -2680,7 +2759,7 @@ pub fn cmd_task(
                 None => msg,
             };
             println!("\n→ 执行任务 {}", task.name);
-            chat_with(&mut cfg, &path, &exec_msg, debug, no_stream, None)
+            chat_with(&mut cfg, &path, &exec_msg, debug, no_stream, None, false)
         }
     }
 }
@@ -2743,7 +2822,7 @@ fn score_all_tasks(cfg: &mut Config, path: &Path, params: &[String], debug: bool
              输出 0 到 10 的整数匹配分数（0=完全不匹配，10=完全匹配），只输出分数数字本身，不要任何其他内容。",
             tname, tdesc, user_msg
         );
-        match chat_once(cfg, path, &prompt, debug, true, None) {
+        match chat_once(cfg, path, &prompt, debug, true, None, false) {
             Ok(text) => {
                 let score = parse_score(&text);
                 if score.is_none() {
@@ -3331,6 +3410,7 @@ clients:
         let cfg = config_from_yaml(&y).unwrap();
         let m = &cfg.providers[0].models[0];
         assert_eq!(m.max_input_tokens, Some(1048576));
+        assert_eq!(m.model_type.as_deref(), Some("text,image"));
         assert_eq!(m.weight, 5);
         // Unknown model still errors.
         assert!(update_model_field_in_config(&p, "agnes", "nope", "type", "text").is_err());
@@ -3373,7 +3453,26 @@ clients:
         let cfg = config_from_yaml(&y).unwrap();
         let m = &cfg.providers[0].models[0];
         assert_eq!(m.max_input_tokens, Some(4096));
+        assert_eq!(m.model_type.as_deref(), Some("text,image"));
         assert_eq!(m.max_tokens, None);
+    }
+
+    #[test]
+    fn missing_capability_fields_reports_only_absent_ones() {
+        let full = Model {
+            name: "m".into(),
+            weight: 1,
+            max_tokens: None,
+            max_input_tokens: Some(4096),
+            model_type: Some("text,image".into()),
+        };
+        assert_eq!(missing_capability_fields(&full), (false, false));
+        let no_ctx = Model { max_input_tokens: None, ..full.clone() };
+        assert_eq!(missing_capability_fields(&no_ctx), (true, false));
+        let no_type = Model { model_type: None, ..full.clone() };
+        assert_eq!(missing_capability_fields(&no_type), (false, true));
+        let bare = Model { max_input_tokens: None, model_type: None, ..full.clone() };
+        assert_eq!(missing_capability_fields(&bare), (true, true));
     }
 
     #[test]

@@ -2,6 +2,15 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.39（2026-10-09）
+
+### 变更
+- **`sys ai chat --update`：显式补齐缺失的能力字段并写回配置**。不传该参数时保持 v0.4.38 的解耦行为（零查询、零写回）；传了才在发送前把本次目标模型**缺失**的 `max_input_tokens` / `type` 从 models.dev（24h 缓存）补齐并持久化到配置文件，best effort（查询或写入失败仅警告、不阻塞请求），字段已齐的模型不查询；stderr 打印实际补齐内容（如 `sys: update: filled max_input_tokens=..., type=... for ...`）
+- 恢复 ai.rs `lookup_model_capabilities`（exact 命中优先、fuzzy 次之，失败返回空）供 `--update` 使用；`Model.type` 字段随解析恢复（`--update` 需要判断 `type` 是否缺失；配置中已有的 `type: text,image` 行重新生效）
+- 抽出可单测的 `missing_capability_fields`（判定哪些字段缺失），新增单元测试；chat 的 `cmd_task` 路径不接 `--update`，保持零查询
+- 示例配置 `config.example.yaml`、README 5.2 与功能总览表同步更新
+- 版本 0.4.38 -> 0.4.39
+
 ## v0.4.38（2026-10-09）
 
 ### 变更

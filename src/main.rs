@@ -398,6 +398,10 @@ struct ChatArgs {
     /// Disable streaming even if the config sets stream: true
     #[arg(long)]
     no_stream: bool,
+    /// Fill missing max_input_tokens / type of the target models into the config
+    /// file (looked up in models.dev, 24 h cache; best effort — only runs with this flag)
+    #[arg(long)]
+    update: bool,
 }
 
 /// `sys ai server [ADDR]` — serve the configured providers as an
@@ -835,6 +839,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             c.model.as_deref(),
             c.list_model,
             c.list_provider,
+            c.update,
         ),
         AiCmd::Server(s) => {
             let bind = server::parse_addr(s.addr.as_deref().unwrap_or(""));

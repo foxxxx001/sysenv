@@ -389,6 +389,44 @@ fn model_modalities(m: &Value) -> String {
     out.join(",")
 }
 
+/// Best-effort lookup of a model's capabilities in the models.dev data (24h
+/// cache): returns `(context_tokens, modality_union)` of the **first** model
+/// whose id or name matches `model_name` (exact match first, then substring).
+/// Any failure (network / cache / no match) yields `(None, None)` so callers
+/// can degrade silently. Used by `sys ai chat --update` to fill missing
+/// `max_input_tokens` / `type` in the config.
+pub fn lookup_model_capabilities(model_name: &str) -> (Option<u64>, Option<String>) {
+    let data = match fetch_data(false) {
+        Ok(d) => d,
+        Err(_) => return (None, None),
+    };
+    let needle = model_name.to_ascii_lowercase();
+    let mut exact: Option<(Option<u64>, Option<String>)> = None;
+    let mut fuzzy: Option<(Option<u64>, Option<String>)> = None;
+    for (_, m) in all_models(&data) {
+        let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("").to_ascii_lowercase();
+        let name = m.get("name").and_then(|v| v.as_str()).unwrap_or("").to_ascii_lowercase();
+        let ctx = m
+            .get("limit")
+            .and_then(|v| v.get("context"))
+            .and_then(|v| v.as_u64())
+            .filter(|&c| c > 0);
+        let modl = model_modalities(&m);
+        let modl = if modl.is_empty() { None } else { Some(modl) };
+        let cap = (ctx, modl);
+        if id == needle || name == needle {
+            if exact.is_none() {
+                exact = Some(cap);
+            }
+        } else if id.contains(&needle) || name.contains(&needle) {
+            if fuzzy.is_none() {
+                fuzzy = Some(cap);
+            }
+        }
+    }
+    exact.or(fuzzy).unwrap_or((None, None))
+}
+
 /// Character length of a string field (used for column widths).
 fn field_len(m: &Value, key: &str) -> usize {
     m.get(key)
@@ -3712,12 +3750,14 @@ mod tests {
                             weight: 4,
                             max_tokens: None,
                             max_input_tokens: Some(524288),
+                            model_type: Some("text,image".into()),
                         },
                         chat::Model {
                             name: "deepseek-v4-flash".into(),
                             weight: 1,
                             max_tokens: None,
                             max_input_tokens: None,
+                            model_type: None,
                         },
                     ],
                 },
@@ -3731,6 +3771,7 @@ mod tests {
                         weight: 1,
                         max_tokens: None,
                         max_input_tokens: None,
+                        model_type: None,
                     }],
                 },
             ],
@@ -4077,6 +4118,7 @@ mod tests {
             weight: 1,
             max_tokens: None,
             max_input_tokens: None,
+            model_type: None,
         };
         chat::Config {
             model: Some("agnes:agn-1".to_string()),

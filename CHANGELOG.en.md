@@ -2,6 +2,15 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.39 (2026-10-09)
+
+### Changed
+- **`sys ai chat --update`: explicitly fill missing capability fields and write them back to the config.** Without the flag the v0.4.38 decoupled behavior stays (zero queries, zero write-backs). With it, before sending, the target models' **missing** `max_input_tokens` / `type` are looked up in models.dev (24 h cache) and persisted into the config file — best effort (lookup / write failures only warn and never block); models whose fields are already set are not queried; stderr prints what was actually filled (e.g. `sys: update: filled max_input_tokens=..., type=... for ...`)
+- Restored `lookup_model_capabilities` in ai.rs (exact match first, then fuzzy; failures yield empty) for `--update`; `Model.type` parsing restored (needed to tell whether `type` is missing — existing `type: text,image` lines become effective again)
+- Extracted a unit-testable `missing_capability_fields` decision helper with a new test; the `cmd_task` path does not accept `--update` and stays zero-query
+- `config.example.yaml` and README 5.2 / feature table updated accordingly
+- Version 0.4.38 -> 0.4.39
+
 ## v0.4.38 (2026-10-09)
 
 ### Changed
