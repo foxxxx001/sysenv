@@ -11,12 +11,17 @@
 //! - `json`: GET each address; the body must parse as JSON — every address is
 //!   reported (url / reachability / response time) as soon as it is probed;
 //! - `file`: GET each address; the body must be plain text (UTF-8, not JSON,
-//!   not binary) — same per-address reporting.
+//!   not binary) — same per-address reporting;
+//! - `test`: GET each address and probe reachability only; unreachable
+//!   addresses are reported on screen and removed from the source lines, then
+//!   the cleaned source (kept lines verbatim) is written to `-o`.
 //!
 //! `-o FILE` writes every address that passed (reachable + format matched) to
-//! FILE, one per line (json / file modes).
+//! FILE, one per line (json / file modes), or the cleaned source lines
+//! (test mode).
 
 use anyhow::{Context, Result, bail};
+use std::error::Error as _;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -32,6 +37,10 @@ pub enum NetType {
     /// The response body must be plain text (not JSON, not binary)
     #[value(name = "file")]
     File,
+    /// Probe reachability; unreachable addresses are reported, removed from
+    /// the source lines, and the cleaned result is written to `-o`
+    #[value(name = "test")]
+    Test,
 }
 
 impl NetType {
@@ -40,6 +49,7 @@ impl NetType {
             NetType::Domain => "domain",
             NetType::Json => "json",
             NetType::File => "file",
+            NetType::Test => "test",
         }
     }
 }
@@ -54,11 +64,20 @@ const DOMAIN_PROBES: usize = 3;
 // Input parsing
 // ---------------------------------------------------------------------------
 
+/// One http(s) address found inside a source line: its byte range in the line
+/// (`start..end`, including any trailing punctuation that the extractor kept)
+/// and the normalized URL used for probing.
+struct UrlSpan {
+    start: usize,
+    end: usize,
+    url: String,
+}
+
 /// Extract http(s) addresses from one line, preserving the original case of
 /// each address. An address starts at `http` (case-insensitive) and extends to
 /// the next whitespace; trailing punctuation is trimmed. A line may contain
 /// several addresses.
-pub fn extract_addresses(line: &str) -> Vec<String> {
+fn extract_address_spans(line: &str) -> Vec<UrlSpan> {
     let mut out = Vec::new();
     let lower = line.to_ascii_lowercase();
     let mut i = 0usize;
@@ -79,11 +98,18 @@ pub fn extract_addresses(line: &str) -> Vec<String> {
         let raw = &line[start..end];
         let trimmed = raw.trim_end_matches(is_trailing_punct);
         if trimmed.len() > 7 {
-            out.push(trimmed.to_string());
+            if let Some(url) = normalize_url(trimmed) {
+                out.push(UrlSpan { start, end, url });
+            }
         }
         i = end;
     }
     out
+}
+
+/// Extract the normalized http(s) addresses from one line (in order).
+pub fn extract_addresses(line: &str) -> Vec<String> {
+    extract_address_spans(line).into_iter().map(|s| s.url).collect()
 }
 
 /// Characters that terminate an address in running text (trimmed from the end).
@@ -202,7 +228,16 @@ fn short_error(e: reqwest::Error) -> String {
     if e.is_timeout() {
         return "timeout".to_string();
     }
-    let s = e.to_string();
+    // The reqwest wrapper repeats the URL (already printed in the [NO] line);
+    // walk the source chain and keep the deepest cause (e.g. "Connection
+    // refused (os error 10061)", DNS failures, TLS errors...).
+    let mut deepest: Option<String> = None;
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = e.source();
+    while let Some(src) = cur {
+        deepest = Some(src.to_string());
+        cur = src.source();
+    }
+    let s = deepest.unwrap_or_else(|| e.to_string());
     if s.len() <= 100 {
         s
     } else {
@@ -373,7 +408,7 @@ fn cmd_content(
                 let ok = match kind {
                     NetType::Json => got == BodyKind::Json,
                     NetType::File => got == BodyKind::Text,
-                    NetType::Domain => unreachable!("domain handled elsewhere"),
+                    NetType::Domain | NetType::Test => unreachable!("handled elsewhere"),
                 };
                 if ok {
                     n_ok += 1;
@@ -427,6 +462,96 @@ fn cmd_content(
 }
 
 // ---------------------------------------------------------------------------
+// test mode
+// ---------------------------------------------------------------------------
+
+/// Rebuild a source line without the unreachable addresses (`alive[i]` says
+/// whether `spans[i]` is reachable). Reachable addresses keep their original
+/// text; unreachable ones (including the trailing punctuation the extractor
+/// kept) are dropped.
+fn rebuild_line(line: &str, spans: &[UrlSpan], alive: &[bool]) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut pos = 0usize;
+    for (span, ok) in spans.iter().zip(alive) {
+        out.push_str(&line[pos..span.start]);
+        if *ok {
+            out.push_str(&line[span.start..span.end]);
+        }
+        pos = span.end;
+    }
+    out.push_str(&line[pos..]);
+    out
+}
+
+/// `sys net -t test -i FILE [-o FILE]` — probe every address for
+/// reachability; unreachable addresses are reported on screen and removed
+/// from the source lines; the cleaned result is written to `-o` (lines kept
+/// verbatim, empty / `#` comment / non-URL lines are always kept).
+fn cmd_test(client: &reqwest::blocking::Client, input: &Path, output: Option<&Path>) -> Result<()> {
+    let raw = std::fs::read(input).with_context(|| format!("cannot read {}", input.display()))?;
+    let text = String::from_utf8_lossy(&raw);
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text.as_ref());
+
+    let mut kept: Vec<String> = Vec::new();
+    let mut n_lines = 0usize;
+    let mut n_addr = 0usize;
+    let mut n_unreach = 0usize;
+    let mut n_deleted_lines = 0usize;
+
+    for line in text.lines() {
+        n_lines += 1;
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            kept.push(line.to_string());
+            continue;
+        }
+        let spans = extract_address_spans(line);
+        if spans.is_empty() {
+            kept.push(line.to_string());
+            continue;
+        }
+
+        let mut alive = Vec::with_capacity(spans.len());
+        for span in &spans {
+            n_addr += 1;
+            match request(client, &span.url, false) {
+                Ok(_) => alive.push(true),
+                Err(e) => {
+                    alive.push(false);
+                    n_unreach += 1;
+                    println!("[NO]  {}  error={e}", span.url);
+                }
+            }
+        }
+
+        if alive.iter().all(|a| *a) {
+            kept.push(line.to_string());
+        } else if alive.iter().any(|a| *a) {
+            // multi-address line: drop only the unreachable addresses
+            kept.push(rebuild_line(line, &spans, &alive));
+        } else {
+            // every address on the line is unreachable -> delete the line
+            n_deleted_lines += 1;
+        }
+    }
+
+    println!(
+        "--- checked {n_addr} address(es) in {n_lines} line(s): {n_unreach} unreachable, {} line(s) kept, {n_deleted_lines} line(s) deleted ---",
+        kept.len()
+    );
+    if let Some(out) = output {
+        let mut s = String::new();
+        for l in &kept {
+            s.push_str(l);
+            s.push('\n');
+        }
+        std::fs::write(out, s).with_context(|| format!("cannot write {}", out.display()))?;
+        println!("wrote {} line(s) to {}", kept.len(), out.display());
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -440,7 +565,6 @@ pub fn cmd_net(
     if !(timeout_secs > 0.0) || !timeout_secs.is_finite() {
         bail!("--timeout must be a positive number of seconds");
     }
-    let urls = read_addresses(input)?;
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs_f64(timeout_secs))
         .build()
@@ -450,13 +574,18 @@ pub fn cmd_net(
         NetType::Domain => {
             if let Some(out) = output {
                 eprintln!(
-                    "warning: -o/--output applies to `-t json|file` only; ignored ({})",
+                    "warning: -o/--output applies to `-t json|file|test` only; ignored ({})",
                     out.display()
                 );
             }
+            let urls = read_addresses(input)?;
             cmd_domain(&client, &urls)
         }
-        NetType::Json | NetType::File => cmd_content(&client, &urls, kind, output),
+        NetType::Json | NetType::File => {
+            let urls = read_addresses(input)?;
+            cmd_content(&client, &urls, kind, output)
+        }
+        NetType::Test => cmd_test(&client, input, output),
     }
 }
 
@@ -736,5 +865,83 @@ mod tests {
         let err = cmd_net(&input, NetType::Domain, None, 0.0).unwrap_err();
         let _ = std::fs::remove_file(&input);
         assert!(err.to_string().contains("--timeout"));
+    }
+
+    // --- test mode ---
+
+    fn dead_url() -> String {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l);
+        format!("http://127.0.0.1:{port}/x")
+    }
+
+    #[test]
+    fn test_mode_deletes_unreachable_lines_and_keeps_others() {
+        let good = spawn_server(TEXT_BODY, "text/plain", Duration::ZERO);
+        let bad = dead_url();
+        let input = temp_file("test-in1");
+        let out = temp_file("test-out1");
+        std::fs::write(
+            &input,
+            format!("# comment stays\n\n{good}\n{bad}\nplain text line without url\n"),
+        )
+        .unwrap();
+        cmd_net(&input, NetType::Test, Some(&out), 10.0).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(
+            lines,
+            vec!["# comment stays", "", good.as_str(), "plain text line without url"],
+            "bad line must be deleted, everything else kept: {content:?}"
+        );
+    }
+
+    #[test]
+    fn test_mode_multi_address_line_keeps_only_alive_ones() {
+        let good = spawn_server(TEXT_BODY, "text/plain", Duration::ZERO);
+        let bad = dead_url();
+        let input = temp_file("test-in2");
+        let out = temp_file("test-out2");
+        std::fs::write(&input, format!("see {bad}, and {good} now\n")).unwrap();
+        cmd_net(&input, NetType::Test, Some(&out), 10.0).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        assert!(content.contains(&good), "alive address kept: {content:?}");
+        assert!(!content.contains(&bad), "dead address removed: {content:?}");
+        assert_eq!(content.lines().count(), 1, "line kept: {content:?}");
+    }
+
+    #[test]
+    fn test_mode_all_dead_line_is_deleted() {
+        let bad1 = dead_url();
+        let bad2 = dead_url();
+        let input = temp_file("test-in3");
+        let out = temp_file("test-out3");
+        std::fs::write(&input, format!("{bad1} and {bad2}\n")).unwrap();
+        cmd_net(&input, NetType::Test, Some(&out), 10.0).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        assert!(content.is_empty(), "all-dead line must be deleted: {content:?}");
+    }
+
+    #[test]
+    fn test_mode_rebuild_keeps_surrounding_text() {
+        let good = spawn_server(TEXT_BODY, "text/plain", Duration::ZERO);
+        let bad = dead_url();
+        let line = rebuild_line(
+            &format!("prefix {bad} middle {good} suffix"),
+            &extract_address_spans(&format!("prefix {bad} middle {good} suffix")),
+            &[false, true],
+        );
+        assert!(line.contains("prefix "));
+        assert!(line.contains(" middle "));
+        assert!(line.contains(&good));
+        assert!(line.contains(" suffix"));
+        assert!(!line.contains(&bad));
     }
 }

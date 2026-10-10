@@ -45,6 +45,7 @@ Examples:
   sys ai info list-model agnes
   sys search \"今天的头条新闻\"
   sys net -i urls.txt -t domain
+  sys net -i urls.txt -t test -o ok.txt
   sys task list
   sys task kill 1234
   sys short
@@ -93,7 +94,7 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     Ai(AiArgs),
     /// Web search via the configured Bocha AI API (web-search; --ai uses ai-search)
     Search(SearchArgs),
-    /// Probe domains / URLs read from a file: -i FILE [-t domain|json|file] [-o FILE] [--timeout SECONDS]
+    /// Probe domains / URLs read from a file: -i FILE [-t domain|json|file|test] [-o FILE] [--timeout SECONDS]
     Net(NetArgs),
     /// Query and kill processes (list PID/name/path; kill by PID or name; no args lists all)
     Task(TaskArgs),
@@ -548,10 +549,10 @@ struct NetArgs {
     /// Input file containing http(s) addresses (lines starting with # are skipped; each line may hold several addresses)
     #[arg(short = 'i', long, value_name = "FILE")]
     input: PathBuf,
-    /// Detection type: domain (default, 3 probes averaged) | json (body must be JSON) | file (body must be plain text)
+    /// Detection type: domain (default, 3 probes averaged) | json (body must be JSON) | file (body must be plain text) | test (probe reachability, delete unreachable lines, -o writes the cleaned source)
     #[arg(short = 't', long, value_name = "TYPE", value_enum, default_value_t = net::NetType::Domain)]
     kind: net::NetType,
-    /// Write the passed (reachable + format-matched) URLs to this file, one per line (json/file modes only)
+    /// Write the passed (reachable + format-matched) URLs, or the cleaned source lines in test mode, to this file
     #[arg(short = 'o', long, value_name = "FILE")]
     output: Option<PathBuf>,
     /// Per-request timeout in seconds (default 10)

@@ -58,7 +58,7 @@ Commands:
 | 格式转换      | `con`                | json / csv / md / yaml 互转：默认读 stdin（`cat a.json | sys con`），`-file` 读文件，`-i` 输入格式，`-o` 输出格式，`-out` 写文件；表格类转对象数组（类型推断 + 转义） |
 | 联网搜索      | `search`             | 博查 AI 网页搜索 API（`POST api.bochaai.com/v1/web-search`）：`--freshness`（时间过滤）/ `--summary`（AI 摘要）/ `--count`（1-50）/ `--page` / `--include-domains` / `--exclude-domains`（域名白黑名单），参数与官网接口一致；key 取自配置 `search` 段；`--json` 原始响应 / `--debug` 请求与响应。`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡（`--no-answer` 关闭 AI 答案） |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
-| 网络探测      | `net`                | 从文件批量读取 http(s) 地址并探测：`-i` 读文件（`#` 注释行跳过、每行多个地址、地址截取到空格/标点）；`-t domain`（默认，连续 3 次 GET 取平均响应时间，全部测完按平均时间升序打印）/ `-t json`（响应体须为 JSON）/ `-t file`（响应体须为普通文本）；json/file 模式每测完一个即打印 url/可用性/状态码/响应时间/格式；`-o` 把检测成功的 url 写入文件（一行一个）；`--timeout` 单次请求超时 |
+| 网络探测      | `net`                | 从文件批量读取 http(s) 地址并探测：`-i` 读文件（`#` 注释行跳过、每行多个地址、地址截取到空格/标点）；`-t domain`（默认，连续 3 次 GET 取平均响应时间，全部测完按平均时间升序打印）/ `-t json`（响应体须为 JSON）/ `-t file`（响应体须为普通文本）/ `-t test`（只探测可访问性，不可访问的屏幕打印错误并从源文件删除，`-o` 输出清理后的源文件行）；json/file 模式每测完一个即打印 url/可用性/状态码/响应时间/格式，`-o` 把检测成功的 url 写入文件（一行一个）；`--timeout` 单次请求超时 |
 | 快捷垫片      | `short`              | 一键安装九种短命令（spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon）；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
 
 
@@ -849,6 +849,12 @@ sys short --temporary  # 不持久化 PATH，只打印可粘贴的片段
 
 * `-t file`：对每个地址发起 GET，响应体必须是**普通文本**（UTF-8 非二进制，且不是 JSON）才算通过
 
+* `-t test`：只探测**可访问性**（收到任何 HTTP 响应即视为可访问，与 json/file 口径一致）：
+  * 不可访问的地址在屏幕打印 `[NO] <url>  error=<原因>`，并从源文件中删除
+  * 单地址行不可访问 → 删除整行；多地址行只删除其中不可访问的地址（保留可访问部分），整行全部不可访问才删除整行
+  * 空行、`#` 注释行、不含地址的文本行一律保留
+  * `-o FILE`：把**删除后的源文件结果**写入指定文件（保留的行按原顺序、原文本），一行一行
+
 * json / file 模式**每测完一个立即打印**一条结果：URL / 是否可用 / 状态码 / 响应时间 / 实际格式（json / text / binary）
 
 * `-o FILE`：把**检测成功**（地址可访问且格式符合 `-t` 要求）的 url 写入指定文件，一行一个（仅 json / file 模式有效）
@@ -869,6 +875,7 @@ https://www.example.com/readme.txt
 sys net -i urls.txt -t domain              # 3 次探测取平均，按平均响应时间升序打印
 sys net -i urls.txt -t json -o ok.json.txt # 只把返回 JSON 的可用地址写入文件
 sys net -i urls.txt -t file -o ok.txt      # 只把返回普通文本的可用地址写入文件
+sys net -i urls.txt -t test -o clean.txt   # 探测可访问性，不可访问打印错误并从源文件删除，结果写入 clean.txt
 sys net -i urls.txt -t json --timeout 5    # 单次请求超时 5 秒
 ```
 
