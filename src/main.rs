@@ -6,6 +6,7 @@ mod file;
 mod httpie;
 mod image;
 mod link;
+mod net;
 mod path;
 mod short;
 mod server;
@@ -22,7 +23,7 @@ use std::process::ExitCode;
     name = "sys",
     version = concat!(env!("CARGO_PKG_VERSION"), " (Made by Gary-china)"),
     about = "System PATH & environment manager + httpie-compatible HTTP client (Windows / Ubuntu)",
-    long_about = "sys manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, runs web searches through the Bocha AI API (config `search` section), installs command shims (spath/senv/slink/shttp/sai/stask/ssearch/sfile/scon), and ships an httpie-compatible HTTP client.
+    long_about = "sys manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, runs web searches through the Bocha AI API (config `search` section), probes domains / URLs read from a file (`sys net`, response-time / JSON / plain-text checks), installs command shims (spath/senv/slink/shttp/sai/stask/ssearch/sfile/scon), and ships an httpie-compatible HTTP client.
 
 Examples:
   sys path list
@@ -43,6 +44,7 @@ Examples:
   sys ai info sale-price agnes
   sys ai info list-model agnes
   sys search \"今天的头条新闻\"
+  sys net -i urls.txt -t domain
   sys task list
   sys task kill 1234
   sys short
@@ -91,6 +93,8 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     Ai(AiArgs),
     /// Web search via the configured Bocha AI API (web-search; --ai uses ai-search)
     Search(SearchArgs),
+    /// Probe domains / URLs read from a file: -i FILE [-t domain|json|file] [-o FILE] [--timeout SECONDS]
+    Net(NetArgs),
     /// Query and kill processes (list PID/name/path; kill by PID or name; no args lists all)
     Task(TaskArgs),
     /// fd/sd-style text search and replacement: search stdin or a directory tree, or replace a string in place
@@ -540,6 +544,22 @@ enum TaskCmd {
 }
 
 #[derive(Args)]
+struct NetArgs {
+    /// Input file containing http(s) addresses (lines starting with # are skipped; each line may hold several addresses)
+    #[arg(short = 'i', long, value_name = "FILE")]
+    input: PathBuf,
+    /// Detection type: domain (default, 3 probes averaged) | json (body must be JSON) | file (body must be plain text)
+    #[arg(short = 't', long, value_name = "TYPE", value_enum, default_value_t = net::NetType::Domain)]
+    kind: net::NetType,
+    /// Write the passed (reachable + format-matched) URLs to this file, one per line (json/file modes only)
+    #[arg(short = 'o', long, value_name = "FILE")]
+    output: Option<PathBuf>,
+    /// Per-request timeout in seconds (default 10)
+    #[arg(long, value_name = "SECONDS", default_value_t = net::DEFAULT_TIMEOUT_SECS)]
+    timeout: f64,
+}
+
+#[derive(Args)]
 struct FileArgs {
     /// PATTERN, or PATTERN PATH, or OLD NEW PATH (path = file or directory)
     #[arg(value_name = "ARGS")]
@@ -730,6 +750,7 @@ fn main() -> ExitCode {
         Cmd::Http(h) => run_http(h),
         Cmd::Ai(a) => run_ai(a).map(|_| 0),
         Cmd::Search(s) => run_search(s).map(|_| 0),
+        Cmd::Net(n) => run_net(n).map(|_| 0),
         Cmd::File(f) => file::cmd_file(
             &f.args,
             &f.ext,
@@ -907,6 +928,10 @@ fn run_search(s: SearchArgs) -> anyhow::Result<()> {
         s.ai,
         s.no_answer,
     )
+}
+
+fn run_net(n: NetArgs) -> anyhow::Result<()> {
+    net::cmd_net(&n.input, n.kind, n.output.as_deref(), n.timeout)
 }
 
 fn run_task(t: TaskArgs) -> anyhow::Result<()> {

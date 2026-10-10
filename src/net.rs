@@ -1,0 +1,740 @@
+//! `sys net` — probe domains / URLs read from a file.
+//!
+//! The input file is read line by line:
+//! - lines starting with `#` (after leading whitespace) are skipped;
+//! - each http(s) address runs from `http` to the next whitespace, with
+//!   trailing punctuation trimmed; one line may hold several addresses.
+//!
+//! Detection types (`-t`):
+//! - `domain` (default): GET each address 3 times and average the response
+//!   time, then print every address sorted by that average;
+//! - `json`: GET each address; the body must parse as JSON — every address is
+//!   reported (url / reachability / response time) as soon as it is probed;
+//! - `file`: GET each address; the body must be plain text (UTF-8, not JSON,
+//!   not binary) — same per-address reporting.
+//!
+//! `-o FILE` writes every address that passed (reachable + format matched) to
+//! FILE, one per line (json / file modes).
+
+use anyhow::{Context, Result, bail};
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+/// Detection type for `sys net -t`.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetType {
+    /// Probe the address 3 times and average the response time
+    #[value(name = "domain")]
+    Domain,
+    /// The response body must parse as JSON
+    #[value(name = "json")]
+    Json,
+    /// The response body must be plain text (not JSON, not binary)
+    #[value(name = "file")]
+    File,
+}
+
+impl NetType {
+    fn label(self) -> &'static str {
+        match self {
+            NetType::Domain => "domain",
+            NetType::Json => "json",
+            NetType::File => "file",
+        }
+    }
+}
+
+/// Default per-request timeout in seconds.
+pub const DEFAULT_TIMEOUT_SECS: f64 = 10.0;
+
+/// Number of probes per address in `domain` mode.
+const DOMAIN_PROBES: usize = 3;
+
+// ---------------------------------------------------------------------------
+// Input parsing
+// ---------------------------------------------------------------------------
+
+/// Extract http(s) addresses from one line, preserving the original case of
+/// each address. An address starts at `http` (case-insensitive) and extends to
+/// the next whitespace; trailing punctuation is trimmed. A line may contain
+/// several addresses.
+pub fn extract_addresses(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let lower = line.to_ascii_lowercase();
+    let mut i = 0usize;
+    while i < lower.len() {
+        let Some(rel) = lower[i..].find("http") else { break };
+        let start = i + rel;
+        let after = &lower[start + 4..];
+        if !(after.starts_with("://") || after.starts_with("s://")) {
+            i = start + 4;
+            continue;
+        }
+        // extend to the next whitespace (Unicode-aware)
+        let end = line[start..]
+            .char_indices()
+            .find(|(_, c)| c.is_whitespace())
+            .map(|(p, _)| start + p)
+            .unwrap_or(line.len());
+        let raw = &line[start..end];
+        let trimmed = raw.trim_end_matches(is_trailing_punct);
+        if trimmed.len() > 7 {
+            out.push(trimmed.to_string());
+        }
+        i = end;
+    }
+    out
+}
+
+/// Characters that terminate an address in running text (trimmed from the end).
+fn is_trailing_punct(c: char) -> bool {
+    matches!(
+        c,
+        '.' | ','
+            | ';'
+            | ':'
+            | '!'
+            | '?'
+            | '"'
+            | '\''
+            | '('
+            | ')'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '<'
+            | '>'
+            | '\\'
+            | '|'
+            // full-width / CJK punctuation
+            | '，'
+            | '。'
+            | '；'
+            | '：'
+            | '！'
+            | '？'
+            | '、'
+            | '（'
+            | '）'
+            | '【'
+            | '】'
+            | '《'
+            | '》'
+            | '〈'
+            | '〉'
+            | '“'
+            | '”'
+            | '‘'
+            | '’'
+            | '…'
+    )
+}
+
+/// Normalize the scheme to lowercase and validate the address.
+fn normalize_url(raw: &str) -> Option<String> {
+    let lower = raw.to_ascii_lowercase();
+    let (scheme, rest_start) = if lower.starts_with("https://") {
+        ("https://", 8usize)
+    } else if lower.starts_with("http://") {
+        ("http://", 7usize)
+    } else {
+        return None;
+    };
+    let rest = &raw[rest_start..];
+    if rest.is_empty() {
+        return None;
+    }
+    let parsed = url::Url::parse(raw).ok()?;
+    if parsed.host_str().is_none() {
+        return None;
+    }
+    Some(format!("{scheme}{rest}"))
+}
+
+/// Read the input file and return every validated http(s) address in order.
+fn read_addresses(input: &Path) -> Result<Vec<String>> {
+    let raw = std::fs::read(input).with_context(|| format!("cannot read {}", input.display()))?;
+    let text = String::from_utf8_lossy(&raw);
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text.as_ref());
+    let mut urls = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') || trimmed.is_empty() {
+            continue;
+        }
+        for raw_url in extract_addresses(line) {
+            if let Some(u) = normalize_url(&raw_url) {
+                urls.push(u);
+            }
+        }
+    }
+    if urls.is_empty() {
+        bail!("no http(s) addresses found in {}", input.display());
+    }
+    Ok(urls)
+}
+
+// ---------------------------------------------------------------------------
+// Probing
+// ---------------------------------------------------------------------------
+
+/// A single GET request. `want_body` reads the full body and reports the time
+/// until it is fully received; otherwise only the response headers are waited
+/// for. Returns `(status, elapsed, body)`.
+fn request(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    want_body: bool,
+) -> Result<(u16, Duration, Option<Vec<u8>>), String> {
+    let start = Instant::now();
+    let resp = client.get(url).send().map_err(short_error)?;
+    let status = resp.status().as_u16();
+    if want_body {
+        let body = resp.bytes().map_err(short_error)?.to_vec();
+        Ok((status, start.elapsed(), Some(body)))
+    } else {
+        Ok((status, start.elapsed(), None))
+    }
+}
+
+fn short_error(e: reqwest::Error) -> String {
+    if e.is_timeout() {
+        return "timeout".to_string();
+    }
+    let s = e.to_string();
+    if s.len() <= 100 {
+        s
+    } else {
+        let mut t = s;
+        t.truncate(97);
+        format!("{t}…")
+    }
+}
+
+/// Classification of a received body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodyKind {
+    Json,
+    Text,
+    Binary,
+}
+
+impl BodyKind {
+    fn label(self) -> &'static str {
+        match self {
+            BodyKind::Json => "json",
+            BodyKind::Text => "text",
+            BodyKind::Binary => "binary",
+        }
+    }
+}
+
+fn body_kind(body: &[u8]) -> BodyKind {
+    if serde_json::from_slice::<serde_json::Value>(body).is_ok() {
+        return BodyKind::Json;
+    }
+    if is_plain_text(body) {
+        BodyKind::Text
+    } else {
+        BodyKind::Binary
+    }
+}
+
+/// Plain text = valid UTF-8, no NUL bytes, and at most 2% control characters
+/// (excluding tab / LF / CR).
+fn is_plain_text(body: &[u8]) -> bool {
+    if std::str::from_utf8(body).is_err() {
+        return false;
+    }
+    let mut ctrl = 0usize;
+    for &b in body {
+        if b == 0 {
+            return false;
+        }
+        if b < 0x20 && b != b'\t' && b != b'\n' && b != b'\r' {
+            ctrl += 1;
+        }
+    }
+    ctrl * 100 <= body.len().max(1) * 2
+}
+
+// ---------------------------------------------------------------------------
+// domain mode
+// ---------------------------------------------------------------------------
+
+struct DomainResult {
+    url: String,
+    times: Vec<Duration>,
+    last_error: Option<String>,
+}
+
+impl DomainResult {
+    fn avg(&self) -> Option<Duration> {
+        if self.times.is_empty() {
+            None
+        } else {
+            Some(self.times.iter().sum::<Duration>() / self.times.len() as u32)
+        }
+    }
+
+    fn reachable(&self) -> bool {
+        !self.times.is_empty()
+    }
+}
+
+fn probe_domains(client: &reqwest::blocking::Client, urls: &[String]) -> Vec<DomainResult> {
+    let mut results = Vec::with_capacity(urls.len());
+    for url in urls {
+        let mut times = Vec::new();
+        let mut last_error = None;
+        for _ in 0..DOMAIN_PROBES {
+            match request(client, url, false) {
+                Ok((_, elapsed, _)) => times.push(elapsed),
+                Err(e) => last_error = Some(e),
+            }
+        }
+        results.push(DomainResult {
+            url: url.clone(),
+            times,
+            last_error,
+        });
+    }
+    results
+}
+
+/// Render the sorted domain report (reachable by average response time first,
+/// then unreachable addresses in input order).
+fn render_domain(results: &[DomainResult]) -> Vec<String> {
+    let mut reachable: Vec<&DomainResult> = results.iter().filter(|r| r.reachable()).collect();
+    reachable.sort_by(|a, b| a.avg().unwrap().cmp(&b.avg().unwrap()));
+    let unreachable: Vec<&DomainResult> = results.iter().filter(|r| !r.reachable()).collect();
+
+    let w = results
+        .iter()
+        .map(|r| r.url.chars().count())
+        .max()
+        .unwrap_or(8)
+        .max(8);
+
+    let mut lines = vec!["=== domain response time (3 probes, average) ===".to_string()];
+    for r in &reachable {
+        let mut line = format!(
+            "{:<w$}  avg={:<9}  probes={}",
+            r.url,
+            fmt_ms(r.avg().unwrap()),
+            fmt_probes(&r.times)
+        );
+        if r.times.len() < DOMAIN_PROBES {
+            line.push_str(&format!("  ({}/3 ok)", r.times.len()));
+        }
+        lines.push(line);
+    }
+    for r in &unreachable {
+        let why = r.last_error.as_deref().unwrap_or("no response");
+        lines.push(format!("{:<w$}  unreachable ({why})", r.url));
+    }
+    lines.push(format!(
+        "--- {} of {} domains reachable ---",
+        reachable.len(),
+        results.len()
+    ));
+    lines
+}
+
+fn cmd_domain(client: &reqwest::blocking::Client, urls: &[String]) -> Result<()> {
+    let results = probe_domains(client, urls);
+    for line in render_domain(&results) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// json / file modes
+// ---------------------------------------------------------------------------
+
+fn cmd_content(
+    client: &reqwest::blocking::Client,
+    urls: &[String],
+    kind: NetType,
+    output: Option<&Path>,
+) -> Result<()> {
+    let w = urls.iter().map(|u| u.chars().count()).max().unwrap_or(8).max(8);
+    let mut passed: Vec<String> = Vec::new();
+    let mut n_ok = 0usize;
+    let mut n_mismatch = 0usize;
+    let mut n_no = 0usize;
+
+    for url in urls {
+        match request(client, url, true) {
+            Ok((status, elapsed, Some(body))) => {
+                let got = body_kind(&body);
+                let ok = match kind {
+                    NetType::Json => got == BodyKind::Json,
+                    NetType::File => got == BodyKind::Text,
+                    NetType::Domain => unreachable!("domain handled elsewhere"),
+                };
+                if ok {
+                    n_ok += 1;
+                    passed.push(url.clone());
+                    println!(
+                        "[OK]  {:<w$}  status={status}  time={:<9}  format={}",
+                        url,
+                        fmt_ms(elapsed),
+                        got.label()
+                    );
+                } else {
+                    n_mismatch += 1;
+                    println!(
+                        "[FMT] {:<w$}  status={status}  time={:<9}  got={} (expected {})",
+                        url,
+                        fmt_ms(elapsed),
+                        got.label(),
+                        kind.label()
+                    );
+                }
+            }
+            Ok((status, _, None)) => {
+                n_no += 1;
+                println!("[NO]  {:<w$}  status={status}  unexpected empty body", url);
+            }
+            Err(e) => {
+                n_no += 1;
+                println!("[NO]  {:<w$}  error={e}", url);
+            }
+        }
+    }
+
+    println!(
+        "--- {} of {} URLs passed ({} unreachable, {} format mismatch) ---",
+        n_ok,
+        urls.len(),
+        n_no,
+        n_mismatch
+    );
+
+    if let Some(out) = output {
+        let mut s = String::new();
+        for u in &passed {
+            s.push_str(u);
+            s.push('\n');
+        }
+        std::fs::write(out, s).with_context(|| format!("cannot write {}", out.display()))?;
+        println!("wrote {} URL(s) to {}", passed.len(), out.display());
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+/// `sys net -i FILE [-t domain|json|file] [-o FILE] [--timeout SECONDS]`
+pub fn cmd_net(
+    input: &Path,
+    kind: NetType,
+    output: Option<&Path>,
+    timeout_secs: f64,
+) -> Result<()> {
+    if !(timeout_secs > 0.0) || !timeout_secs.is_finite() {
+        bail!("--timeout must be a positive number of seconds");
+    }
+    let urls = read_addresses(input)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs_f64(timeout_secs))
+        .build()
+        .context("cannot build HTTP client")?;
+
+    match kind {
+        NetType::Domain => {
+            if let Some(out) = output {
+                eprintln!(
+                    "warning: -o/--output applies to `-t json|file` only; ignored ({})",
+                    out.display()
+                );
+            }
+            cmd_domain(&client, &urls)
+        }
+        NetType::Json | NetType::File => cmd_content(&client, &urls, kind, output),
+    }
+}
+
+fn fmt_ms(d: Duration) -> String {
+    format!("{:.1}ms", d.as_secs_f64() * 1000.0)
+}
+
+fn fmt_probes(times: &[Duration]) -> String {
+    times
+        .iter()
+        .map(|t| fmt_ms(*t))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+
+    const JSON_BODY: &[u8] = br#"{"ok":true,"n":42}"#;
+    const TEXT_BODY: &[u8] = b"hello plain text file\nsecond line\n";
+    const BIN_BODY: &[u8] = &[0x89, b'P', b'N', b'G', 0, 1, 2, 3, 0xFF, 0xFE, 0xFD];
+
+    fn test_client() -> reqwest::blocking::Client {
+        reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("build test client")
+    }
+
+    /// Serve `body` with `content_type` on an ephemeral 127.0.0.1 port and
+    /// return its URL. Each connection sleeps `delay` first (used to make one
+    /// server measurably slower). The socket is closed cleanly (FIN first,
+    /// then the request bytes are drained) so Windows never sends a RST that
+    /// would make reqwest fail the body read.
+    fn spawn_server(body: &'static [u8], content_type: &'static str, delay: Duration) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        let url = format!("http://127.0.0.1:{}/test", addr.port());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                if !delay.is_zero() {
+                    std::thread::sleep(delay);
+                }
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(body);
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                let mut buf = [0u8; 4096];
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => continue,
+                    }
+                }
+            }
+        });
+        url
+    }
+
+    fn temp_file(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("sys-net-{tag}-{}.txt", std::process::id()))
+    }
+
+    // --- parsing ---
+
+    #[test]
+    fn extracts_multiple_addresses_per_line() {
+        let urls = extract_addresses("see http://a.com/x, then https://b.com/y! and more");
+        assert_eq!(urls, vec!["http://a.com/x", "https://b.com/y"]);
+    }
+
+    #[test]
+    fn skips_comments_and_empty_lines() {
+        let path = temp_file("comments");
+        std::fs::write(
+            &path,
+            "# comment\n\n  # indented comment\nhttp://a.com\nhttp://b.com and https://c.com\n",
+        )
+        .unwrap();
+        let urls = read_addresses(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(urls, vec!["http://a.com", "http://b.com", "https://c.com"]);
+    }
+
+    #[test]
+    fn trims_trailing_punctuation() {
+        assert_eq!(extract_addresses("(http://a.com/path)."), vec!["http://a.com/path"]);
+        assert_eq!(
+            extract_addresses("http://a.com/x?a=1&b=2;"),
+            vec!["http://a.com/x?a=1&b=2"]
+        );
+    }
+
+    #[test]
+    fn keeps_query_and_fragment() {
+        let urls = extract_addresses("go http://a.com/api?x=1&y=two#frag now");
+        assert_eq!(urls, vec!["http://a.com/api?x=1&y=two#frag"]);
+    }
+
+    #[test]
+    fn ignores_http_like_words() {
+        assert!(extract_addresses("the http client is nice").is_empty());
+        assert!(extract_addresses("no scheme: https-not-a-url").is_empty());
+    }
+
+    #[test]
+    fn normalize_url_validates() {
+        assert_eq!(
+            normalize_url("HTTP://Example.COM/x").unwrap(),
+            "http://Example.COM/x"
+        );
+        assert_eq!(normalize_url("https://a.com").unwrap(), "https://a.com");
+        assert!(normalize_url("http://").is_none());
+        assert!(normalize_url("ftp://a.com").is_none());
+    }
+
+    #[test]
+    fn body_kind_detection() {
+        assert_eq!(body_kind(JSON_BODY), BodyKind::Json);
+        assert_eq!(body_kind(TEXT_BODY), BodyKind::Text);
+        assert_eq!(body_kind(BIN_BODY), BodyKind::Binary);
+        assert_eq!(body_kind(b"not json at all"), BodyKind::Text);
+    }
+
+    // --- probing ---
+
+    #[test]
+    fn json_probe_reports_ok() {
+        let url = spawn_server(JSON_BODY, "application/json", Duration::ZERO);
+        let (status, _, body) = request(&test_client(), &url, true).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body_kind(&body.expect("body expected")), BodyKind::Json);
+    }
+
+    #[test]
+    fn file_probe_reports_ok() {
+        let url = spawn_server(TEXT_BODY, "text/plain", Duration::ZERO);
+        let (status, _, body) = request(&test_client(), &url, true).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body_kind(&body.expect("body expected")), BodyKind::Text);
+    }
+
+    #[test]
+    fn unreachable_probe_fails() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l); // port is now closed
+        let url = format!("http://127.0.0.1:{port}/x");
+        assert!(request(&test_client(), &url, true).is_err());
+    }
+
+    #[test]
+    fn domain_mode_probes_three_times_and_averages() {
+        let fast = spawn_server(TEXT_BODY, "text/plain", Duration::ZERO);
+        let slow = spawn_server(TEXT_BODY, "text/plain", Duration::from_millis(120));
+        let client = test_client();
+        let results = probe_domains(&client, &[slow, fast]);
+        assert_eq!(results.len(), 2);
+        for r in &results {
+            assert!(r.reachable());
+            assert_eq!(r.times.len(), 3, "three probes for {}", r.url);
+            assert!(r.last_error.is_none());
+        }
+        assert!(results[0].avg().unwrap() > results[1].avg().unwrap());
+    }
+
+    #[test]
+    fn render_domain_sorts_reachable_first() {
+        let r1 = DomainResult {
+            url: "http://fast.com".into(),
+            times: vec![Duration::from_millis(10); 3],
+            last_error: None,
+        };
+        let r2 = DomainResult {
+            url: "http://slow.com".into(),
+            times: vec![Duration::from_millis(800); 3],
+            last_error: None,
+        };
+        let dead = DomainResult {
+            url: "http://dead.com".into(),
+            times: vec![],
+            last_error: Some("timeout".into()),
+        };
+        let lines = render_domain(&[r2, dead, r1]);
+        let pos_fast = lines.iter().position(|l| l.contains("http://fast.com")).unwrap();
+        let pos_slow = lines.iter().position(|l| l.contains("http://slow.com")).unwrap();
+        let pos_dead = lines.iter().position(|l| l.contains("http://dead.com")).unwrap();
+        assert!(pos_fast < pos_slow, "fast before slow: {lines:?}");
+        assert!(pos_slow < pos_dead, "reachable before unreachable: {lines:?}");
+        assert!(lines.last().unwrap().contains("2 of 3 domains reachable"));
+    }
+
+    // --- end-to-end via cmd_net ---
+
+    #[test]
+    fn cmd_json_writes_passed_urls_to_output() {
+        let url = spawn_server(JSON_BODY, "application/json", Duration::ZERO);
+        let input = temp_file("in-json");
+        let out = temp_file("out-json");
+        std::fs::write(&input, format!("probe {url} now\n")).unwrap();
+        cmd_net(&input, NetType::Json, Some(&out), 10.0).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(content.trim(), url);
+    }
+
+    #[test]
+    fn cmd_file_writes_passed_urls_to_output() {
+        let url = spawn_server(TEXT_BODY, "text/plain", Duration::ZERO);
+        let input = temp_file("in-file");
+        let out = temp_file("out-file");
+        std::fs::write(&input, format!("{url}\n")).unwrap();
+        cmd_net(&input, NetType::File, Some(&out), 10.0).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(content.trim(), url);
+    }
+
+    #[test]
+    fn cmd_json_rejects_text_and_unreachable() {
+        let text_url = spawn_server(TEXT_BODY, "text/plain", Duration::ZERO);
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead_port = l.local_addr().unwrap().port();
+        drop(l);
+        let dead_url = format!("http://127.0.0.1:{dead_port}/x");
+        let input = temp_file("in-mix");
+        let out = temp_file("out-mix");
+        std::fs::write(&input, format!("{text_url}\n{dead_url}\n")).unwrap();
+        cmd_net(&input, NetType::Json, Some(&out), 10.0).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        assert!(content.is_empty(), "no URL should pass, got {content:?}");
+    }
+
+    #[test]
+    fn cmd_file_rejects_json_body() {
+        let json_url = spawn_server(JSON_BODY, "application/json", Duration::ZERO);
+        let input = temp_file("in-json2file");
+        let out = temp_file("out-json2file");
+        std::fs::write(&input, format!("{json_url}\n")).unwrap();
+        cmd_net(&input, NetType::File, Some(&out), 10.0).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        assert!(content.is_empty(), "JSON must not pass file mode, got {content:?}");
+    }
+
+    #[test]
+    fn no_addresses_is_an_error() {
+        let input = temp_file("empty");
+        std::fs::write(&input, "# only comments\n").unwrap();
+        let err = cmd_net(&input, NetType::Domain, None, 10.0).unwrap_err();
+        let _ = std::fs::remove_file(&input);
+        assert!(err.to_string().contains("no http(s) addresses"));
+    }
+
+    #[test]
+    fn invalid_timeout_is_rejected() {
+        let input = temp_file("tmo");
+        std::fs::write(&input, "http://a.com\n").unwrap();
+        let err = cmd_net(&input, NetType::Domain, None, 0.0).unwrap_err();
+        let _ = std::fs::remove_file(&input);
+        assert!(err.to_string().contains("--timeout"));
+    }
+}

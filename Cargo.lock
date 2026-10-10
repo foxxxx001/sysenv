@@ -1143,7 +1143,7 @@ dependencies = [
 
 [[package]]
 name = "sys"
-version = "0.4.39"
+version = "0.4.40"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1153,6 +1153,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "url",
  "windows-sys 0.59.0",
  "winreg",
 ]
