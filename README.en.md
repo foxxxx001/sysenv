@@ -564,6 +564,7 @@ Reads http(s) addresses from a file and probes each one for reachability and res
 ### Features
 
 - `-i FILE`: the input file is read line by line; lines starting with `#` (after leading whitespace) are skipped; a line may hold **several addresses** — an address starts at `http` (case-insensitive), runs to the next whitespace, and has trailing punctuation trimmed (`http://a.com/x,` → `http://a.com/x`); the scheme is normalized to lowercase and the host is validated
+- **duplicate detection (all modes)**: addresses already checked in this run are cached; a repeated address (host case and default ports are normalized) is **not probed again and removed directly** — in test mode it follows the deletion pipeline (single-address line deleted / multi-address line drops only that address), json/file modes do not write it to `-o`, domain mode skips it in probing and the sorted report; printed as `[DUP] <url> duplicate (already checked), skipped`, the summary appends `, N duplicate` when any exist
 - `-t domain` (default): **3 consecutive GET** requests per address, averaged; once all addresses are probed they are printed sorted by average response time **ascending**, unreachable ones last with a reason
 - `-t json`: GET each address; the body must parse as **JSON** to pass
 - `-t file`: GET each address; the body must be **plain text** (valid UTF-8, non-binary, and not JSON) to pass

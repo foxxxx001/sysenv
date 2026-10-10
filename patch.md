@@ -2,6 +2,14 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.45（2026-10-10）
+
+### 变更
+- `sys net` 所有模式（domain / json / file / test）新增**重复检测**：本次运行内已检测地址缓存（`dup_key` 用 url crate 规范化——host 小写、默认端口归一，`HTTP://EXAMPLE.com/a` 与 `http://example.com/a` 视为同一地址）；再次出现的地址**不重复检测、直接删除**——test 模式走删除管线（单地址行删整行 / 多地址行只删该地址），json / file 不写入 `-o`，domain 不参与探测与排序；打印 `[DUP] <url> duplicate (already checked), skipped`，test / json / file 汇总行存在重复时追加 `, N duplicate`
+- 新增 4 个单测（dup_key 规范化、test 重复行删除、同行重复地址只留一份、json 重复不写 -o）；`cargo test` 188 项全绿
+
+---
+
 ## v0.4.44（2026-10-10）
 
 ### 变更

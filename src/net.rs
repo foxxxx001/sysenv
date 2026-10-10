@@ -21,6 +21,7 @@
 //! (test mode).
 
 use anyhow::{Context, Result, bail};
+use std::collections::HashSet;
 use std::error::Error as _;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -388,7 +389,20 @@ fn render_domain(results: &[DomainResult]) -> Vec<String> {
 }
 
 fn cmd_domain(client: &reqwest::blocking::Client, urls: &[String]) -> Result<()> {
-    let results = probe_domains(client, urls);
+    // Addresses already checked in this run are not probed again: they are
+    // skipped on screen and excluded from the sorted report.
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut unique: Vec<String> = Vec::with_capacity(urls.len());
+    let mut n_dup = 0usize;
+    for url in urls {
+        if !seen.insert(dup_key(url)) {
+            n_dup += 1;
+            println!("[DUP] {url}  duplicate (already checked), skipped");
+            continue;
+        }
+        unique.push(url.clone());
+    }
+    let results = probe_domains(client, &unique);
     for line in render_domain(&results) {
         println!("{line}");
     }
@@ -410,8 +424,15 @@ fn cmd_content(
     let mut n_ok = 0usize;
     let mut n_mismatch = 0usize;
     let mut n_no = 0usize;
+    let mut n_dup = 0usize;
+    let mut seen: HashSet<String> = HashSet::new();
 
     for url in urls {
+        if !seen.insert(dup_key(url)) {
+            n_dup += 1;
+            println!("[DUP] {:<w$}  duplicate (already checked), skipped", url);
+            continue;
+        }
         match request(client, url, true) {
             Ok((status, elapsed, Some(body))) => {
                 let got = body_kind(&body);
@@ -451,8 +472,13 @@ fn cmd_content(
         }
     }
 
+    let dup_part = if n_dup > 0 {
+        format!(", {n_dup} duplicate")
+    } else {
+        String::new()
+    };
     println!(
-        "--- {} of {} URLs passed ({} unreachable, {} format mismatch) ---",
+        "--- {} of {} URLs passed ({} unreachable, {} format mismatch{dup_part}) ---",
         n_ok,
         urls.len(),
         n_no,
@@ -515,7 +541,9 @@ fn cmd_test(
     let mut n_addr = 0usize;
     let mut n_unreach = 0usize;
     let mut n_excluded = 0usize;
+    let mut n_dup = 0usize;
     let mut n_deleted_lines = 0usize;
+    let mut seen: HashSet<String> = HashSet::new();
 
     for (idx, line) in lines.iter().enumerate() {
         let cur = idx + 1;
@@ -544,17 +572,28 @@ fn cmd_test(
                     n_excluded += 1;
                     parts.push(format!("[X] {}  excluded (-x {ext})", span.url));
                 }
-                None => match request(client, &span.url, false) {
-                    Ok((_, elapsed, _)) => {
-                        alive.push(true);
-                        parts.push(format!("[OK] {}  time={}", span.url, fmt_ms(elapsed)));
-                    }
-                    Err(e) => {
+                None => {
+                    let key = dup_key(&span.url);
+                    if !seen.insert(key) {
+                        // Already checked in this run: do not probe again,
+                        // remove directly.
                         alive.push(false);
-                        n_unreach += 1;
-                        parts.push(format!("[NO] {}  error={e}", span.url));
+                        n_dup += 1;
+                        parts.push(format!("[DUP] {}  duplicate (already checked)", span.url));
+                    } else {
+                        match request(client, &span.url, false) {
+                            Ok((_, elapsed, _)) => {
+                                alive.push(true);
+                                parts.push(format!("[OK] {}  time={}", span.url, fmt_ms(elapsed)));
+                            }
+                            Err(e) => {
+                                alive.push(false);
+                                n_unreach += 1;
+                                parts.push(format!("[NO] {}  error={e}", span.url));
+                            }
+                        }
                     }
-                },
+                }
             }
         }
 
@@ -571,13 +610,22 @@ fn cmd_test(
         println!("[{cur}/{total}]  {}  -> {action}", parts.join(" | "));
     }
 
-    let excl = if n_excluded > 0 {
-        format!(", {n_excluded} excluded")
-    } else {
-        String::new()
+    let extra = {
+        let mut v = Vec::new();
+        if n_excluded > 0 {
+            v.push(format!("{n_excluded} excluded"));
+        }
+        if n_dup > 0 {
+            v.push(format!("{n_dup} duplicate"));
+        }
+        if v.is_empty() {
+            String::new()
+        } else {
+            format!(", {}", v.join(", "))
+        }
     };
     println!(
-        "--- checked {n_addr} address(es) in {total} line(s): {n_unreach} unreachable{excl}, {} line(s) kept, {n_deleted_lines} line(s) deleted ---",
+        "--- checked {n_addr} address(es) in {total} line(s): {n_unreach} unreachable{extra}, {} line(s) kept, {n_deleted_lines} line(s) deleted ---",
         kept.len()
     );
     if let Some(out) = output {
@@ -655,6 +703,16 @@ fn url_ext(url: &str) -> Option<String> {
         return None;
     }
     Some(ext.to_ascii_lowercase())
+}
+
+/// Canonical key used to detect addresses that were already checked in this
+/// run: the `url` crate normalizes the host to lowercase, drops default ports
+/// and normalizes the path, so `HTTP://EXAMPLE.com/a` and
+/// `http://example.com/a` count as the same address.
+fn dup_key(url: &str) -> String {
+    url::Url::parse(url)
+        .map(|u| u.as_str().to_string())
+        .unwrap_or_else(|_| url.to_string())
 }
 
 fn fmt_ms(d: Duration) -> String {
@@ -1158,5 +1216,60 @@ mod tests {
         .unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn dup_key_normalizes_host_case() {
+        assert_eq!(
+            dup_key("http://EXAMPLE.com/a"),
+            dup_key("http://example.com/a")
+        );
+        assert_eq!(dup_key("http://example.com:80/a"), dup_key("http://example.com/a"));
+        assert_ne!(dup_key("http://example.com/a"), dup_key("http://example.com/b"));
+    }
+
+    /// The same reachable URL appearing twice: the first occurrence is kept,
+    /// the second is removed without probing.
+    #[test]
+    fn test_mode_duplicate_line_is_deleted() {
+        let good = spawn_server(TEXT_BODY, "text/plain", Duration::ZERO);
+        let input = temp_file("test-in-d1");
+        let out = temp_file("test-out-d1");
+        std::fs::write(&input, format!("{good}\n{good}\n")).unwrap();
+        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[]).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines, vec![good.as_str()], "only first occurrence kept: {content:?}");
+    }
+
+    #[test]
+    fn test_mode_duplicate_address_in_one_line_removed() {
+        let good = spawn_server(TEXT_BODY, "text/plain", Duration::ZERO);
+        let input = temp_file("test-in-d2");
+        let out = temp_file("test-out-d2");
+        std::fs::write(&input, format!("{good} {good}\n")).unwrap();
+        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[]).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(content.lines().count(), 1, "line kept: {content:?}");
+        assert_eq!(content.trim().matches(&good).count(), 1, "one copy left: {content:?}");
+    }
+
+    /// json mode: a duplicated URL is not probed and not written to -o.
+    #[test]
+    fn json_mode_duplicate_not_passed() {
+        let good = spawn_server(JSON_BODY, "application/json", Duration::ZERO);
+        let input = temp_file("test-in-d3");
+        let out = temp_file("test-out-d3");
+        std::fs::write(&input, format!("{good}\n{good}\n")).unwrap();
+        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[]).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(content.lines().count(), 1, "one URL passed: {content:?}");
+        assert_eq!(content.trim(), good.as_str());
     }
 }
