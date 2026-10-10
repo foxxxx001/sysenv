@@ -238,13 +238,23 @@ fn short_error(e: reqwest::Error) -> String {
         cur = src.source();
     }
     let s = deepest.unwrap_or_else(|| e.to_string());
-    if s.len() <= 100 {
-        s
-    } else {
-        let mut t = s;
-        t.truncate(97);
-        format!("{t}…")
+    truncate_ellipsis(&s, 100)
+}
+
+/// Truncate `s` to at most `max_bytes` (at a UTF-8 char boundary) and append
+/// "…" when it was truncated. Never panics on multi-byte characters.
+fn truncate_ellipsis(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
     }
+    let budget = max_bytes.saturating_sub(3); // room for "…" (3 bytes)
+    let mut end = budget.min(s.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut t = s[..end].to_string();
+    t.push('…');
+    t
 }
 
 /// Classification of a received body.
@@ -635,10 +645,11 @@ mod tests {
     }
 
     /// Serve `body` with `content_type` on an ephemeral 127.0.0.1 port and
-    /// return its URL. Each connection sleeps `delay` first (used to make one
-    /// server measurably slower). The socket is closed cleanly (FIN first,
-    /// then the request bytes are drained) so Windows never sends a RST that
-    /// would make reqwest fail the body read.
+    /// return its URL. Each connection reads the request head first (like a
+    /// real server), then sleeps `delay` (used to make one server measurably
+    /// slower), then responds and closes cleanly: FIN first via
+    /// shutdown(Write), then the socket is drained until the client closes, so
+    /// Windows never sends a RST that would make reqwest fail the exchange.
     fn spawn_server(body: &'static [u8], content_type: &'static str, delay: Duration) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
         let addr = listener.local_addr().expect("local addr");
@@ -646,20 +657,39 @@ mod tests {
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
+                // 1) read the request head (GET has no body) so nothing is
+                //    left unread in the receive buffer when we close
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+                let mut buf = [0u8; 8192];
+                let mut got = 0usize;
+                while got < buf.len() {
+                    match stream.read(&mut buf[got..]) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            got += n;
+                            if buf[..got].windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
                 if !delay.is_zero() {
                     std::thread::sleep(delay);
                 }
+                // 2) respond
                 let head = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
                 let _ = stream.write_all(head.as_bytes());
                 let _ = stream.write_all(body);
+                // 3) FIN first, then drain until the client closes so the
+                //    final drop never triggers a Windows RST
                 let _ = stream.shutdown(std::net::Shutdown::Write);
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-                let mut buf = [0u8; 4096];
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut rest = [0u8; 4096];
                 loop {
-                    match stream.read(&mut buf) {
+                    match stream.read(&mut rest) {
                         Ok(0) | Err(_) => break,
                         Ok(_) => continue,
                     }
@@ -732,6 +762,27 @@ mod tests {
         assert_eq!(body_kind(TEXT_BODY), BodyKind::Text);
         assert_eq!(body_kind(BIN_BODY), BodyKind::Binary);
         assert_eq!(body_kind(b"not json at all"), BodyKind::Text);
+    }
+
+    #[test]
+    fn truncate_ellipsis_handles_multibyte_chars() {
+        // Short strings pass through untouched.
+        assert_eq!(truncate_ellipsis("abc", 100), "abc");
+        // 3-byte CJK chars: a byte budget can land mid-char; the result must
+        // stay within budget, end with "…" and hold only whole characters.
+        let long = "由于目标计算机积极拒绝，无法连接。".repeat(8); // > 100 bytes, all 3-byte chars
+        let t = truncate_ellipsis(&long, 100);
+        assert!(t.len() <= 100, "len {} <= 100", t.len());
+        assert!(t.ends_with('…'));
+        let prefix = &t[..t.len() - 3];
+        assert_eq!(prefix.len() % 3, 0, "CJK prefix keeps whole chars: {prefix:?}");
+        // Mixed ASCII + CJK crossing the budget: no panic, ends on a boundary.
+        let mixed = format!("{} 中文说明中文说明中文", "x".repeat(80)); // > 100 bytes
+        let m = truncate_ellipsis(&mixed, 100);
+        assert!(m.len() <= 100, "len {} <= 100", m.len());
+        assert!(m.ends_with('…'));
+        let mprefix = &m[..m.len() - 3];
+        assert!(mprefix.is_char_boundary(mprefix.len()));
     }
 
     // --- probing ---

@@ -2,6 +2,14 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.43（2026-10-10）
+
+### 修复
+- `sys net` 错误信息截断 panic：`short_error` 原先按字节 `truncate(97)` 截断错误消息，当消息含多字节 UTF-8 字符（如 Windows 中文错误信息“由于目标计算机积极拒绝，无法连接。 (os error 10061)”）且超过长度时，截断点落在字符中间，触发 `assertion failed: self.is_char_boundary(new_len)` 崩溃；改为 `truncate_ellipsis` 按 UTF-8 字符边界安全截断（保留 “…” 后缀预算），并新增多字节 / 混合字符截断单测
+- 本地 TCP 测试服务器改为先读请求头再响应（模拟真实服务器行为），消除偶发的 `received unexpected message from connection` 竞态；连续 3 次 `cargo test` 均 180 项全绿
+
+---
+
 ## v0.4.42（2026-10-10）
 
 ### 变更
