@@ -568,8 +568,8 @@ Reads http(s) addresses from a file and probes each one for reachability and res
 - `-t json`: GET each address; the body must parse as **JSON** to pass
 - `-t file`: GET each address; the body must be **plain text** (valid UTF-8, non-binary, and not JSON) to pass
 - `-t test`: probes **reachability only** (any HTTP response counts as reachable, same rule as json/file):
-  - unreachable addresses are printed on screen as `[NO] <url>  error=<reason>` and removed from the source
-  - a single-address line that is unreachable is deleted; a multi-address line keeps its reachable addresses and drops only the unreachable ones; a line is deleted entirely only when every address on it is unreachable
+  - every line is reported as soon as it is processed, with a `[line/total]` progress counter (e.g. `[3/6]`, total counts empty and comment lines): each address shows `[OK] <url> time=...` or `[NO] <url> error=<reason>`, and the line ends with `-> kept` / `-> line deleted` / `-> kept (bad address removed)`; empty lines, `#` comment lines and lines without any address show `[skip]`
+  - unreachable addresses are removed from the source: a single-address line that is unreachable is deleted; a multi-address line keeps its reachable addresses and drops only the unreachable ones; a line is deleted entirely only when every address on it is unreachable
   - empty lines, `#` comment lines and lines without any address are always kept
   - `-o FILE` writes the **cleaned source result** (kept lines verbatim, in original order), one line each
 - json/file modes print one result **as soon as each probe finishes**: url / reachability / status code / response time / actual format (json / text / binary)

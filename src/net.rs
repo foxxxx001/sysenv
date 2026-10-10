@@ -484,59 +484,70 @@ fn rebuild_line(line: &str, spans: &[UrlSpan], alive: &[bool]) -> String {
 }
 
 /// `sys net -t test -i FILE [-o FILE]` — probe every address for
-/// reachability; unreachable addresses are reported on screen and removed
-/// from the source lines; the cleaned result is written to `-o` (lines kept
-/// verbatim, empty / `#` comment / non-URL lines are always kept).
+/// reachability; every line is reported on screen with a `[line/total]`
+/// progress counter; unreachable addresses are removed from the source lines;
+/// the cleaned result is written to `-o` (lines kept verbatim, empty / `#`
+/// comment / non-URL lines are always kept).
 fn cmd_test(client: &reqwest::blocking::Client, input: &Path, output: Option<&Path>) -> Result<()> {
     let raw = std::fs::read(input).with_context(|| format!("cannot read {}", input.display()))?;
     let text = String::from_utf8_lossy(&raw);
     let text = text.strip_prefix('\u{feff}').unwrap_or(text.as_ref());
+    let lines: Vec<&str> = text.lines().collect();
+    let total = lines.len();
 
     let mut kept: Vec<String> = Vec::new();
-    let mut n_lines = 0usize;
     let mut n_addr = 0usize;
     let mut n_unreach = 0usize;
     let mut n_deleted_lines = 0usize;
 
-    for line in text.lines() {
-        n_lines += 1;
+    for (idx, line) in lines.iter().enumerate() {
+        let cur = idx + 1;
         let trimmed = line.trim_start();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             kept.push(line.to_string());
+            let tag = if trimmed.is_empty() { "(empty)" } else { "(comment)" };
+            println!("[{cur}/{total}]  [skip] {tag}");
             continue;
         }
         let spans = extract_address_spans(line);
         if spans.is_empty() {
             kept.push(line.to_string());
+            println!("[{cur}/{total}]  [skip] (no address)");
             continue;
         }
 
+        let mut parts: Vec<String> = Vec::new();
         let mut alive = Vec::with_capacity(spans.len());
         for span in &spans {
             n_addr += 1;
             match request(client, &span.url, false) {
-                Ok(_) => alive.push(true),
+                Ok((_, elapsed, _)) => {
+                    alive.push(true);
+                    parts.push(format!("[OK] {}  time={}", span.url, fmt_ms(elapsed)));
+                }
                 Err(e) => {
                     alive.push(false);
                     n_unreach += 1;
-                    println!("[NO]  {}  error={e}", span.url);
+                    parts.push(format!("[NO] {}  error={e}", span.url));
                 }
             }
         }
 
-        if alive.iter().all(|a| *a) {
+        let action = if alive.iter().all(|a| *a) {
             kept.push(line.to_string());
+            "kept"
         } else if alive.iter().any(|a| *a) {
-            // multi-address line: drop only the unreachable addresses
             kept.push(rebuild_line(line, &spans, &alive));
+            "kept (bad address removed)"
         } else {
-            // every address on the line is unreachable -> delete the line
             n_deleted_lines += 1;
-        }
+            "line deleted"
+        };
+        println!("[{cur}/{total}]  {}  -> {action}", parts.join(" | "));
     }
 
     println!(
-        "--- checked {n_addr} address(es) in {n_lines} line(s): {n_unreach} unreachable, {} line(s) kept, {n_deleted_lines} line(s) deleted ---",
+        "--- checked {n_addr} address(es) in {total} line(s): {n_unreach} unreachable, {} line(s) kept, {n_deleted_lines} line(s) deleted ---",
         kept.len()
     );
     if let Some(out) = output {
