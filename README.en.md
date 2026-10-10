@@ -572,6 +572,7 @@ Reads http(s) addresses from a file and probes each one for reachability and res
   - unreachable addresses are removed from the source: a single-address line that is unreachable is deleted; a multi-address line keeps its reachable addresses and drops only the unreachable ones; a line is deleted entirely only when every address on it is unreachable
   - empty lines, `#` comment lines and lines without any address are always kept
   - `-o FILE` writes the **cleaned source result** (kept lines verbatim, in original order), one line each
+  - `-x SUFFIX` (repeatable, e.g. `-x m3u -x zip`): addresses whose file-name suffix matches (case-insensitive, leading dot optional) are **removed directly without probing** — e.g. with `-x m3u`, `https://www.main.com/123.m3u` is removed without a request; a single-address line is deleted, a multi-address line drops only that address, printed as `[X] <url> excluded (-x m3u)`. Only active in `-t test` mode; other modes ignore it with a warning
 - json/file modes print one result **as soon as each probe finishes**: url / reachability / status code / response time / actual format (json / text / binary)
 - `-o FILE`: writes every **passed** url (reachable and format-matched) to the file, one per line (json/file modes only)
 - `--timeout SECONDS`: per-request timeout (default 10 seconds)

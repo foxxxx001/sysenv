@@ -558,6 +558,9 @@ struct NetArgs {
     /// Per-request timeout in seconds (default 10)
     #[arg(long, value_name = "SECONDS", default_value_t = net::DEFAULT_TIMEOUT_SECS)]
     timeout: f64,
+    /// In test mode, skip probing URLs whose file-name suffix matches (case-insensitive, leading dot optional) and remove them directly; repeatable, e.g. -x m3u -x zip
+    #[arg(short = 'x', long, value_name = "SUFFIX")]
+    exclude: Vec<String>,
 }
 
 #[derive(Args)]
@@ -932,7 +935,7 @@ fn run_search(s: SearchArgs) -> anyhow::Result<()> {
 }
 
 fn run_net(n: NetArgs) -> anyhow::Result<()> {
-    net::cmd_net(&n.input, n.kind, n.output.as_deref(), n.timeout)
+    net::cmd_net(&n.input, n.kind, n.output.as_deref(), n.timeout, &n.exclude)
 }
 
 fn run_task(t: TaskArgs) -> anyhow::Result<()> {

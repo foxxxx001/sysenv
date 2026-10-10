@@ -493,12 +493,18 @@ fn rebuild_line(line: &str, spans: &[UrlSpan], alive: &[bool]) -> String {
     out
 }
 
-/// `sys net -t test -i FILE [-o FILE]` — probe every address for
-/// reachability; every line is reported on screen with a `[line/total]`
+/// `sys net -t test -i FILE [-o FILE] [-x SUFFIX ...]` — probe every address
+/// for reachability; every line is reported on screen with a `[line/total]`
 /// progress counter; unreachable addresses are removed from the source lines;
-/// the cleaned result is written to `-o` (lines kept verbatim, empty / `#`
-/// comment / non-URL lines are always kept).
-fn cmd_test(client: &reqwest::blocking::Client, input: &Path, output: Option<&Path>) -> Result<()> {
+/// addresses whose file-name suffix is listed in `excludes` are not probed and
+/// are removed directly; the cleaned result is written to `-o` (lines kept
+/// verbatim, empty / `#` comment / non-URL lines are always kept).
+fn cmd_test(
+    client: &reqwest::blocking::Client,
+    input: &Path,
+    output: Option<&Path>,
+    excludes: &[String],
+) -> Result<()> {
     let raw = std::fs::read(input).with_context(|| format!("cannot read {}", input.display()))?;
     let text = String::from_utf8_lossy(&raw);
     let text = text.strip_prefix('\u{feff}').unwrap_or(text.as_ref());
@@ -508,6 +514,7 @@ fn cmd_test(client: &reqwest::blocking::Client, input: &Path, output: Option<&Pa
     let mut kept: Vec<String> = Vec::new();
     let mut n_addr = 0usize;
     let mut n_unreach = 0usize;
+    let mut n_excluded = 0usize;
     let mut n_deleted_lines = 0usize;
 
     for (idx, line) in lines.iter().enumerate() {
@@ -530,16 +537,24 @@ fn cmd_test(client: &reqwest::blocking::Client, input: &Path, output: Option<&Pa
         let mut alive = Vec::with_capacity(spans.len());
         for span in &spans {
             n_addr += 1;
-            match request(client, &span.url, false) {
-                Ok((_, elapsed, _)) => {
-                    alive.push(true);
-                    parts.push(format!("[OK] {}  time={}", span.url, fmt_ms(elapsed)));
-                }
-                Err(e) => {
+            match url_ext(&span.url).filter(|ext| excludes.iter().any(|e| e == ext)) {
+                Some(ext) => {
+                    // Not probed: the suffix is excluded, remove directly.
                     alive.push(false);
-                    n_unreach += 1;
-                    parts.push(format!("[NO] {}  error={e}", span.url));
+                    n_excluded += 1;
+                    parts.push(format!("[X] {}  excluded (-x {ext})", span.url));
                 }
+                None => match request(client, &span.url, false) {
+                    Ok((_, elapsed, _)) => {
+                        alive.push(true);
+                        parts.push(format!("[OK] {}  time={}", span.url, fmt_ms(elapsed)));
+                    }
+                    Err(e) => {
+                        alive.push(false);
+                        n_unreach += 1;
+                        parts.push(format!("[NO] {}  error={e}", span.url));
+                    }
+                },
             }
         }
 
@@ -556,8 +571,13 @@ fn cmd_test(client: &reqwest::blocking::Client, input: &Path, output: Option<&Pa
         println!("[{cur}/{total}]  {}  -> {action}", parts.join(" | "));
     }
 
+    let excl = if n_excluded > 0 {
+        format!(", {n_excluded} excluded")
+    } else {
+        String::new()
+    };
     println!(
-        "--- checked {n_addr} address(es) in {total} line(s): {n_unreach} unreachable, {} line(s) kept, {n_deleted_lines} line(s) deleted ---",
+        "--- checked {n_addr} address(es) in {total} line(s): {n_unreach} unreachable{excl}, {} line(s) kept, {n_deleted_lines} line(s) deleted ---",
         kept.len()
     );
     if let Some(out) = output {
@@ -576,16 +596,24 @@ fn cmd_test(client: &reqwest::blocking::Client, input: &Path, output: Option<&Pa
 // Entry point
 // ---------------------------------------------------------------------------
 
-/// `sys net -i FILE [-t domain|json|file] [-o FILE] [--timeout SECONDS]`
+/// `sys net -i FILE [-t domain|json|file|test] [-o FILE] [--timeout SECONDS] [-x SUFFIX ...]`
 pub fn cmd_net(
     input: &Path,
     kind: NetType,
     output: Option<&Path>,
     timeout_secs: f64,
+    exclude: &[String],
 ) -> Result<()> {
     if !(timeout_secs > 0.0) || !timeout_secs.is_finite() {
         bail!("--timeout must be a positive number of seconds");
     }
+    // Normalize -x suffixes: leading dot optional, case-insensitive, empty
+    // entries dropped.
+    let excludes: Vec<String> = exclude
+        .iter()
+        .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|e| !e.is_empty())
+        .collect();
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs_f64(timeout_secs))
         .build()
@@ -599,15 +627,34 @@ pub fn cmd_net(
                     out.display()
                 );
             }
+            if !excludes.is_empty() {
+                eprintln!("warning: -x/--exclude applies to `-t test` only; ignored");
+            }
             let urls = read_addresses(input)?;
             cmd_domain(&client, &urls)
         }
         NetType::Json | NetType::File => {
+            if !excludes.is_empty() {
+                eprintln!("warning: -x/--exclude applies to `-t test` only; ignored");
+            }
             let urls = read_addresses(input)?;
             cmd_content(&client, &urls, kind, output)
         }
-        NetType::Test => cmd_test(&client, input, output),
+        NetType::Test => cmd_test(&client, input, output, &excludes),
     }
+}
+
+/// Lowercase file-name suffix of a URL's last path segment, if any.
+/// `https://www.main.com/123.m3u` -> `Some("m3u")`; `/a.tar.gz` -> `Some("gz")`;
+/// `/abc`, `/abc.` or a bare host have no suffix. The query string is ignored.
+fn url_ext(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let last = parsed.path_segments()?.next_back()?;
+    let (_, ext) = last.rsplit_once('.')?;
+    if ext.is_empty() {
+        return None;
+    }
+    Some(ext.to_ascii_lowercase())
 }
 
 fn fmt_ms(d: Duration) -> String {
@@ -861,7 +908,7 @@ mod tests {
         let input = temp_file("in-json");
         let out = temp_file("out-json");
         std::fs::write(&input, format!("probe {url} now\n")).unwrap();
-        cmd_net(&input, NetType::Json, Some(&out), 10.0).unwrap();
+        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -874,7 +921,7 @@ mod tests {
         let input = temp_file("in-file");
         let out = temp_file("out-file");
         std::fs::write(&input, format!("{url}\n")).unwrap();
-        cmd_net(&input, NetType::File, Some(&out), 10.0).unwrap();
+        cmd_net(&input, NetType::File, Some(&out), 10.0, &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -891,7 +938,7 @@ mod tests {
         let input = temp_file("in-mix");
         let out = temp_file("out-mix");
         std::fs::write(&input, format!("{text_url}\n{dead_url}\n")).unwrap();
-        cmd_net(&input, NetType::Json, Some(&out), 10.0).unwrap();
+        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -904,7 +951,7 @@ mod tests {
         let input = temp_file("in-json2file");
         let out = temp_file("out-json2file");
         std::fs::write(&input, format!("{json_url}\n")).unwrap();
-        cmd_net(&input, NetType::File, Some(&out), 10.0).unwrap();
+        cmd_net(&input, NetType::File, Some(&out), 10.0, &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -915,7 +962,7 @@ mod tests {
     fn no_addresses_is_an_error() {
         let input = temp_file("empty");
         std::fs::write(&input, "# only comments\n").unwrap();
-        let err = cmd_net(&input, NetType::Domain, None, 10.0).unwrap_err();
+        let err = cmd_net(&input, NetType::Domain, None, 10.0, &[]).unwrap_err();
         let _ = std::fs::remove_file(&input);
         assert!(err.to_string().contains("no http(s) addresses"));
     }
@@ -924,7 +971,7 @@ mod tests {
     fn invalid_timeout_is_rejected() {
         let input = temp_file("tmo");
         std::fs::write(&input, "http://a.com\n").unwrap();
-        let err = cmd_net(&input, NetType::Domain, None, 0.0).unwrap_err();
+        let err = cmd_net(&input, NetType::Domain, None, 0.0, &[]).unwrap_err();
         let _ = std::fs::remove_file(&input);
         assert!(err.to_string().contains("--timeout"));
     }
@@ -949,7 +996,7 @@ mod tests {
             format!("# comment stays\n\n{good}\n{bad}\nplain text line without url\n"),
         )
         .unwrap();
-        cmd_net(&input, NetType::Test, Some(&out), 10.0).unwrap();
+        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -968,7 +1015,7 @@ mod tests {
         let input = temp_file("test-in2");
         let out = temp_file("test-out2");
         std::fs::write(&input, format!("see {bad}, and {good} now\n")).unwrap();
-        cmd_net(&input, NetType::Test, Some(&out), 10.0).unwrap();
+        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -984,7 +1031,7 @@ mod tests {
         let input = temp_file("test-in3");
         let out = temp_file("test-out3");
         std::fs::write(&input, format!("{bad1} and {bad2}\n")).unwrap();
-        cmd_net(&input, NetType::Test, Some(&out), 10.0).unwrap();
+        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -1005,5 +1052,111 @@ mod tests {
         assert!(line.contains(&good));
         assert!(line.contains(" suffix"));
         assert!(!line.contains(&bad));
+    }
+
+    #[test]
+    fn url_ext_detects_suffix() {
+        assert_eq!(
+            url_ext("https://www.main.com/123.m3u"),
+            Some("m3u".to_string())
+        );
+        // query strings do not affect the suffix
+        assert_eq!(
+            url_ext("https://www.main.com/123.M3U?token=abc"),
+            Some("m3u".to_string())
+        );
+        assert_eq!(url_ext("http://a.com/a.tar.gz"), Some("gz".to_string()));
+        assert_eq!(url_ext("http://a.com/abc"), None);
+        assert_eq!(url_ext("http://a.com/abc."), None);
+        assert_eq!(url_ext("http://a.com/"), None);
+        assert_eq!(url_ext("http://a.com"), None);
+        assert_eq!(url_ext("not a url"), None);
+    }
+
+    /// A reachable URL whose suffix is excluded must be removed WITHOUT being
+    /// probed (the server stays untouched: had it been probed, the line would
+    /// have been kept).
+    #[test]
+    fn test_mode_excluded_suffix_is_removed_without_probing() {
+        let good = spawn_server(TEXT_BODY, "text/plain", Duration::ZERO);
+        let port = url::Url::parse(&good).unwrap().port().unwrap();
+        let m3u = format!("http://127.0.0.1:{port}/123.m3u");
+
+        // Without -x the same reachable URL is kept.
+        let input = temp_file("test-in-x1");
+        let out_keep = temp_file("test-out-x1");
+        std::fs::write(&input, format!("{m3u}\n")).unwrap();
+        cmd_net(&input, NetType::Test, Some(&out_keep), 10.0, &[]).unwrap();
+        let kept = std::fs::read_to_string(&out_keep).unwrap();
+        assert!(kept.contains(&m3u), "no -x: reachable URL kept: {kept:?}");
+
+        // With -x m3u the line is deleted without probing.
+        let out_del = temp_file("test-out-x2");
+        cmd_net(&input, NetType::Test, Some(&out_del), 10.0, &["m3u".to_string()]).unwrap();
+        let deleted = std::fs::read_to_string(&out_del).unwrap();
+        assert!(
+            deleted.trim().is_empty(),
+            "-x m3u: line must be deleted: {deleted:?}"
+        );
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out_keep);
+        let _ = std::fs::remove_file(&out_del);
+    }
+
+    #[test]
+    fn test_mode_multiple_excludes_and_case_insensitive() {
+        let good = spawn_server(TEXT_BODY, "text/plain", Duration::ZERO);
+        let port = url::Url::parse(&good).unwrap().port().unwrap();
+        let m3u = format!("http://127.0.0.1:{port}/a.m3u");
+        let zip = format!("http://127.0.0.1:{port}/b.zip");
+        let txt = format!("http://127.0.0.1:{port}/c.txt");
+        let upper = format!("http://127.0.0.1:{port}/d.M3U");
+
+        let input = temp_file("test-in-x3");
+        let out = temp_file("test-out-x3");
+        std::fs::write(
+            &input,
+            format!("see {m3u} and {txt} now\n{upper}\n{zip}\n"),
+        )
+        .unwrap();
+        cmd_net(
+            &input,
+            NetType::Test,
+            Some(&out),
+            10.0,
+            &["m3u".to_string(), "zip".to_string()],
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(
+            lines,
+            vec![format!("see  and {txt} now").as_str()],
+            "m3u removed from multi-address line, txt kept: {content:?}"
+        );
+        assert!(!content.contains(&m3u), "m3u removed: {content:?}");
+        assert!(!content.contains(&upper), "case-insensitive .M3U removed: {content:?}");
+        assert!(!content.contains(&zip), "zip line deleted: {content:?}");
+        assert_eq!(content.lines().count(), 1, "only txt line kept: {content:?}");
+    }
+
+    #[test]
+    fn exclude_ignored_outside_test_mode() {
+        let input = temp_file("test-in-x4");
+        std::fs::write(&input, "https://example.com/\n").unwrap();
+        // -x is ignored in json mode (a warning is printed, no error).
+        let out = temp_file("test-out-x4");
+        cmd_net(
+            &input,
+            NetType::Json,
+            Some(&out),
+            10.0,
+            &["m3u".to_string()],
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
     }
 }
