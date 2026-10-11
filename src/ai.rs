@@ -642,6 +642,9 @@ pub fn cmd_model(
                     println!("{}", model_csv_row(&model_with_provider(pid, m)));
                 }
             }
+            Some(OutFormat::Md) => {
+                println!("{}", md_model_rows(&hits[..take.min(hits.len())]));
+            }
             None => {
                 let shown = total_hits.min(take);
                 print_model_rows(&hits[..shown]);
@@ -720,6 +723,9 @@ pub fn cmd_model(
                     println!("{}", model_csv_row(&model_with_provider(pid, m)));
                 }
             }
+            Some(OutFormat::Md) => {
+                println!("{}", md_model_rows(&hits[..take.min(hits.len())]));
+            }
             None => {
                 let shown = hits.len().min(take);
                 print_model_rows(&hits[..shown]);
@@ -761,6 +767,9 @@ pub fn cmd_model(
                     println!("{MODEL_CSV_HEADER}");
                     println!("{}", model_csv_row(&hit));
                 }
+                Some(OutFormat::Md) => {
+                    println!("{}", md_model_detail(&hit));
+                }
                 None => {
                     print_model(&hit);
                     println!(
@@ -786,6 +795,9 @@ pub fn cmd_model(
                     println!("{}", model_csv_row(&model_with_provider(pid, m)));
                 }
             }
+            Some(OutFormat::Md) => {
+                println!("{}", md_model_rows(&hits));
+            }
             None => {
                 println!("Multiple models match `{query}`:");
                 print_model_rows(&hits);
@@ -807,6 +819,9 @@ pub fn cmd_model(
         Some(OutFormat::Csv) => {
             println!("{MODEL_CSV_HEADER}");
             println!("{}", model_csv_row(&hit));
+        }
+        Some(OutFormat::Md) => {
+            println!("{}", md_model_detail(&hit));
         }
         None => print_model(&hit),
     }
@@ -1001,6 +1016,9 @@ pub fn cmd_provider(
                     println!("{}", provider_csv_row(id, v));
                 }
             }
+            Some(OutFormat::Md) => {
+                println!("{}", md_provider_rows(&providers[..take.min(providers.len())]));
+            }
             None => {
                 for (id, v) in providers.iter().take(take) {
                     let nm = v.get("name").and_then(|n| n.as_str()).unwrap_or("?");
@@ -1060,6 +1078,9 @@ pub fn cmd_provider(
                     println!("{}", provider_csv_row(id, v));
                 }
             }
+            Some(OutFormat::Md) => {
+                println!("{}", md_provider_rows(&hits[..take.min(hits.len())]));
+            }
             None => {
                 for (id, v) in hits.iter().take(take) {
                     let nm = v.get("name").and_then(|n| n.as_str()).unwrap_or("?");
@@ -1112,6 +1133,10 @@ pub fn cmd_provider(
             for (id, v) in &hits {
                 println!("{}", provider_csv_row(id, v));
             }
+            return Ok(());
+        }
+        Some(OutFormat::Md) => {
+            println!("{}", md_provider_rows(&hits));
             return Ok(());
         }
         None => {}
@@ -1438,6 +1463,91 @@ fn print_provider_table(rows: &[ProviderInfoRow]) {
     }
 }
 
+/// Markdown table renderer for `-o md`: header row + separator + data rows.
+/// Cells escape `|` (as `\|`) and collapse newlines so the table stays intact.
+fn md_table(headers: &[&str], rows: &[Vec<String>]) -> String {
+    let mut out = String::new();
+    for h in headers {
+        out.push_str(&format!("| {} ", h));
+    }
+    out.push_str("|\n");
+    for _ in headers {
+        out.push_str("| --- ");
+    }
+    out.push_str("|\n");
+    for r in rows {
+        for (i, cell) in r.iter().enumerate() {
+            let _ = i;
+            out.push_str(&format!("| {} ", md_cell(cell)));
+        }
+        out.push_str("|\n");
+    }
+    out
+}
+
+/// Escape one markdown table cell: `|` -> `\|`, newlines / CR -> space.
+fn md_cell(s: &str) -> String {
+    s.replace('|', "\\|").replace(['\n', '\r'], " ")
+}
+
+/// Markdown table of model list hits: id / name / provider.
+fn md_model_rows(hits: &[(String, Value)]) -> String {
+    md_table(
+        &["id", "name", "provider"],
+        &hits
+            .iter()
+            .map(|(pid, m)| {
+                vec![
+                    m.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    m.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    pid.clone(),
+                ]
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Markdown key/value table of one model object.
+fn md_model_detail(m: &Value) -> String {
+    let obj = m.as_object().cloned().unwrap_or_default();
+    let rows: Vec<Vec<String>> = obj
+        .into_iter()
+        .map(|(k, v)| {
+            let text = if let Some(s) = v.as_str() {
+                s.to_string()
+            } else {
+                v.to_string()
+            };
+            vec![k, md_cell(&text)]
+        })
+        .collect();
+    md_table(&["key", "value"], &rows)
+}
+
+/// Markdown table of provider list hits: id / name / api / env / npm /
+/// models_count (mirrors `provider_csv_row`'s fields).
+fn md_provider_rows(rows: &[(String, Value)]) -> String {
+    md_table(
+        &["id", "name", "api", "env", "npm", "models_count"],
+        &rows
+            .iter()
+            .map(|(id, v)| {
+                vec![
+                    id.clone(),
+                    csv_get(v, "name"),
+                    csv_get(v, "doc"),
+                    csv_get(v, "env"),
+                    csv_get(v, "npm"),
+                    v.get("models")
+                        .and_then(|m| m.as_object())
+                        .map(|m| m.len().to_string())
+                        .unwrap_or_default(),
+                ]
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
 /// `sys ai info FIELD [PARAM...] [-c FILE] [--refresh]`
 ///
 /// FIELD is `provider`, `model` or `price`:
@@ -1516,6 +1626,38 @@ pub fn cmd_info(
                 Some(OutFormat::Csv) => {
                     bail!("`sys ai info` without a field does not support CSV; use `info provider` / `info model` for CSV, or run `sys ai info` for the combined text view")
                 }
+                Some(OutFormat::Md) => {
+                    println!("## Providers");
+                    println!();
+                    println!(
+                        "{}",
+                        md_table(
+                            &["name", "api_base", "api_key", "docs", "console"],
+                            &provs
+                                .iter()
+                                .map(|r| vec![
+                                    r.name.clone(),
+                                    r.api_base.clone(),
+                                    r.api_key.clone(),
+                                    r.docs.clone(),
+                                    r.console.clone(),
+                                ])
+                                .collect::<Vec<_>>()
+                        )
+                    );
+                    println!("## Models");
+                    println!();
+                    println!(
+                        "{}",
+                        md_table(
+                            &["provider", "name"],
+                            &mods
+                                .iter()
+                                .map(|r| vec![r.provider.clone(), r.name.clone()])
+                                .collect::<Vec<_>>()
+                        )
+                    );
+                }
                 Some(OutFormat::Yaml) => {
                     let providers: Vec<Value> = provs
                         .iter()
@@ -1576,6 +1718,24 @@ pub fn cmd_info(
                         println!("{},{},{},{},{}", r.name, r.api_base, r.api_key, r.docs, r.console);
                     }
                 }
+                Some(OutFormat::Md) => {
+                    println!(
+                        "{}",
+                        md_table(
+                            &["name", "api_base", "api_key", "docs", "console"],
+                            &rows
+                                .iter()
+                                .map(|r| vec![
+                                    r.name.clone(),
+                                    r.api_base.clone(),
+                                    r.api_key.clone(),
+                                    r.docs.clone(),
+                                    r.console.clone(),
+                                ])
+                                .collect::<Vec<_>>()
+                        )
+                    );
+                }
                 // YAML is the default view of `info provider`.
                 Some(OutFormat::Yaml) | None => {
                     println!("{}", serde_yaml::to_string(&rows)?);
@@ -1598,6 +1758,18 @@ pub fn cmd_info(
                     for r in &rows {
                         println!("{},{}", r.provider, r.name);
                     }
+                }
+                Some(OutFormat::Md) => {
+                    println!(
+                        "{}",
+                        md_table(
+                            &["provider", "name"],
+                            &rows
+                                .iter()
+                                .map(|r| vec![r.provider.clone(), r.name.clone()])
+                                .collect::<Vec<_>>()
+                        )
+                    );
                 }
                 Some(OutFormat::Yaml) => {
                     let arr: Vec<Value> = rows
@@ -1837,6 +2009,18 @@ fn info_model_list(cfg: &chat::Config, keyword: &str, fmt: Option<OutFormat>) ->
             for r in &rows {
                 println!("{},{},{}", r.id, r.owned_by, r.created);
             }
+        }
+        Some(OutFormat::Md) => {
+            println!(
+                "{}",
+                md_table(
+                    &["id", "owned_by", "created"],
+                    &rows
+                        .iter()
+                        .map(|r| vec![r.id.clone(), r.owned_by.clone(), fmt_created(&r.created)])
+                        .collect::<Vec<_>>()
+                )
+            );
         }
         Some(OutFormat::Yaml) => {
             let arr: Vec<Value> = rows
@@ -2836,6 +3020,30 @@ fn output_dl(hits: &[DlModel], take: usize, fmt: Option<OutFormat>, list_mode: b
             for m in hits.iter().take(take) {
                 println!("{}", dl_csv_row(m));
             }
+        }
+        Some(OutFormat::Md) => {
+            println!(
+                "{}",
+                md_table(
+                    &["id", "name", "provider", "aliases", "type", "category", "context", "modality", "published", "url"],
+                    &hits
+                        .iter()
+                        .take(take)
+                        .map(|m| vec![
+                            m.id.clone(),
+                            m.name.clone(),
+                            m.provider.clone(),
+                            m.aliases.clone(),
+                            m.r#type.clone(),
+                            m.category.clone(),
+                            m.context.clone(),
+                            m.modality.clone(),
+                            m.published.clone(),
+                            m.url.clone(),
+                        ])
+                        .collect::<Vec<_>>()
+                )
+            );
         }
         None => {
             if list_mode {
@@ -3860,6 +4068,51 @@ mod tests {
         assert_eq!(all[0].name, "Qwen/Qwen3.8-Flash-Next");
         assert!(info_model_rows(&sample_config(), Some("agnes:nope")).is_err());
         assert!(info_model_rows(&sample_config(), Some("nope:*")).is_err());
+    }
+
+    #[test]
+    fn md_table_renders_escaping_and_separator() {
+        let t = md_table(&["a", "b"], &[vec!["x|y".to_string(), "line\nbreak".to_string()]]);
+        let lines: Vec<&str> = t.lines().collect();
+        assert_eq!(lines[0], "| a | b |");
+        assert_eq!(lines[1], "| --- | --- |");
+        assert_eq!(lines[2], "| x\\|y | line break |");
+        // Empty rows still produce the header and separator.
+        assert_eq!(md_table(&["c"], &[]), "| c |\n| --- |\n");
+    }
+
+    #[test]
+    fn cmd_info_provider_outputs_markdown_table() {
+        let dir = std::env::temp_dir().join(format!("sysenv-md-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg_path = dir.join("config.yaml");
+        std::fs::write(
+            &cfg_path,
+            "clients:\n  - type: openai\n    name: agnes\n    api_base: https://apihub.example.cn/v1\n    api_key: sk-test-0000\n    models:\n      - name: agnes-3.0-flash\n        weight: 1\n",
+        )
+        .unwrap();
+        // Verify the renderer output used by `info provider -o md`.
+        let cfg = chat::load_config(Some(&cfg_path)).unwrap().0;
+        let rows = info_provider_rows(&cfg, None).unwrap();
+        assert_eq!(rows.len(), 1);
+        let table = md_table(
+            &["name", "api_base", "api_key", "docs", "console"],
+            &rows
+                .iter()
+                .map(|r| {
+                    vec![
+                        r.name.clone(),
+                        r.api_base.clone(),
+                        r.api_key.clone(),
+                        r.docs.clone(),
+                        r.console.clone(),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        );
+        assert!(table.starts_with("| name | api_base | api_key | docs | console |\n| --- | --- | --- | --- | --- |\n"), "{table}");
+        assert!(table.contains("| agnes | https://apihub.example.cn/v1 | sk-test-0000 |"), "{table}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

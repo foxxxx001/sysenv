@@ -2,6 +2,18 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.63（2026-10-11）
+
+### 变更
+- `sys ai info`（及 `sys ai model` / `sys ai provider` / `sys ai dl` / `info list-model`）新增 **`-o md`**：输出 Markdown 表格（`| 表头 | ... |` + `| --- |` 分隔行 + 数据行；单元格转义 `|` 与换行）
+  - `info provider -o md`：`| name | api_base | api_key | docs | console |`
+  - `info model -o md`：`| provider | name |`；无字段组合视图输出 `## Providers` / `## Models` 两段表格
+  - `info list-model -o md`：`| id | owned_by | created |`
+  - `model`/`provider`/`dl` 列表视图输出 id/name/provider 等简化表格；单条详情输出 `| key | value |`
+- 新增 2 个单测（md 表格渲染与转义、info provider md 表）；`cargo test` 220 项全绿
+
+---
+
 ## v0.4.62（2026-10-11）
 
 ### 变更

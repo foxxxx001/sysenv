@@ -374,7 +374,7 @@ struct AiInfoArgs {
     /// (supported by `info provider`, `info model` and `info list-model`)
     #[arg(long)]
     json: bool,
-    /// Output format: json (JSON array) or csv (table); default is a formatted
+    /// Output format: json (JSON array), csv (table), yaml (list) or md (markdown table); default is a formatted
     /// text view (supported by `info provider`, `info model` and `info list-model`)
     #[arg(short = 'o', long = "output-format", value_name = "FORMAT", value_enum, conflicts_with = "json")]
     output: Option<OutFormat>,
@@ -512,6 +512,8 @@ enum OutFormat {
     Csv,
     /// YAML list output
     Yaml,
+    /// Markdown table output
+    Md,
 }
 
 #[derive(Args)]
