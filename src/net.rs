@@ -1033,6 +1033,10 @@ const RDAP_USER_AGENT: &str =
 /// Registration info extracted from an RDAP domain object.
 struct RdapInfo {
     registrar: Option<String>,
+    registrant: Option<String>,
+    org: Option<String>,
+    email: Option<String>,
+    address: Option<String>,
     created: Option<String>,
     expires: Option<String>,
     status: Vec<String>,
@@ -1080,6 +1084,52 @@ fn rdap_lookup(
     }
 }
 
+/// Extract one vCard field (`fn` / `org` / `email` / `adr` ...) from the
+/// entity whose `roles` contain `role` (e.g. "registrant", "registrar").
+/// Returns the raw value (string, or the adr array) when present.
+fn entity_field(v: &serde_json::Value, role: &str, field: &str) -> Option<serde_json::Value> {
+    v.get("entities")?
+        .as_array()?
+        .iter()
+        .find(|e| {
+            e.get("roles")
+                .and_then(|r| r.as_array())
+                .map(|rs| rs.iter().any(|x| x.as_str() == Some(role)))
+                .unwrap_or(false)
+        })?
+        .get("vcardArray")
+        .and_then(|va| va.as_array())
+        .and_then(|va| va.get(1))
+        .and_then(|arr| arr.as_array())
+        .and_then(|arr| {
+            arr.iter().find(|f| {
+                f.as_array()
+                    .and_then(|fa| fa.first())
+                    .and_then(|x| x.as_str())
+                    == Some(field)
+            })
+        })
+        .and_then(|f| f.as_array())
+        .and_then(|fa| fa.get(3))
+        .cloned()
+}
+
+/// Format a vCard `adr` value (an array of [po box, extended, street,
+/// locality, region, postal code, country]) into a readable one-liner.
+fn format_address(adr: &serde_json::Value) -> Option<String> {
+    let parts = adr.as_array()?;
+    let comps: Vec<&str> = parts
+        .iter()
+        .filter_map(|p| p.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    if comps.is_empty() {
+        None
+    } else {
+        Some(comps.join(", "))
+    }
+}
+
 /// Extract the useful fields from an RDAP domain object.
 fn parse_rdap(v: &serde_json::Value) -> RdapInfo {
     let event_date = |action: &str| -> Option<String> {
@@ -1097,33 +1147,8 @@ fn parse_rdap(v: &serde_json::Value) -> RdapInfo {
             .and_then(|d| d.as_str())
             .map(|s| s.to_string())
     };
-    let entity_fn = |role: &str| -> Option<String> {
-        v.get("entities")
-            .and_then(|e| e.as_array())
-            .and_then(|arr| {
-                arr.iter().find(|e| {
-                    e.get("roles")
-                        .and_then(|r| r.as_array())
-                        .map(|rs| rs.iter().any(|x| x.as_str() == Some(role)))
-                        .unwrap_or(false)
-                })
-            })
-            .and_then(|e| e.get("vcardArray"))
-            .and_then(|va| va.as_array())
-            .and_then(|va| va.get(1))
-            .and_then(|arr| arr.as_array())
-            .and_then(|arr| {
-                arr.iter().find(|f| {
-                    f.as_array()
-                        .and_then(|fa| fa.first())
-                        .and_then(|x| x.as_str())
-                        == Some("fn")
-                })
-            })
-            .and_then(|f| f.as_array())
-            .and_then(|fa| fa.get(3))
-            .and_then(|x| x.as_str())
-            .map(|s| s.to_string())
+    let text_field = |role: &str, field: &str| -> Option<String> {
+        entity_field(v, role, field).and_then(|x| x.as_str().map(|s| s.to_string()))
     };
     let nameservers = v
         .get("nameservers")
@@ -1146,7 +1171,12 @@ fn parse_rdap(v: &serde_json::Value) -> RdapInfo {
         })
         .unwrap_or_default();
     RdapInfo {
-        registrar: entity_fn("registrar"),
+        registrar: text_field("registrar", "fn"),
+        registrant: text_field("registrant", "fn"),
+        org: text_field("registrant", "org"),
+        email: text_field("registrant", "email"),
+        address: entity_field(v, "registrant", "adr")
+            .and_then(|a| format_address(&a)),
         created: event_date("registration"),
         expires: event_date("expiration"),
         status,
@@ -1166,6 +1196,18 @@ fn format_info(queried: &str, resolved: &str, fallback: Option<&str>, info: &Rda
     }
     if let Some(r) = &info.registrar {
         s.push_str(&format!("  Registrar:   {r}\n"));
+    }
+    if let Some(r) = &info.registrant {
+        s.push_str(&format!("  Registrant:  {r}\n"));
+    }
+    if let Some(o) = &info.org {
+        s.push_str(&format!("  Org:         {o}\n"));
+    }
+    if let Some(e) = &info.email {
+        s.push_str(&format!("  Email:       {e}\n"));
+    }
+    if let Some(a) = &info.address {
+        s.push_str(&format!("  Address:     {a}\n"));
     }
     if let Some(c) = &info.created {
         s.push_str(&format!("  Created:     {c}\n"));
@@ -1918,7 +1960,7 @@ mod tests {
       ],
       "entities": [
         {"roles":["registrar"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","RESERVED-Internet Assigned Numbers Authority"]]]},
-        {"roles":["registrant"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Domain Administrator"]]]}
+        {"roles":["registrant"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Domain Administrator"],["org",{},"text","Example Org Co."],["email",{},"text","admin@example.com"],["adr",{},"text",["","","123 Main St","Springfield","IL","62701","US"]]]]}
       ],
       "nameservers": [{"ldhName":"a.iana-servers.net"},{"ldhName":"b.iana-servers.net"}]
     }"#;
@@ -1941,6 +1983,13 @@ mod tests {
             info.registrar.as_deref(),
             Some("RESERVED-Internet Assigned Numbers Authority")
         );
+        assert_eq!(info.registrant.as_deref(), Some("Domain Administrator"));
+        assert_eq!(info.org.as_deref(), Some("Example Org Co."));
+        assert_eq!(info.email.as_deref(), Some("admin@example.com"));
+        assert_eq!(
+            info.address.as_deref(),
+            Some("123 Main St, Springfield, IL, 62701, US")
+        );
         assert_eq!(info.created.as_deref(), Some("1995-08-14T04:00:00Z"));
         assert_eq!(info.expires.as_deref(), Some("2026-08-13T04:00:00Z"));
         assert_eq!(info.status.len(), 2);
@@ -1948,6 +1997,28 @@ mod tests {
             info.nameservers,
             vec!["a.iana-servers.net".to_string(), "b.iana-servers.net".to_string()]
         );
+    }
+
+    #[test]
+    fn parse_rdap_handles_missing_registrant_fields() {
+        // Some registries (e.g. Verisign for example.com) expose no
+        // registrant entity — those fields must stay None, not panic.
+        let v: serde_json::Value = serde_json::from_slice(RDAP_JSON).unwrap();
+        let mut v = v;
+        let entities = v.get_mut("entities").unwrap().as_array_mut().unwrap();
+        entities.retain(|e| {
+            e.get("roles")
+                .and_then(|r| r.as_array())
+                .map(|rs| !rs.iter().any(|x| x.as_str() == Some("registrant")))
+                .unwrap_or(true)
+        });
+        let info = parse_rdap(&v);
+        assert_eq!(info.registrar.as_deref(), Some("RESERVED-Internet Assigned Numbers Authority"));
+        assert!(info.registrant.is_none());
+        assert!(info.org.is_none());
+        assert!(info.email.is_none());
+        assert!(info.address.is_none());
+        assert_eq!(info.created.as_deref(), Some("1995-08-14T04:00:00Z"));
     }
 
     #[test]

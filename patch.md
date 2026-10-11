@@ -2,6 +2,14 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.55（2026-10-11）
+
+### 变更
+- `sys net -t info` 输出扩展：除注册商 / 创建 / 到期 / 状态 / 域名服务器外，新增 **注册人（Registrant）/ 注册组织（Org）/ 邮箱（Email）/ 地址（Address）** 字段（从 RDAP vCard 的 `registrant` 实体提取 `fn` / `org` / `email` / `adr`；地址按 vCard 组件拼接）；注册商未返回这些字段时不显示对应行
+- 新增 2 个单测（registrant 字段解析、缺失 registrant 实体时不 panic）；`cargo test` 206 项全绿
+
+---
+
 ## v0.4.54（2026-10-11）
 
 ### 变更
