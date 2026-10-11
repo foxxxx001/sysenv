@@ -182,25 +182,51 @@ fn normalize_url(raw: &str) -> Option<String> {
 
 /// Read the input file and return every validated http(s) address in order.
 fn read_addresses(input: &Path) -> Result<Vec<String>> {
+    Ok(read_entries(input)?
+        .into_iter()
+        .map(|(url, _)| url)
+        .collect())
+}
+
+/// Read the input file and return every validated http(s) address in order,
+/// each paired with the optional trailing remark found on its line: after the
+/// address, once whitespace is skipped, a `#` starts a remark that runs to the
+/// end of the line (e.g. `https://a/x.json  #二月红接口`). The remark is taken
+/// from the last address of the line only.
+fn read_entries(input: &Path) -> Result<Vec<(String, Option<String>)>> {
     let raw = std::fs::read(input).with_context(|| format!("cannot read {}", input.display()))?;
     let text = String::from_utf8_lossy(&raw);
     let text = text.strip_prefix('\u{feff}').unwrap_or(text.as_ref());
-    let mut urls = Vec::new();
+    let mut entries = Vec::new();
     for line in text.lines() {
         let trimmed = line.trim_start();
         if trimmed.starts_with('#') || trimmed.is_empty() {
             continue;
         }
-        for raw_url in extract_addresses(line) {
-            if let Some(u) = normalize_url(&raw_url) {
-                urls.push(u);
-            }
+        let spans = extract_address_spans(line);
+        let last = spans.len().saturating_sub(1);
+        for (idx, span) in spans.into_iter().enumerate() {
+            let note = if idx == last { note_after(line, &span) } else { None };
+            entries.push((span.url, note));
         }
     }
-    if urls.is_empty() {
+    if entries.is_empty() {
         bail!("no http(s) addresses found in {}", input.display());
     }
-    Ok(urls)
+    Ok(entries)
+}
+
+/// The remark after an address: skip whitespace, expect a `#`, take the rest
+/// of the line (trimmed). `None` when there is no remark.
+fn note_after(line: &str, span: &UrlSpan) -> Option<String> {
+    let rest = line[span.end..].trim_start();
+    let rest = rest.strip_prefix('#')?;
+    let note = rest.trim();
+    if note.is_empty() {
+        None
+    } else {
+        Some(note.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -428,6 +454,8 @@ struct SortItem {
     speed: Option<f64>,
     /// human-readable note when `speed` is None (why the speed test failed)
     speed_note: Option<String>,
+    /// trailing remark from the input line (`url  # remark`)
+    note: Option<String>,
 }
 
 /// Parse a body as a tv JSON document: strict first, then retry after
@@ -607,9 +635,9 @@ fn default_threads() -> usize {
 /// the collected values come back in input order (used for the sorted
 /// report, whose order is independent of completion order).
 fn probe_parallel<T: Send>(
-    unique: &[String],
+    unique: &[(String, Option<String>)],
     threads: usize,
-    probe: impl Fn(&str) -> T + Send + Sync,
+    probe: impl Fn(&str, Option<&str>) -> T + Send + Sync,
 ) -> Vec<T> {
     let threads = threads.max(1).min(unique.len().max(1));
     let next = std::sync::Arc::new(std::sync::Mutex::new(0usize));
@@ -629,7 +657,8 @@ fn probe_parallel<T: Send>(
                 if idx >= unique.len() {
                     break;
                 }
-                let r = probe(&unique[idx]);
+                let (url, note) = &unique[idx];
+                let r = probe(url, note.as_deref());
                 let _ = tx.send((idx, r));
             });
         }
@@ -650,37 +679,38 @@ fn probe_parallel<T: Send>(
 /// are reported as `[NO]`/`[FMT]` and are not part of the sorted output.
 fn cmd_json_sorted(
     client: &reqwest::blocking::Client,
-    urls: &[String],
+    entries: &[(String, Option<String>)],
     output: Option<&Path>,
     keys: &[SortKey],
     threads: usize,
 ) -> Result<()> {
     // Deduplicate first (parallel probing would otherwise race the seen set).
     let mut seen: HashSet<String> = HashSet::new();
-    let mut unique: Vec<String> = Vec::with_capacity(urls.len());
+    let mut unique: Vec<(String, Option<String>)> = Vec::with_capacity(entries.len());
     let mut n_dup = 0usize;
-    for url in urls {
+    for (url, note) in entries {
         if !seen.insert(dup_key(url)) {
             n_dup += 1;
             println!("[DUP] {url}  duplicate (already checked), skipped");
             continue;
         }
-        unique.push(url.clone());
+        unique.push((url.clone(), note.clone()));
     }
-    let w = unique.iter().map(|u| u.chars().count()).max().unwrap_or(8).max(8);
+    let w = unique.iter().map(|(u, _)| u.chars().count()).max().unwrap_or(8).max(8);
 
     enum ProbeOut {
         Ok(SortItem),
         No,
         Fmt,
     }
-    let results = probe_parallel(&unique, threads, |url| {
+    let results = probe_parallel(&unique, threads, |url, note| {
         match request(client, url, true) {
             Ok((status, elapsed, Some(body))) => match parse_tv_json(&body) {
                 Some(v) if is_valid_tv(&v) => {
                     let (speed, speed_note) = probe_speed(client, &v);
+                    let note_part = note.map(|n| format!("  note={n}")).unwrap_or_default();
                     println!(
-                        "[OK]  {:<w$}  status={status}  time={:<9}  format=json",
+                        "[OK]  {:<w$}  status={status}  time={:<9}  format=json{note_part}",
                         url,
                         fmt_ms(elapsed)
                     );
@@ -690,19 +720,22 @@ fn cmd_json_sorted(
                         name: count_name_4k(&v),
                         speed,
                         speed_note,
+                        note: note.map(|n| n.to_string()),
                     })
                 }
                 Some(_) => {
+                    let note_part = note.map(|n| format!("  note={n}")).unwrap_or_default();
                     println!(
-                        "[FMT] {:<w$}  status={status}  time={:<9}  body lacks tv nodes (sites with name)",
+                        "[FMT] {:<w$}  status={status}  time={:<9}  body lacks tv nodes (sites with name){note_part}",
                         url,
                         fmt_ms(elapsed)
                     );
                     ProbeOut::Fmt
                 }
                 None => {
+                    let note_part = note.map(|n| format!("  note={n}")).unwrap_or_default();
                     println!(
-                        "[FMT] {:<w$}  status={status}  time={:<9}  body is not valid JSON",
+                        "[FMT] {:<w$}  status={status}  time={:<9}  body is not valid JSON{note_part}",
                         url,
                         fmt_ms(elapsed)
                     );
@@ -710,11 +743,13 @@ fn cmd_json_sorted(
                 }
             },
             Ok((status, _, None)) => {
-                println!("[NO]  {:<w$}  status={status}  unexpected empty body", url);
+                let note_part = note.map(|n| format!("  note={n}")).unwrap_or_default();
+                println!("[NO]  {:<w$}  status={status}  unexpected empty body{note_part}", url);
                 ProbeOut::No
             }
             Err(e) => {
-                println!("[NO]  {:<w$}  error={e}", url);
+                let note_part = note.map(|n| format!("  note={n}")).unwrap_or_default();
+                println!("[NO]  {:<w$}  error={e}{note_part}", url);
                 ProbeOut::No
             }
         }
@@ -755,7 +790,8 @@ fn cmd_json_sorted(
 
     for it in &items {
         println!("{}", it.url);
-        println!("# count={} name={} speed={}", it.count, it.name, fmt_speed_line(it));
+        let note_part = it.note.as_ref().map(|n| format!("note={n}  ")).unwrap_or_default();
+        println!("# {note_part}count={} name={} speed={}", it.count, it.name, fmt_speed_line(it));
     }
     let dup_part = if n_dup > 0 {
         format!(", {n_dup} duplicate")
@@ -765,7 +801,7 @@ fn cmd_json_sorted(
     println!(
         "--- {} of {} URLs passed ({} unreachable, {} format mismatch{dup_part}) ---",
         n_ok,
-        urls.len(),
+        entries.len(),
         n_no,
         n_mismatch
     );
@@ -775,7 +811,13 @@ fn cmd_json_sorted(
         for it in &items {
             s.push_str(&it.url);
             s.push('\n');
-            s.push_str(&format!("# count={} name={} speed={}\n", it.count, it.name, fmt_speed_line(it)));
+            let note_part = it.note.as_ref().map(|n| format!("note={n}  ")).unwrap_or_default();
+            s.push_str(&format!(
+                "# {note_part}count={} name={} speed={}\n",
+                it.count,
+                it.name,
+                fmt_speed_line(it)
+            ));
         }
         std::fs::write(out, s).with_context(|| format!("cannot write {}", out.display()))?;
         println!("wrote {} URL(s) to {}", items.len(), out.display());
@@ -788,6 +830,8 @@ struct TvsMultiItem {
     url: String,
     /// number of `.urls` nodes
     count: usize,
+    /// trailing remark from the input line (`url  # remark`)
+    note: Option<String>,
 }
 
 /// `-t tvs`: like tv, but accepts both tv JSON (`.sites` -> "单仓" group) and
@@ -799,24 +843,24 @@ struct TvsMultiItem {
 /// `count, name`); the multi group is sorted by url count descending only.
 fn cmd_tvs(
     client: &reqwest::blocking::Client,
-    urls: &[String],
+    entries: &[(String, Option<String>)],
     output: Option<&Path>,
     keys: &[SortKey],
     threads: usize,
 ) -> Result<()> {
     // Deduplicate first.
     let mut seen: HashSet<String> = HashSet::new();
-    let mut unique: Vec<String> = Vec::with_capacity(urls.len());
+    let mut unique: Vec<(String, Option<String>)> = Vec::with_capacity(entries.len());
     let mut n_dup = 0usize;
-    for url in urls {
+    for (url, note) in entries {
         if !seen.insert(dup_key(url)) {
             n_dup += 1;
             println!("[DUP] {url}  duplicate (already checked), skipped");
             continue;
         }
-        unique.push(url.clone());
+        unique.push((url.clone(), note.clone()));
     }
-    let w = unique.iter().map(|u| u.chars().count()).max().unwrap_or(8).max(8);
+    let w = unique.iter().map(|(u, _)| u.chars().count()).max().unwrap_or(8).max(8);
 
     enum ProbeOut {
         Single(SortItem),
@@ -824,13 +868,14 @@ fn cmd_tvs(
         No,
         Fmt,
     }
-    let results = probe_parallel(&unique, threads, |url| {
+    let results = probe_parallel(&unique, threads, |url, note| {
         match request(client, url, true) {
             Ok((status, elapsed, Some(body))) => match parse_tv_json(&body) {
                 Some(v) if is_valid_tv(&v) => {
                     let (speed, speed_note) = probe_speed(client, &v);
+                    let note_part = note.map(|n| format!("  note={n}")).unwrap_or_default();
                     println!(
-                        "[OK]  {:<w$}  status={status}  time={:<9}  format=json(tv)",
+                        "[OK]  {:<w$}  status={status}  time={:<9}  format=json(tv){note_part}",
                         url,
                         fmt_ms(elapsed)
                     );
@@ -840,31 +885,36 @@ fn cmd_tvs(
                         name: count_name_4k(&v),
                         speed,
                         speed_note,
+                        note: note.map(|n| n.to_string()),
                     })
                 }
                 Some(v) if v.get("urls").and_then(|u| u.as_array()).is_some() => {
                     let count = v.get("urls").and_then(|u| u.as_array()).map(|a| a.len()).unwrap_or(0);
+                    let note_part = note.map(|n| format!("  note={n}")).unwrap_or_default();
                     println!(
-                        "[OK]  {:<w$}  status={status}  time={:<9}  format=json(urls)",
+                        "[OK]  {:<w$}  status={status}  time={:<9}  format=json(urls){note_part}",
                         url,
                         fmt_ms(elapsed)
                     );
                     ProbeOut::Multi(TvsMultiItem {
                         url: url.to_string(),
                         count,
+                        note: note.map(|n| n.to_string()),
                     })
                 }
                 Some(_) => {
+                    let note_part = note.map(|n| format!("  note={n}")).unwrap_or_default();
                     println!(
-                        "[FMT] {:<w$}  status={status}  time={:<9}  body lacks tv nodes (sites with name) or urls",
+                        "[FMT] {:<w$}  status={status}  time={:<9}  body lacks tv nodes (sites with name) or urls{note_part}",
                         url,
                         fmt_ms(elapsed)
                     );
                     ProbeOut::Fmt
                 }
                 None => {
+                    let note_part = note.map(|n| format!("  note={n}")).unwrap_or_default();
                     println!(
-                        "[FMT] {:<w$}  status={status}  time={:<9}  body is not valid JSON",
+                        "[FMT] {:<w$}  status={status}  time={:<9}  body is not valid JSON{note_part}",
                         url,
                         fmt_ms(elapsed)
                     );
@@ -872,11 +922,13 @@ fn cmd_tvs(
                 }
             },
             Ok((status, _, None)) => {
-                println!("[NO]  {:<w$}  status={status}  unexpected empty body", url);
+                let note_part = note.map(|n| format!("  note={n}")).unwrap_or_default();
+                println!("[NO]  {:<w$}  status={status}  unexpected empty body{note_part}", url);
                 ProbeOut::No
             }
             Err(e) => {
-                println!("[NO]  {:<w$}  error={e}", url);
+                let note_part = note.map(|n| format!("  note={n}")).unwrap_or_default();
+                println!("[NO]  {:<w$}  error={e}{note_part}", url);
                 ProbeOut::No
             }
         }
@@ -931,11 +983,13 @@ fn cmd_tvs(
         file.push('\n');
         for it in &singles {
             println!("{}", it.url);
-            println!("# count={} name={} speed={}", it.count, it.name, fmt_speed_line(it));
+            let note_part = it.note.as_ref().map(|n| format!("note={n}  ")).unwrap_or_default();
+            println!("# {note_part}count={} name={} speed={}", it.count, it.name, fmt_speed_line(it));
             file.push_str(&it.url);
             file.push('\n');
+            let note_part = it.note.as_ref().map(|n| format!("note={n}  ")).unwrap_or_default();
             file.push_str(&format!(
-                "# count={} name={} speed={}\n",
+                "# {note_part}count={} name={} speed={}\n",
                 it.count,
                 it.name,
                 fmt_speed_line(it)
@@ -949,10 +1003,12 @@ fn cmd_tvs(
         file.push('\n');
         for it in &multis {
             println!("{}", it.url);
-            println!("# count={}", it.count);
+            let note_part = it.note.as_ref().map(|n| format!("note={n}  ")).unwrap_or_default();
+            println!("# {note_part}count={}", it.count);
             file.push_str(&it.url);
             file.push('\n');
-            file.push_str(&format!("# count={}\n", it.count));
+            let note_part = it.note.as_ref().map(|n| format!("note={n}  ")).unwrap_or_default();
+            file.push_str(&format!("# {note_part}count={}\n", it.count));
         }
     }
 
@@ -964,7 +1020,7 @@ fn cmd_tvs(
     println!(
         "--- {} of {} URLs passed ({} unreachable, {} format mismatch{dup_part}) ---",
         n_ok,
-        urls.len(),
+        entries.len(),
         n_no,
         n_mismatch
     );
@@ -1271,11 +1327,19 @@ pub fn cmd_net_t(
             if kind == NetType::File && !sort.is_empty() {
                 eprintln!("warning: --sort applies to `-t tv|tvs` only; ignored");
             }
-            let urls = read_addresses(input)?;
             match kind {
-                NetType::Json => cmd_json_sorted(&client, &urls, output, &parse_sort_keys(sort)?, threads),
-                NetType::Tvs => cmd_tvs(&client, &urls, output, &parse_sort_keys(sort)?, threads),
-                _ => cmd_file_probe(&client, &urls, output),
+                NetType::Json | NetType::Tvs => {
+                    let entries = read_entries(input)?;
+                    match kind {
+                        NetType::Json => cmd_json_sorted(&client, &entries, output, &parse_sort_keys(sort)?, threads),
+                        NetType::Tvs => cmd_tvs(&client, &entries, output, &parse_sort_keys(sort)?, threads),
+                        _ => unreachable!(),
+                    }
+                }
+                _ => {
+                    let urls = read_addresses(input)?;
+                    cmd_file_probe(&client, &urls, output)
+                }
             }
         }
         NetType::Test => {
@@ -2788,7 +2852,7 @@ mod tests {
         let client = test_client();
         cmd_tvs(
             &client,
-            &[single.clone(), multi3.clone(), multi2.clone()],
+            &[(single.clone(), None), (multi3.clone(), None), (multi2.clone(), None)],
             Some(&out),
             &[],
             2,
@@ -2814,7 +2878,7 @@ mod tests {
         let multi = spawn_server_owned(TVS_BODY_3.to_vec(), "application/json", Duration::ZERO);
         let out = temp_file("out-tvs2");
         let client = test_client();
-        cmd_tvs(&client, &[multi.clone()], Some(&out), &[], 1).unwrap();
+        cmd_tvs(&client, &[(multi.clone(), None)], Some(&out), &[], 1).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&out);
         assert!(content.contains("--- 多仓 (1) ---"), "{content}");
@@ -2827,10 +2891,71 @@ mod tests {
         let bad = spawn_server_owned(br#"{"foo":1}"#.to_vec(), "application/json", Duration::ZERO);
         let out = temp_file("out-tvs3");
         let client = test_client();
-        cmd_tvs(&client, &[bad], Some(&out), &[], 1).unwrap();
+        cmd_tvs(&client, &[(bad, None)], Some(&out), &[], 1).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&out);
         assert!(content.is_empty(), "{content}");
+    }
+
+    // --- input remarks (`url  # remark`) ---
+
+    #[test]
+    fn read_entries_captures_trailing_note() {
+        let p = temp_file("in-note1");
+        // Remark separated by tabs / spaces after the address.
+        std::fs::write(&p, "https://a.example/x.json\t\t#二月红接口\n").unwrap();
+        let entries = read_entries(&p).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "https://a.example/x.json");
+        assert_eq!(entries[0].1.as_deref(), Some("二月红接口"));
+        // No remark -> None.
+        std::fs::write(&p, "https://a.example/y.json\n").unwrap();
+        let entries = read_entries(&p).unwrap();
+        assert_eq!(entries[0].1, None);
+        // Multi-address line: the remark binds to the last address only.
+        std::fs::write(&p, "https://a.example/x.json https://b.example/y.json # 多仓备注\n").unwrap();
+        let entries = read_entries(&p).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].1, None);
+        assert_eq!(entries[1].1.as_deref(), Some("多仓备注"));
+        // A line starting with # is still skipped entirely.
+        std::fs::write(&p, "# https://a.example/z.json\nhttps://c.example/w.json\n").unwrap();
+        let entries = read_entries(&p).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "https://c.example/w.json");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn tv_mode_outputs_input_note() {
+        let tv = spawn_server_owned(SORT_JSON_3.to_vec(), "application/json", Duration::ZERO);
+        let input = temp_file("in-note2");
+        let out = temp_file("out-note2");
+        std::fs::write(&input, format!("{tv}\t#二月红接口\n")).unwrap();
+        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        assert!(
+            content.contains(&format!("{tv}\n# note=二月红接口  count=")),
+            "{content}"
+        );
+    }
+
+    #[test]
+    fn tvs_mode_outputs_input_note() {
+        let multi = spawn_server_owned(TVS_BODY_3.to_vec(), "application/json", Duration::ZERO);
+        let input = temp_file("in-note3");
+        let out = temp_file("out-note3");
+        std::fs::write(&input, format!("{multi}\t#接口A\n")).unwrap();
+        cmd_net(&input, NetType::Tvs, Some(&out), 10.0, &[], &[]).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        assert!(
+            content.contains(&format!("{multi}\n# note=接口A  count=3")),
+            "{content}"
+        );
     }
 
     // --- parallelism ---
@@ -2864,8 +2989,14 @@ mod tests {
         let multi2 = spawn_server_owned(TVS_BODY_2.to_vec(), "application/json", Duration::ZERO);
         let out = temp_file("out-par-tvs");
         let client = test_client();
-        cmd_tvs(&client, &[single.clone(), multi3.clone(), multi2.clone()], Some(&out), &[], 2)
-            .unwrap();
+        cmd_tvs(
+            &client,
+            &[(single.clone(), None), (multi3.clone(), None), (multi2.clone(), None)],
+            Some(&out),
+            &[],
+            2,
+        )
+        .unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&out);
         assert!(content.starts_with("--- 单仓 (1) ---"), "{content}");

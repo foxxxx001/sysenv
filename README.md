@@ -873,6 +873,8 @@ sys short --temporary  # 不持久化 PATH，只打印可粘贴的片段
 
 * tv / tvs 模式**多地址并行探测**：`--thread NUM` 指定一次并行测试多少个地址（默认 **CPU 内核数量**）；每个地址测完立即在屏幕打印一条 `[OK]` / `[FMT]` / `[NO]` 结果（含状态码与响应时间），全部完成后输出排序分组结果与汇总行
 
+* tv / tvs 模式**行内备注**：输入行中地址后面（隔空格）出现 `#` 时，`#` 后的内容作为该地址的**备注**输出到测试结果中——逐条结果行末尾 `note=...`，最终排序/分组输出与 `-o` 文件的 `#` 测试信息行中显示 `note=备注  count=...`（备注取自该行最后一个地址；例如 `https://a/x.json  #二月红接口`）
+
 * tv / file 模式**每测完一个立即打印**一条结果：URL / 是否可用 / 状态码 / 响应时间 / 实际格式（json / text / binary）
 
 * `-o FILE`：把**检测成功**（地址可访问且格式符合 `-t` 要求）的 url 写入指定文件（仅 tv / file 模式有效）
@@ -897,6 +899,7 @@ sys net -i urls.txt -t file -o ok.txt      # 只把返回普通文本的可用�
 sys net -i urls.txt -t test -o clean.txt   # 探测可访问性，不可访问打印错误并从源文件删除，结果写入 clean.txt
 sys net -i urls.txt -t tv --timeout 5      # 单次请求超时 5 秒
 sys net -i urls.txt -t tv --thread 8        # tv/tvs 模式并行探测 8 个地址（默认 CPU 内核数）
+sys net -i urls.txt -t tv -o ok.json.txt    # 输入行地址后的 "# 备注" 会随该地址输出（note=...）
 sys net -t info -n www.example.com         # 查域名注册信息；查不到自动回退上层域名
 sys net -t info -n a.com -n b.com          # 一次查多个域名
 ```
