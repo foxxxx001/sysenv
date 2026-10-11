@@ -2,6 +2,13 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.53（2026-10-11）
+
+### 变更
+- `sys net -t test` 末尾汇总补充**可访问（通过）地址总数**：`--- checked N address(es) in M line(s): K reachable, ... ---`（K = N - 不可达 - 排除 - 重复）；tv / file 模式末尾已有 `--- N of M URLs passed ---` 汇总（含通过总数），domain 已有 `--- N of M domains reachable ---`；`cargo test` 199 项全绿
+
+---
+
 ## v0.4.52（2026-10-11）
 
 ### 变更

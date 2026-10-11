@@ -901,6 +901,7 @@ fn cmd_test(
         println!("[{cur}/{total}]  {}  -> {action}", parts.join(" | "));
     }
 
+    let n_reachable = n_addr - n_unreach - n_excluded - n_dup;
     let extra = {
         let mut v = Vec::new();
         if n_excluded > 0 {
@@ -916,7 +917,7 @@ fn cmd_test(
         }
     };
     println!(
-        "--- checked {n_addr} address(es) in {total} line(s): {n_unreach} unreachable{extra}, {} line(s) kept, {n_deleted_lines} line(s) deleted ---",
+        "--- checked {n_addr} address(es) in {total} line(s): {n_reachable} reachable, {n_unreach} unreachable{extra}, {} line(s) kept, {n_deleted_lines} line(s) deleted ---",
         kept.len()
     );
     if let Some(out) = output {
