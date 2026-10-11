@@ -2,6 +2,26 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.64（2026-10-11）
+
+### 变更
+- `sys ai info` 的 **`-o md` 输出从 Markdown 表格改为无序列表**：
+  - `info provider -o md`：
+    ```
+    - agnes
+      - api_base：https://apihub.agnes-ai.cn/v1
+      - api_key：sk-...
+      - console：https://platform.agnes-ai.cn
+      - docs：https://wiki.agnes-ai.cn/zh-Hans/docs
+    ```
+  - `info model -o md`：按 provider 分组，`- provider` 下挂 `- name：模型` 子项
+  - 无字段组合视图：`## Providers` / `## Models` 两段无序列表
+  - `info list-model -o md`：`- 模型id` 下挂 `owned_by：` / `created：` 子项
+- `sys ai model` / `ai provider` / `ai cn-model` / `ai dl` 的 `-o md` 仍为 Markdown 表格，不受影响
+- 测试同步更新（`cargo test` 220 项全绿）
+
+---
+
 ## v0.4.63（2026-10-11）
 
 ### 变更

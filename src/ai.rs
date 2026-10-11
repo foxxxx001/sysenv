@@ -1217,6 +1217,46 @@ struct ProviderInfoRow {
     console: String,
 }
 
+/// Markdown unordered-list view of `info provider` rows (`-o md`):
+/// `- name` with `api_base / api_key / console / docs` children.
+fn md_provider_list(rows: &[ProviderInfoRow]) -> String {
+    let mut s = String::new();
+    for r in rows {
+        s.push_str(&format!("- {}\n", md_cell(&r.name)));
+        s.push_str(&format!("  - api_base：{}\n", md_cell(&r.api_base)));
+        s.push_str(&format!("  - api_key：{}\n", md_cell(&r.api_key)));
+        s.push_str(&format!("  - console：{}\n", md_cell(&r.console)));
+        s.push_str(&format!("  - docs：{}\n", md_cell(&r.docs)));
+    }
+    s
+}
+
+/// Markdown unordered-list view of `info model` rows (`-o md`): one
+/// `- provider` entry per provider (grouped) with `- name：` children.
+fn md_model_list(rows: &[ModelInfoRow]) -> String {
+    let mut s = String::new();
+    let mut last: Option<&str> = None;
+    for r in rows {
+        if last != Some(r.provider.as_str()) {
+            last = Some(r.provider.as_str());
+            s.push_str(&format!("- {}\n", md_cell(&r.provider)));
+        }
+        s.push_str(&format!("  - name：{}\n", md_cell(&r.name)));
+    }
+    s
+}
+
+/// Markdown unordered-list view of `info list-model` rows (`-o md`).
+fn md_list_model_rows(rows: &[ModelListRow]) -> String {
+    let mut s = String::new();
+    for r in rows {
+        s.push_str(&format!("- {}\n", md_cell(&r.id)));
+        s.push_str(&format!("  - owned_by：{}\n", md_cell(&r.owned_by)));
+        s.push_str(&format!("  - created：{}\n", md_cell(&fmt_created(&r.created))));
+    }
+    s
+}
+
 /// Official help-docs / console URLs keyed by provider name (case-insensitive
 /// substring match, like the `info provider` keyword filter). Every URL below
 /// was verified reachable on 2026-10-07. Unknown providers get "" / "".
@@ -1629,34 +1669,10 @@ pub fn cmd_info(
                 Some(OutFormat::Md) => {
                     println!("## Providers");
                     println!();
-                    println!(
-                        "{}",
-                        md_table(
-                            &["name", "api_base", "api_key", "docs", "console"],
-                            &provs
-                                .iter()
-                                .map(|r| vec![
-                                    r.name.clone(),
-                                    r.api_base.clone(),
-                                    r.api_key.clone(),
-                                    r.docs.clone(),
-                                    r.console.clone(),
-                                ])
-                                .collect::<Vec<_>>()
-                        )
-                    );
+                    println!("{}", md_provider_list(&provs));
                     println!("## Models");
                     println!();
-                    println!(
-                        "{}",
-                        md_table(
-                            &["provider", "name"],
-                            &mods
-                                .iter()
-                                .map(|r| vec![r.provider.clone(), r.name.clone()])
-                                .collect::<Vec<_>>()
-                        )
-                    );
+                    println!("{}", md_model_list(&mods));
                 }
                 Some(OutFormat::Yaml) => {
                     let providers: Vec<Value> = provs
@@ -1719,22 +1735,7 @@ pub fn cmd_info(
                     }
                 }
                 Some(OutFormat::Md) => {
-                    println!(
-                        "{}",
-                        md_table(
-                            &["name", "api_base", "api_key", "docs", "console"],
-                            &rows
-                                .iter()
-                                .map(|r| vec![
-                                    r.name.clone(),
-                                    r.api_base.clone(),
-                                    r.api_key.clone(),
-                                    r.docs.clone(),
-                                    r.console.clone(),
-                                ])
-                                .collect::<Vec<_>>()
-                        )
-                    );
+                    println!("{}", md_provider_list(&rows));
                 }
                 // YAML is the default view of `info provider`.
                 Some(OutFormat::Yaml) | None => {
@@ -1760,16 +1761,7 @@ pub fn cmd_info(
                     }
                 }
                 Some(OutFormat::Md) => {
-                    println!(
-                        "{}",
-                        md_table(
-                            &["provider", "name"],
-                            &rows
-                                .iter()
-                                .map(|r| vec![r.provider.clone(), r.name.clone()])
-                                .collect::<Vec<_>>()
-                        )
-                    );
+                    println!("{}", md_model_list(&rows));
                 }
                 Some(OutFormat::Yaml) => {
                     let arr: Vec<Value> = rows
@@ -2011,16 +2003,7 @@ fn info_model_list(cfg: &chat::Config, keyword: &str, fmt: Option<OutFormat>) ->
             }
         }
         Some(OutFormat::Md) => {
-            println!(
-                "{}",
-                md_table(
-                    &["id", "owned_by", "created"],
-                    &rows
-                        .iter()
-                        .map(|r| vec![r.id.clone(), r.owned_by.clone(), fmt_created(&r.created)])
-                        .collect::<Vec<_>>()
-                )
-            );
+            println!("{}", md_list_model_rows(&rows));
         }
         Some(OutFormat::Yaml) => {
             let arr: Vec<Value> = rows
@@ -4082,7 +4065,7 @@ mod tests {
     }
 
     #[test]
-    fn cmd_info_provider_outputs_markdown_table() {
+    fn cmd_info_provider_outputs_markdown_list() {
         let dir = std::env::temp_dir().join(format!("sysenv-md-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cfg_path = dir.join("config.yaml");
@@ -4095,23 +4078,14 @@ mod tests {
         let cfg = chat::load_config(Some(&cfg_path)).unwrap().0;
         let rows = info_provider_rows(&cfg, None).unwrap();
         assert_eq!(rows.len(), 1);
-        let table = md_table(
-            &["name", "api_base", "api_key", "docs", "console"],
-            &rows
-                .iter()
-                .map(|r| {
-                    vec![
-                        r.name.clone(),
-                        r.api_base.clone(),
-                        r.api_key.clone(),
-                        r.docs.clone(),
-                        r.console.clone(),
-                    ]
-                })
-                .collect::<Vec<_>>(),
+        let list = md_provider_list(&rows);
+        assert_eq!(
+            list,
+            "- agnes\n  - api_base：https://apihub.example.cn/v1\n  - api_key：sk-test-0000\n  - console：https://platform.agnes-ai.cn\n  - docs：https://wiki.agnes-ai.cn/zh-Hans/docs\n"
         );
-        assert!(table.starts_with("| name | api_base | api_key | docs | console |\n| --- | --- | --- | --- | --- |\n"), "{table}");
-        assert!(table.contains("| agnes | https://apihub.example.cn/v1 | sk-test-0000 |"), "{table}");
+        // `info model -o md` groups children under each provider.
+        let mods = info_model_rows(&cfg, None).unwrap();
+        assert_eq!(md_model_list(&mods), "- agnes\n  - name：agnes-3.0-flash\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -271,7 +271,7 @@ sys env list
 
 * `--model-type TYPE[,TYPE...]`：只显示支持这些模态的模型，取值 `text / image / audio / video / pdf`（也接受中文 `文本 / 图像 / 语音 / 视频`）；**多个值用半角 `,` 或全角 `，` 分隔，取交集（模型须同时包含全部指定模态）**，如 `--model-type text,image` 只显示既能文本又能图像的模型；可与 `--date` / `--open` 等组合
 
-* `-o/--output-format json|csv|yaml|md`：机器可读输出 ——`json` 输出 **JSON 数组**（与 `--json` 等价，单命中也是数组）；`csv` 输出带表头的 CSV 表格（model 24 列、provider 6 列，RFC-4180 转义）；`yaml` 输出 YAML 列表；`md` 输出 **Markdown 表格**（`| 表头 |` + `| --- |` 分隔行 + 数据行，单元格自动转义 `|` 与换行；`sys ai info` 的 provider / model / list-model 与组合视图、`ai model` / `ai provider` / `ai cn-model` 的列表与详情均支持），适用于详情、搜索、列表与多匹配全部场景
+* `-o/--output-format json|csv|yaml|md`：机器可读输出 ——`json` 输出 **JSON 数组**（与 `--json` 等价，单命中也是数组）；`csv` 输出带表头的 CSV 表格（model 24 列、provider 6 列，RFC-4180 转义）；`yaml` 输出 YAML 列表；`md` 输出 **Markdown**（`sys ai info` 系列输出无序列表 ——`- provider` 下挂 `api_base / api_key / console / docs` 子项；`ai model` / `ai provider` / `ai cn-model` / `ai dl` 输出 Markdown 表格，单元格自动转义 `|` 与换行），适用于详情、搜索、列表与多匹配全部场景
 
 * 模型详情字段：`id / name / provider / family / description / modalities / context / output limit / cost（每 1M tokens 的 input/output/cache_read 折算美元）/ reasoning / tool call / structured output / temperature / attachment / open weights / release date / last updated / knowledge cutoff / reasoning options` 等
 
