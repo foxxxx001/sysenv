@@ -460,14 +460,29 @@ struct SortItem {
 
 /// Parse a body as a tv JSON document: strict first, then retry after
 /// stripping trailing commas (a common real-world blemish). Returns `None`
-/// when the body still does not parse.
+/// when the body still does not parse. A leading byte-order mark (UTF-8 /
+/// UTF-16) is stripped first — raw.githubusercontent etc. often serve
+/// BOM-prefixed JSON as `text/plain`.
 fn parse_tv_json(body: &[u8]) -> Option<serde_json::Value> {
+    let body = strip_bom(body);
     if let Ok(v) = serde_json::from_slice(body) {
         return Some(v);
     }
     let s = std::str::from_utf8(body).ok()?;
     let cleaned = strip_trailing_commas(s);
     serde_json::from_str(&cleaned).ok()
+}
+
+/// Strip a leading byte-order mark (UTF-8 `EF BB BF`, UTF-16 `FF FE` /
+/// `FE FF`) from a body so BOM-prefixed JSON parses.
+fn strip_bom(body: &[u8]) -> &[u8] {
+    if body.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        &body[3..]
+    } else if body.starts_with(&[0xFF, 0xFE]) || body.starts_with(&[0xFE, 0xFF]) {
+        &body[2..]
+    } else {
+        body
+    }
 }
 
 /// Remove commas that are immediately followed (ignoring whitespace) by `}`
@@ -2895,6 +2910,22 @@ mod tests {
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&out);
         assert!(content.is_empty(), "{content}");
+    }
+
+    #[test]
+    fn tvs_accepts_bom_prefixed_multi_json() {
+        // raw.githubusercontent etc. serve BOM-prefixed JSON as text/plain;
+        // the BOM must not make a valid multi (`.urls`) body fail to parse.
+        let mut body = vec![0xEF, 0xBB, 0xBF];
+        body.extend_from_slice(TVS_BODY_3);
+        let v = parse_tv_json(&body).expect("BOM-prefixed multi JSON must parse");
+        assert!(v.get("urls").and_then(|u| u.as_array()).is_some());
+        assert!(!is_valid_tv(&v), "multi JSON is not a tv (sites) doc");
+        // Same for a tv (sites) body.
+        let mut body2 = vec![0xEF, 0xBB, 0xBF];
+        body2.extend_from_slice(TV_BODY);
+        let v2 = parse_tv_json(&body2).expect("BOM-prefixed tv JSON must parse");
+        assert!(is_valid_tv(&v2));
     }
 
     // --- input remarks (`url  # remark`) ---

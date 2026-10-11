@@ -2,6 +2,14 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.61（2026-10-11）
+
+### 变更
+- 修复：带 **UTF-8/UTF-16 BOM** 前缀的 JSON 响应被误判 `[FMT] body is not valid JSON`（如 raw.githubusercontent 以 `text/plain` 提供 BOM 前缀 JSON，内容实际是合法的多仓 `urls` 格式）——`parse_tv_json` 解析前先剥离 BOM，tv / tvs 均受益
+- 新增单测（BOM 前缀的多仓与单仓 JSON 均可解析）；`cargo test` 217 项全绿
+
+---
+
 ## v0.4.60（2026-10-11）
 
 ### 变更
