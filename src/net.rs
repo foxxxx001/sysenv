@@ -494,10 +494,10 @@ fn strip_trailing_commas(s: &str) -> String {
 }
 
 /// Valid tv data: `sites` is a non-empty array whose every element is an
-/// object carrying a `name` key, and the top-level `lives` and `rules` nodes
-/// exist (`parses` is optional).
+/// object carrying a `name` key, and the top-level `lives` node exists
+/// (`parses` and `rules` are optional).
 fn is_valid_tv(v: &serde_json::Value) -> bool {
-    if v.get("lives").is_none() || v.get("rules").is_none() {
+    if v.get("lives").is_none() {
         return false;
     }
     match v.get("sites").and_then(|s| s.as_array()) {
@@ -632,7 +632,7 @@ fn cmd_json_sorted(
                         if !is_valid_tv(&v) {
                             n_mismatch += 1;
                             println!(
-                                "[FMT] {url}  status={status}  body lacks tv nodes (sites with name, lives, rules)"
+                                "[FMT] {url}  status={status}  body lacks tv nodes (sites with name, lives)"
                             );
                             continue;
                         }
@@ -1641,13 +1641,13 @@ mod tests {
         let mut v = good.clone();
         v.as_object_mut().unwrap().remove("lives");
         assert!(!is_valid_tv(&v));
-        // missing rules
-        let mut v = good.clone();
-        v.as_object_mut().unwrap().remove("rules");
-        assert!(!is_valid_tv(&v));
         // parses is optional
         let mut v = good.clone();
         v.as_object_mut().unwrap().remove("parses");
+        assert!(is_valid_tv(&v));
+        // rules is optional
+        let mut v = good.clone();
+        v.as_object_mut().unwrap().remove("rules");
         assert!(is_valid_tv(&v));
         // empty sites
         let mut v = good.clone();
