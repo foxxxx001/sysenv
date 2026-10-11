@@ -52,7 +52,7 @@ Commands:
 | 注册表导入导出   | `path export/import` | `.reg` / JSON / TXT 三种格式；合并或 `--replace` 整体替换；跨机迁移备份                                   |
 | 链接到 PATH  | `link`               | 硬链接 → 符号链接 → 拷贝三级自动回退；Windows `.cmd` 垫片；自定义命令名；系统目录或托管目录                               |
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
-| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1015 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度与模态）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key/docs/console/sample（sample 为该 provider models 接口的示例请求，如 `https://openrouter.ai/api/v1/models  Authorization:"Bearer sk-sample"`）、`info model` 列出 `{provider}:{name}` 模型清单、`info price` 查 models.dev 模型价格、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页、`info list-model` 用 provider 的 models 接口查可用模型）；`ai config`（导出配置为 codex / opencode / litellm / freellmapi 格式，支持 `provider:*` / `provider:model` 选择、`--show` 预览目标配置文件地址与内容、`-f` 写文件且写入前自动备份）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前按配置的 max_input_tokens 截断超长消息，能力字段默认只读本地配置、不查询 models.dev，`--update` 显式补齐缺失的 max_input_tokens / type 并写回配置，OpenAI / Anthropic 兼容）；`ai server`（`sys ai server [ADDR]` 以 OpenAI 兼容 API 对外提供 `/v1/chat/completions` 与 `/v1/models` 服务（默认 127.0.0.1:10000，可只给端口/IP；`--help` 查询服务状态并打印配置的 provider/model））；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
+| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1039 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度、模态与**参数规模（参数量）**）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key/docs/console/sample（sample 为该 provider models 接口的示例请求，如 `https://openrouter.ai/api/v1/models  Authorization:"Bearer sk-sample"`）、`info model` 列出 `{provider}:{name}` 模型清单、`info price` 查 models.dev 模型价格、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页、`info list-model` 用 provider 的 models 接口查可用模型）；`ai config`（导出配置为 codex / opencode / litellm / freellmapi 格式，支持 `provider:*` / `provider:model` 选择、`--show` 预览目标配置文件地址与内容、`-f` 写文件且写入前自动备份）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前按配置的 max_input_tokens 截断超长消息，能力字段默认只读本地配置、不查询 models.dev，`--update` 显式补齐缺失的 max_input_tokens / type 并写回配置，OpenAI / Anthropic 兼容）；`ai server`（`sys ai server [ADDR]` 以 OpenAI 兼容 API 对外提供 `/v1/chat/completions` 与 `/v1/models` 服务（默认 127.0.0.1:10000，可只给端口/IP；`--help` 查询服务状态并打印配置的 provider/model））；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
 | 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin（带扩展名如 `me.txt` 则显示文件，引号包裹强制搜索）；2 参目录树文本/源码搜索（`-e` / `-i` / `-t` / `-w` / `-c`）；3 参 OLD NEW PATH 就地替换；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件 |
 | 格式转换      | `con`                | json / csv / md / yaml 互转：默认读 stdin（`cat a.json | sys con`），`-file` 读文件，`-i` 输入格式，`-o` 输出格式，`-out` 写文件；表格类转对象数组（类型推断 + 转义） |
@@ -308,7 +308,7 @@ CSV 列：model 为 `id,name,provider,family,status,knowledge_cutoff,description
 
 #### 5.1 国内 AI 模型查询（`ai cn-model`）
 
-数据源为 [datalearner](https://www.datalearner.com/ai-models/pretrained-models) 的预训练模型列表（服务端渲染 HTML，约 **1015 个模型**，分页抓取 + slug 去重），与 `ai model`（models.dev）相互独立。
+数据源为 [datalearner](https://www.datalearner.com/ai-models/pretrained-models) 的预训练模型列表（服务端渲染 HTML，约 **1039 个模型**，分页抓取 + slug 去重），与 `ai model`（models.dev）相互独立。
 
 * 只做查询：支持按**名称精确查询**与 `-s/--search` 子串搜索（别名也会匹配），**没有** `--list`、**没有** `--open`（该数据源不提供开放权重信息）
 
@@ -316,16 +316,16 @@ CSV 列：model 为 `id,name,provider,family,status,knowledge_cutoff,description
 
 * `--model-type TYPE[,TYPE...]`：按**分类**筛选模型，取值 `text / image / audio / video / multimodal`（也接受中文 `文本 / 图像 / 语音 / 视频 / 多模态`）；**多个值用半角 `,` 或全角 `，` 分隔，取交集**（分类须同时匹配每个类型的关键词，如 `audio` 匹配“语音”分类、`image` 匹配“视觉 / 多模态”类）
 
-* **精确命中时抓详情页**：单模型精确查询会额外抓取该模型的详情页，输出中附带 `context`（上下文长度，如 `1.05M`）与 `modality`（输入/输出模态，如 `文本、图像 → 文本`），失败时静默降级（字段留空）
+* **精确命中时抓详情页**：单模型精确查询会额外抓取该模型的详情页，输出中附带 `context`（上下文长度，如 `1.05M`）、`modality`（输入/输出模态，如 `文本、图像 → 文本`）与 `parameters`（**模型规模 / 参数量**，如 `2350亿 / 220亿`），失败时静默降级（字段留空）；站点以「暂无数据」占位表示未知的字段同样留空
 
-* 字段：`id（slug）/ name / provider（发布机构）/ aliases（又名）/ type（精选 / 预览版 / 开源模型 / 闭源模型等徽章）/ category（分类，如 推理大模型）/ context（上下文长度，详情页）/ modality（输入/输出模态，详情页）/ published / url`
+* 字段：`id（slug）/ name / provider（发布机构）/ aliases（又名）/ type（精选 / 预览版 / 开源模型 / 闭源模型等徽章）/ category（分类，如 推理大模型）/ context（上下文长度，详情页）/ modality（输入/输出模态，详情页）/ parameters（参数规模，详情页）/ published / url`
 
 * 24 小时本地缓存（与 `ai model` 同一缓存目录，文件名 `datalearner-models.json`）；`--refresh` 强制重新抓取
 
-* `--limit N` 限制列表条数（默认 20）；`--json` / `-o json` 输出 JSON 数组；`-o csv` 输出 10 列 CSV（`id,name,provider,aliases,type,category,context,modality,published,url`）
+* `--limit N` 限制列表条数（默认 20）；`--json` / `-o json` 输出 JSON 数组；`-o csv` 输出 11 列 CSV（`id,name,provider,aliases,type,category,context,modality,parameters,published,url`）
 
 ```
-sys ai cn-model gpt-6-1-sol            # 精确查询（大小写不敏感；附带详情页 context / modality）
+sys ai cn-model gpt-6-1-sol            # 精确查询（大小写不敏感；附带详情页 context / modality / parameters）
 sys ai cn-model -s ernie --limit 10    # 子串搜索（别名也匹配）
 sys ai cn-model --date 2026-09-28      # 列出所有 published 晚于该日期的模型
 sys ai cn-model --model-type 语音       # 列出所有语音大模型

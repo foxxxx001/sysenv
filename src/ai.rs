@@ -6,7 +6,9 @@
 //! - `ai cn-model` queries the DataLearner AI model list
 //!   (`https://www.datalearner.com/ai-models/pretrained-models`), a
 //!   server-rendered HTML page (paged via `?page=N`); only released models
-//!   with a real `published` date are kept.
+//!   with a real `published` date are kept. A single exact hit fetches the
+//!   detail page to enrich the entry with the context length, the
+//!   input/output modalities and the parameter scale (总参数 / 激活参数).
 
 use anyhow::{Context, Result, bail};
 use crate::chat;
@@ -2519,6 +2521,9 @@ fn parse_minimax_prices(html: &str) -> Vec<Vec<String>> {
 // model card carries: name, provider, optional aliases (又名), type badges
 // (预览版 / 精选 / 开源模型 / 闭源模型 ...), a published date and a category.
 // Rumor (传闻) cards carry "预计发布" instead of a real date and are skipped.
+// The model detail page additionally exposes the model scale
+// (总参数 / 激活参数, e.g. `2350亿 / 220亿`), which is fetched for single
+// exact hits and shown as the `parameters` field.
 // ---------------------------------------------------------------------------
 
 const DL_BASE: &str = "https://www.datalearner.com/ai-models/pretrained-models";
@@ -2543,13 +2548,18 @@ struct DlModel {
     context: String,
     /// Input/output modalities from the detail page, e.g. `文本、图像 → 文本`
     modality: String,
+    /// Model scale (参数量) from the detail page's `总参数 / 激活参数` row,
+    /// e.g. `2350亿 / 220亿` (empty when unknown). Only filled for single
+    /// exact hits that fetch the detail page; cards never carry it.
+    #[serde(default)]
+    parameters: String,
     /// Published date YYYY-MM-DD (empty when the card has no real date)
     published: String,
     /// Detail page URL
     url: String,
 }
 
-const DL_CSV_HEADER: &str = "id,name,provider,aliases,type,category,context,modality,published,url";
+const DL_CSV_HEADER: &str = "id,name,provider,aliases,type,category,context,modality,parameters,published,url";
 
 fn dl_cache_file() -> PathBuf {
     cache_dir().join("datalearner-models.json")
@@ -2638,33 +2648,58 @@ fn fetch_datalearner(refresh: bool) -> Result<Vec<DlModel>> {
 /// wrapped in its own span (`>LABEL</span></div><div class="...">`), so we
 /// locate the label text and then read the value div that directly follows
 /// the next `</div><div class="` sequence.
+///
+/// The label text can also occur outside a label row (e.g. in the page's
+/// meta description or scripts), so occurrences are scanned one by one and
+/// only one whose value div starts within `MAX_GAP` bytes after the label is
+/// accepted; this keeps the meta-description hit from grabbing an unrelated
+/// element far away in the document. Values that only carry the site's
+/// `暂无数据` placeholders (e.g. `暂无数据 / 暂无数据`) are treated as absent.
 fn dl_detail_value(html: &str, label: &str) -> Option<String> {
-    let label_pos = html.find(label)?;
-    let rest = &html[label_pos + label.len()..];
+    const MAX_GAP: usize = 200;
     let marker = "</div><div class=\"";
-    let ms = rest.find(marker)?;
-    let after = &rest[ms + marker.len()..];
-    let gt = after.find('>')?;
-    let value_start = gt + 1;
-    let value_end = after[value_start..].find("</div>")? + value_start;
-    let raw = &after[value_start..value_end];
-    let text = html_unescape(&html_strip_tags(raw));
-    let t = text.trim();
-    if !t.is_empty() && t != "暂无数据" {
-        Some(t.to_string())
-    } else {
-        None
+    let mut pos = 0usize;
+    while let Some(offset) = html.get(pos..).and_then(|r| r.find(label)) {
+        let label_pos = pos + offset;
+        let rest = &html[label_pos + label.len()..];
+        if let Some(ms) = rest.find(marker) {
+            if ms <= MAX_GAP {
+                let after = &rest[ms + marker.len()..];
+                if let Some(gt) = after.find('>') {
+                    let value_start = gt + 1;
+                    if let Some(value_end) = after[value_start..].find("</div>") {
+                        let raw = &after[value_start..value_start + value_end];
+                        let text = html_unescape(&html_strip_tags(raw));
+                        let t = text.trim();
+                        // The site marks unknown values with 暂无数据; a value
+                        // made only of placeholders (e.g. `暂无数据 / 暂无数据`)
+                        // counts as absent, while partially known values
+                        // (e.g. `2350亿 / 暂无数据`) are kept.
+                        let placeholder_only = t
+                            .split(['/', '、', ',', '，', ' ', '\t'])
+                            .all(|p| p.trim().is_empty() || p.trim() == "暂无数据");
+                        if !t.is_empty() && !placeholder_only {
+                            return Some(t.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        pos = label_pos + label.len();
     }
+    None
 }
 
-/// Fetch a model's detail page and extract the context length and
-/// input/output modalities. Failures (network, missing fields) return empty
-/// strings rather than aborting the whole query.
-fn fetch_dl_detail(url: &str) -> Result<(String, String)> {
+/// Fetch a model's detail page and extract the context length, the
+/// input/output modalities and the parameter scale (总参数 / 激活参数).
+/// Failures (network, missing fields) return empty strings rather than
+/// aborting the whole query.
+fn fetch_dl_detail(url: &str) -> Result<(String, String, String)> {
     let html = fetch_dl_page(url)?;
     Ok((
         dl_detail_value(&html, "上下文长度").unwrap_or_default(),
         dl_detail_value(&html, "输入/输出模态").unwrap_or_default(),
+        dl_detail_value(&html, "总参数 / 激活参数").unwrap_or_default(),
     ))
 }
 
@@ -2908,6 +2943,7 @@ fn parse_dl_cards(html: &str) -> Vec<DlModel> {
             category,
             context: String::new(),
             modality: String::new(),
+            parameters: String::new(),
             published,
             url: format!("{DL_BASE}/{slug}"),
         });
@@ -2956,7 +2992,7 @@ fn filter_dl_by_date(models: Vec<DlModel>, date: &str) -> Vec<DlModel> {
 fn dl_csv_row(m: &DlModel) -> String {
     csv_row(&[
         &m.id, &m.name, &m.provider, &m.aliases, &m.r#type, &m.category, &m.context, &m.modality,
-        &m.published, &m.url,
+        &m.parameters, &m.published, &m.url,
     ])
 }
 
@@ -3000,6 +3036,9 @@ fn print_dl_detail(m: &DlModel) {
     if !m.modality.is_empty() {
         rows.push(("modality".into(), m.modality.clone()));
     }
+    if !m.parameters.is_empty() {
+        rows.push(("parameters".into(), m.parameters.clone()));
+    }
     if !m.published.is_empty() {
         rows.push(("published".into(), m.published.clone()));
     }
@@ -3031,7 +3070,7 @@ fn output_dl(hits: &[DlModel], take: usize, fmt: Option<OutFormat>, list_mode: b
             println!(
                 "{}",
                 md_table(
-                    &["id", "name", "provider", "aliases", "type", "category", "context", "modality", "published", "url"],
+                    &["id", "name", "provider", "aliases", "type", "category", "context", "modality", "parameters", "published", "url"],
                     &hits
                         .iter()
                         .take(take)
@@ -3044,6 +3083,7 @@ fn output_dl(hits: &[DlModel], take: usize, fmt: Option<OutFormat>, list_mode: b
                             m.category.clone(),
                             m.context.clone(),
                             m.modality.clone(),
+                            m.parameters.clone(),
                             m.published.clone(),
                             m.url.clone(),
                         ])
@@ -3075,7 +3115,9 @@ fn output_dl(hits: &[DlModel], take: usize, fmt: Option<OutFormat>, list_mode: b
 /// keeps only models published strictly after it; `--model-type` keeps only
 /// models whose category matches the given kind (text / image / audio /
 /// video / multimodal). A single exact hit fetches the detail page to enrich
-/// the output with the context length and input/output modalities.
+/// the output with the context length, the input/output modalities and the
+/// parameter scale (总参数 / 激活参数, the model-scale info the site
+/// provides).
 pub fn cmd_cn_model(
     name: Option<&str>,
     search: Option<&str>,
@@ -3159,9 +3201,10 @@ pub fn cmd_cn_model(
         // Single exact hit: enrich with the detail page (best effort).
         let mut m = hits.into_iter().next().unwrap();
         match fetch_dl_detail(&m.url) {
-            Ok((ctx, modl)) => {
+            Ok((ctx, modl, params)) => {
                 m.context = ctx;
                 m.modality = modl;
+                m.parameters = params;
             }
             Err(e) => eprintln!("sys: warning: cannot fetch detail page for {}: {e:#}", m.name),
         }
@@ -3790,9 +3833,11 @@ mod tests {
         assert_eq!(cols[5], "推理大模型");
         assert_eq!(cols[6], "");                 // context (empty from card)
         assert_eq!(cols[7], "");                 // modality (empty from card)
-        assert_eq!(cols[8], "2026-09-29");
-        assert_eq!(cols.len(), 10);
-        assert!(DL_CSV_HEADER.split(',').count() == 10);
+        assert_eq!(cols[8], "");                 // parameters (empty from card)
+        assert_eq!(cols[9], "2026-09-29");
+        assert_eq!(cols[10], models[0].url);
+        assert_eq!(cols.len(), 11);
+        assert!(DL_CSV_HEADER.split(',').count() == 11);
     }
 
     #[test]
@@ -3867,6 +3912,7 @@ mod tests {
                 category: "推理大模型".into(),
                 context: String::new(),
                 modality: String::new(),
+                parameters: String::new(),
                 published: String::new(),
                 url: String::new(),
             },
@@ -3879,6 +3925,7 @@ mod tests {
                 category: "语音大模型".into(),
                 context: String::new(),
                 modality: String::new(),
+                parameters: String::new(),
                 published: String::new(),
                 url: String::new(),
             },
@@ -3891,6 +3938,7 @@ mod tests {
                 category: "多模态大模型".into(),
                 context: String::new(),
                 modality: String::new(),
+                parameters: String::new(),
                 published: String::new(),
                 url: String::new(),
             },
@@ -3920,6 +3968,7 @@ mod tests {
             category: "多模态 推理大模型".into(),
             context: String::new(),
             modality: String::new(),
+            parameters: String::new(),
             published: String::new(),
             url: String::new(),
         };
@@ -3939,11 +3988,34 @@ mod tests {
         // Basic-info style: label directly in the header div.
         let html = r#"</svg></span>输入/输出模态</div><div class="flex flex-wrap items-center gap-2.5 text-base ...">文本、图像 → 文本</div>"#;
         assert_eq!(dl_detail_value(html, "输入/输出模态").as_deref(), Some("文本、图像 → 文本"));
+        // Model scale (参数量) row: same basic-info style as the real site.
+        let html = r#"<span class="inline-flex ..."><svg/></span>总参数 / 激活参数</div><div class="flex flex-wrap items-center gap-2.5 text-base ...">2350亿 / 220亿</div>"#;
+        assert_eq!(dl_detail_value(html, "总参数 / 激活参数").as_deref(), Some("2350亿 / 220亿"));
         // Missing label.
         assert_eq!(dl_detail_value("<div>no label</div>", "上下文长度"), None);
         // 暂无数据 is treated as absent.
         let html = r#"<span>上下文长度</span></div><div class="...">暂无数据</div>"#;
         assert_eq!(dl_detail_value(html, "上下文长度"), None);
+        // Placeholder-only composite values (e.g. 总参数 / 激活参数 row with
+        // unknown parameters) are treated as absent too.
+        let html = r#"<span>总参数 / 激活参数</span></div><div class="...">暂无数据 / 暂无数据</div>"#;
+        assert_eq!(dl_detail_value(html, "总参数 / 激活参数"), None);
+    }
+
+    #[test]
+    fn dl_detail_value_skips_meta_description_hits() {
+        // The label first appears inside the page meta description, far from
+        // any value row; the parser must skip it and parse the real row
+        // (whose value div starts right after the label).
+        let html = format!(
+            r#"<meta name="description" content="查看 Qwen3 的评测成绩、上下文长度、参数规模、发布时间、开源协议、下载地址、模型规格，以及与其他开源和闭源模型的对比。"/>{}<span class="icon">x</span>上下文长度</div><div class="flex flex-wrap items-center gap-2.5 text-base">256K tokens</div>"#,
+            "x".repeat(300) // head content without any `</div><div class="` marker
+        );
+        assert_eq!(dl_detail_value(&html, "上下文长度").as_deref(), Some("256K tokens"));
+        // If an earlier marker-near occurrence yields 暂无数据 (absent), later
+        // real rows for the same label are still considered.
+        let html = r#"<span>x</span>上下文长度</div><div class="...">暂无数据</div><div>nav</div><div class="y">上下文长度</div><div class="z">1.05M tokens</div>"#;
+        assert_eq!(dl_detail_value(&html, "上下文长度").as_deref(), Some("1.05M tokens"));
     }
 
     // --- `sys ai info` ------------------------------------------------------

@@ -2,6 +2,17 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.70（2026-10-11）
+
+### 新增
+- **`sys ai cn-model` 模型信息包含模型规模（参数量）**：单模型精确命中抓详情页时，新增 `parameters` 字段（来源：DataLearner 详情页「总参数 / 激活参数」行，如 `2350亿 / 220亿`），与既有 `context` / `modality` 一样仅在详情抓取时填充；详情视图新增 `parameters` 行、`-o md` 表格新增 `parameters` 列、CSV 扩展为 11 列（`...context,modality,parameters,published,url`）、JSON / YAML 自动携带；站点「暂无数据」占位视为缺失（部分已知值如 `2350亿 / 暂无数据` 保留）；`DlModel.parameters` 带 `#[serde(default)]` 兼容旧缓存
+- **修复 `ai cn-model` 详情页字段解析 bug**：`dl_detail_value` 原取标签首次出现位置，真实页面标签常先出现在 meta description，导致 `context` 抓到页面导航文本；改为逐次扫描、仅接受标签后 ≤200 字节内紧跟值行的命中，`上下文长度` / `输入/输出模态` / `总参数 / 激活参数` 共用此逻辑
+- **`ai model`（models.dev）结论记录**：经核实 models.dev API 与网页均无结构化模型规模字段，按「如果网站提供」条件维持现状
+- 新增 1 个单测并扩展 2 个（`dl_detail_value_skips_meta_description_hits`、`总参数 / 激活参数` 与占位值解析、CSV 11 列断言）；`cargo test` 244 项全绿
+- 版本 0.4.69 -> 0.4.70
+
+---
+
 ## v0.4.69（2026-10-11）
 
 ### 新增
