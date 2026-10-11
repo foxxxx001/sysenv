@@ -552,8 +552,9 @@ fn count_sites(v: &serde_json::Value) -> usize {
         .unwrap_or(0)
 }
 
-/// Count `.sites.name` entries containing "4k" (case-insensitive).
-fn count_name_4k(v: &serde_json::Value) -> usize {
+/// Count `.sites.name` entries containing `word` (case-insensitive).
+fn count_name_containing(v: &serde_json::Value, word: &str) -> usize {
+    let needle = word.to_ascii_lowercase();
     v.get("sites")
         .and_then(|s| s.as_array())
         .map(|a| {
@@ -561,7 +562,7 @@ fn count_name_4k(v: &serde_json::Value) -> usize {
                 .filter(|site| {
                     site.get("name")
                         .and_then(|n| n.as_str())
-                        .map(|s| s.to_lowercase().contains("4k"))
+                        .map(|s| s.to_lowercase().contains(&needle))
                         .unwrap_or(false)
                 })
                 .count()
@@ -698,6 +699,7 @@ fn cmd_json_sorted(
     output: Option<&Path>,
     keys: &[SortKey],
     threads: usize,
+    word: &str,
 ) -> Result<()> {
     // Deduplicate first (parallel probing would otherwise race the seen set).
     let mut seen: HashSet<String> = HashSet::new();
@@ -732,7 +734,7 @@ fn cmd_json_sorted(
                     ProbeOut::Ok(SortItem {
                         url: url.to_string(),
                         count: count_sites(&v),
-                        name: count_name_4k(&v),
+                        name: count_name_containing(&v, word),
                         speed,
                         speed_note,
                         note: note.map(|n| n.to_string()),
@@ -806,7 +808,7 @@ fn cmd_json_sorted(
     for it in &items {
         println!("{}", it.url);
         let note_part = it.note.as_ref().map(|n| format!("note={n}  ")).unwrap_or_default();
-        println!("# {note_part}count={} name={} speed={}", it.count, it.name, fmt_speed_line(it));
+        println!("# {note_part}count={} {word}={} speed={}", it.count, it.name, fmt_speed_line(it));
     }
     let dup_part = if n_dup > 0 {
         format!(", {n_dup} duplicate")
@@ -828,7 +830,7 @@ fn cmd_json_sorted(
             s.push('\n');
             let note_part = it.note.as_ref().map(|n| format!("note={n}  ")).unwrap_or_default();
             s.push_str(&format!(
-                "# {note_part}count={} name={} speed={}\n",
+                "# {note_part}count={} {word}={} speed={}\n",
                 it.count,
                 it.name,
                 fmt_speed_line(it)
@@ -862,6 +864,7 @@ fn cmd_tvs(
     output: Option<&Path>,
     keys: &[SortKey],
     threads: usize,
+    word: &str,
 ) -> Result<()> {
     // Deduplicate first.
     let mut seen: HashSet<String> = HashSet::new();
@@ -897,7 +900,7 @@ fn cmd_tvs(
                     ProbeOut::Single(SortItem {
                         url: url.to_string(),
                         count: count_sites(&v),
-                        name: count_name_4k(&v),
+                        name: count_name_containing(&v, word),
                         speed,
                         speed_note,
                         note: note.map(|n| n.to_string()),
@@ -999,12 +1002,12 @@ fn cmd_tvs(
         for it in &singles {
             println!("{}", it.url);
             let note_part = it.note.as_ref().map(|n| format!("note={n}  ")).unwrap_or_default();
-            println!("# {note_part}count={} name={} speed={}", it.count, it.name, fmt_speed_line(it));
+            println!("# {note_part}count={} {word}={} speed={}", it.count, it.name, fmt_speed_line(it));
             file.push_str(&it.url);
             file.push('\n');
             let note_part = it.note.as_ref().map(|n| format!("note={n}  ")).unwrap_or_default();
             file.push_str(&format!(
-                "# {note_part}count={} name={} speed={}\n",
+                "# {note_part}count={} {word}={} speed={}\n",
                 it.count,
                 it.name,
                 fmt_speed_line(it)
@@ -1288,11 +1291,12 @@ pub fn cmd_net(
     exclude: &[String],
     sort: &[String],
 ) -> Result<()> {
-    cmd_net_t(input, kind, output, timeout_secs, exclude, sort, None)
+    cmd_net_t(input, kind, output, timeout_secs, exclude, sort, None, "4k")
 }
 
 /// Like `cmd_net`, with an explicit parallelism hint for `-t tv|tvs`
-/// (`None` = number of CPU cores).
+/// (`None` = number of CPU cores) and the `--words` keyword used for the
+/// `name` statistic (default `"4k"`).
 pub fn cmd_net_t(
     input: &Path,
     kind: NetType,
@@ -1301,6 +1305,7 @@ pub fn cmd_net_t(
     exclude: &[String],
     sort: &[String],
     threads: Option<usize>,
+    word: &str,
 ) -> Result<()> {
     let threads = threads.unwrap_or_else(default_threads).max(1);
     if !(timeout_secs > 0.0) || !timeout_secs.is_finite() {
@@ -1346,8 +1351,8 @@ pub fn cmd_net_t(
                 NetType::Json | NetType::Tvs => {
                     let entries = read_entries(input)?;
                     match kind {
-                        NetType::Json => cmd_json_sorted(&client, &entries, output, &parse_sort_keys(sort)?, threads),
-                        NetType::Tvs => cmd_tvs(&client, &entries, output, &parse_sort_keys(sort)?, threads),
+                        NetType::Json => cmd_json_sorted(&client, &entries, output, &parse_sort_keys(sort)?, threads, word),
+                        NetType::Tvs => cmd_tvs(&client, &entries, output, &parse_sort_keys(sort)?, threads, word),
                         _ => unreachable!(),
                     }
                 }
@@ -2042,7 +2047,7 @@ mod tests {
         assert_eq!(lines.len(), 2, "url + # info line: {content:?}");
         assert_eq!(lines[0], url.as_str());
         assert!(
-            lines[1].starts_with("# count=1 name=0 speed="),
+            lines[1].starts_with("# count=1 4k=0 speed="),
             "info line: {content:?}"
         );
     }
@@ -2658,7 +2663,7 @@ mod tests {
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
         assert_eq!(content.lines().next().unwrap(), url.as_str());
-        assert!(content.lines().nth(1).unwrap().starts_with("# count=2 name=0"));
+        assert!(content.lines().nth(1).unwrap().starts_with("# count=2 4k=0"));
     }
 
     /// A body that parses as JSON but lacks tv nodes is a format mismatch.
@@ -2687,9 +2692,12 @@ mod tests {
         let v3: serde_json::Value = serde_json::from_slice(SORT_JSON_3).unwrap();
         let v1: serde_json::Value = serde_json::from_slice(SORT_JSON_1).unwrap();
         assert_eq!(count_sites(&v3), 3);
-        assert_eq!(count_name_4k(&v3), 2, "4K and 4k both match");
+        assert_eq!(count_name_containing(&v3, "4k"), 2, "4K and 4k both match");
         assert_eq!(count_sites(&v1), 1);
-        assert_eq!(count_name_4k(&v1), 0);
+        assert_eq!(count_name_containing(&v1, "4k"), 0);
+        // --words keyword is configurable: other words count their own matches.
+        assert_eq!(count_name_containing(&v3, "c"), 1, "only \"C\" contains c");
+        assert_eq!(count_name_containing(&v3, "zzz"), 0);
         assert_eq!(
             spider_url(&v3),
             Some("http://127.0.0.1:1/x.jpg".to_string()),
@@ -2737,9 +2745,9 @@ mod tests {
         let _ = std::fs::remove_file(&out);
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines[0], three.as_str(), "count=3 first: {content:?}");
-        assert!(lines[1].starts_with("# count=3 name=2"));
+        assert!(lines[1].starts_with("# count=3 4k=2"));
         assert_eq!(lines[2], one.as_str(), "count=1 second: {content:?}");
-        assert!(lines[3].starts_with("# count=1 name=0"));
+        assert!(lines[3].starts_with("# count=1 4k=0"));
     }
 
     /// Default (no --sort): sort by count desc, then name (4k count) desc.
@@ -2871,6 +2879,7 @@ mod tests {
             Some(&out),
             &[],
             2,
+            "4k",
         )
         .unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
@@ -2879,7 +2888,7 @@ mod tests {
         assert!(content.starts_with("--- 单仓 (1) ---"), "{content}");
         assert!(content.contains("--- 多仓 (2) ---"), "{content}");
         // Single item carries the tv-style info line.
-        assert!(content.contains(&format!("{single}\n# count=1 name=0")), "{content}");
+        assert!(content.contains(&format!("{single}\n# count=1 4k=0")), "{content}");
         // Multi items carry only the url count, sorted descending (3 before 2).
         assert!(content.contains(&format!("{multi3}\n# count=3")), "{content}");
         assert!(content.contains(&format!("{multi2}\n# count=2")), "{content}");
@@ -2893,7 +2902,7 @@ mod tests {
         let multi = spawn_server_owned(TVS_BODY_3.to_vec(), "application/json", Duration::ZERO);
         let out = temp_file("out-tvs2");
         let client = test_client();
-        cmd_tvs(&client, &[(multi.clone(), None)], Some(&out), &[], 1).unwrap();
+        cmd_tvs(&client, &[(multi.clone(), None)], Some(&out), &[], 1, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&out);
         assert!(content.contains("--- 多仓 (1) ---"), "{content}");
@@ -2906,7 +2915,7 @@ mod tests {
         let bad = spawn_server_owned(br#"{"foo":1}"#.to_vec(), "application/json", Duration::ZERO);
         let out = temp_file("out-tvs3");
         let client = test_client();
-        cmd_tvs(&client, &[(bad, None)], Some(&out), &[], 1).unwrap();
+        cmd_tvs(&client, &[(bad, None)], Some(&out), &[], 1, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&out);
         assert!(content.is_empty(), "{content}");
@@ -2989,6 +2998,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tv_mode_words_keyword_drives_name_label_and_count() {
+        let tv = spawn_server_owned(SORT_JSON_3.to_vec(), "application/json", Duration::ZERO);
+        let input = temp_file("in-words");
+        let out = temp_file("out-words");
+        std::fs::write(&input, format!("{tv}\n")).unwrap();
+        // Default --words 4k: label is 4k=2.
+        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
+        let dflt = std::fs::read_to_string(&out).unwrap();
+        assert!(dflt.contains("# count=3 4k=2"), "{dflt}");
+        // Custom --words: the label shows the keyword and counts its matches.
+        cmd_net_t(&input, NetType::Json, Some(&out), 10.0, &[], &[], Some(1), "hd").unwrap();
+        let custom = std::fs::read_to_string(&out).unwrap();
+        assert!(custom.contains("# count=3 hd=0"), "{custom}");
+        cmd_net_t(&input, NetType::Json, Some(&out), 10.0, &[], &[], Some(1), "c").unwrap();
+        let custom2 = std::fs::read_to_string(&out).unwrap();
+        assert!(custom2.contains("# count=3 c=1"), "{custom2}");
+        assert!(!custom2.contains(" 4k="), "{custom2}");
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+    }
+
     // --- parallelism ---
 
     /// tv/tvs probe addresses concurrently: with `threads` < address count
@@ -3004,13 +3035,13 @@ mod tests {
         // Serial (default threads) vs explicit threads=1 must agree.
         cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
         let serial = std::fs::read_to_string(&out).unwrap();
-        cmd_net_t(&input, NetType::Json, Some(&out), 10.0, &[], &[], Some(1)).unwrap();
+        cmd_net_t(&input, NetType::Json, Some(&out), 10.0, &[], &[], Some(1), "4k").unwrap();
         let parallel = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
         assert_eq!(serial, parallel, "parallel report must match serial report");
-        assert!(parallel.contains("# count=3 name=2"), "{parallel}");
-        assert!(parallel.contains("# count=1 name=0"), "{parallel}");
+        assert!(parallel.contains("# count=3 4k=2"), "{parallel}");
+        assert!(parallel.contains("# count=1 4k=0"), "{parallel}");
     }
 
     #[test]
@@ -3026,6 +3057,7 @@ mod tests {
             Some(&out),
             &[],
             2,
+            "4k",
         )
         .unwrap();
         let content = std::fs::read_to_string(&out).unwrap();

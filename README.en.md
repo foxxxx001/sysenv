@@ -568,10 +568,10 @@ Reads http(s) addresses from a file and probes each one for reachability and res
 - `-t domain` (default): **3 consecutive GET** requests per address, averaged; once all addresses are probed they are printed sorted by average response time **ascending**, unreachable ones last with a reason
 - `-t tv` (old name `json`): GET each address; the body must be a **valid tv JSON document** to pass — it must parse as JSON (lenient: a leading BOM is stripped first, then a strict parse, then a retry with trailing commas stripped) and carry a non-empty `sites` array whose every element has a `name` key (`lives`, `parses` and `rules` are optional); the data is then analyzed and the addresses are sorted with `--sort`:
   - `--sort count`: total number of `.sites` nodes, **desc**
-  - `--sort name`: number of `.sites.name` entries containing `4k` (case-insensitive), **desc**
+  - `--sort name`: number of `.sites.name` entries containing the keyword (default `4k`, case-insensitive; customize with `--words KEYWORD`, e.g. `--words hd`), **desc**
   - `--sort speed`: downloads the `.spider` url (string `url;md5;...` keeps the part before `;`, an array uses its first string element) and sorts by download speed **asc**
   - `--sort` is repeatable (e.g. `--sort count name`), applied in order for multi-key sorting; **defaults to `count, name` when omitted**
-  - each passed address prints its url, followed by a `# count=<N> name=<N> speed=<speed or failure reason>` test-info line; **screen and `-o` share the same format** (url + `#` line); unreachable / non-JSON addresses are still reported as `[NO]` / `[FMT]` and not written to `-o`
+  - each passed address prints its url, followed by a `# count=<N> 4k=<N> speed=<speed or failure reason>` test-info line (the `4k` label is the `--words` keyword itself, e.g. `hd=<N>` with `--words hd`); **screen and `-o` share the same format** (url + `#` line); unreachable / non-JSON addresses are still reported as `[NO]` / `[FMT]` and not written to `-o`
 - `-t file`: GET each address; the body must be **plain text** (valid UTF-8, non-binary, and not JSON) to pass
 - `-t tvs`: inherits every `-t tv` feature and additionally accepts **aggregator JSON** (e.g. `{"urls":[{"url":"...","name":"..."}, ...]}`). Each body may be one of two formats:
   - **single warehouse**: tv JSON (`sites` non-empty, every element has `name`) — analyzed with the tv `--sort` rules (count / name / speed, default `count name`), info line `# count= name= speed=`

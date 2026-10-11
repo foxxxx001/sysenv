@@ -561,6 +561,9 @@ struct NetArgs {
     /// In tv/tvs mode, how many addresses are probed concurrently (default: number of CPU cores)
     #[arg(long = "thread", value_name = "NUM")]
     threads: Option<usize>,
+    /// In tv/tvs mode, the keyword counted in `.sites.name` for the `name` statistic (default 4k; the output label shows this keyword, e.g. `4k=17`)
+    #[arg(long, value_name = "WORD", default_value = "4k")]
+    words: String,
     /// In test mode, skip probing URLs whose file-name suffix matches (case-insensitive, leading dot optional) and remove them directly; repeatable, e.g. -x m3u -x zip
     #[arg(short = 'x', long, value_name = "SUFFIX")]
     exclude: Vec<String>,
@@ -961,6 +964,7 @@ fn run_net(n: NetArgs) -> anyhow::Result<()> {
         &n.exclude,
         &n.sort,
         n.threads,
+        &n.words,
     )
 }
 
