@@ -34,11 +34,15 @@ use std::collections::HashMap;
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const DEFAULT_MAX_TOKENS: u64 = 1024;
 pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
 const STREAM_TIMEOUT: Duration = Duration::from_secs(600);
+/// `sys ai chat --test` timeouts: connect and absolute cap for one model
+/// test (only the first token is awaited).
+const TEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const TEST_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) const USER_AGENT_STR: &str = concat!("sys/", env!("CARGO_PKG_VERSION"));
 
 // ---------------------------------------------------------------------------
@@ -689,23 +693,40 @@ fn replace_scalar_value(line: &str, new_value: &str) -> String {
 /// preserved). Accepts both the conventional form (`weight: N` as a sub-key of
 /// the model entry) and the mangled form (`- weight: N` as a separate list
 /// item right after `- name:`). When no `weight:` line exists at all, a new
-/// `weight:` sub-key is inserted after the `- name:` line.
+/// `weight:` sub-key is inserted after the `- name:` line. The first matching
+/// model entry is updated.
 pub(crate) fn update_weight_in_config(config_path: &Path, provider_name: &str, model_name: &str, new_weight: u32) -> Result<()> {
-    update_model_field_in_config(config_path, provider_name, model_name, "weight", &new_weight.to_string())
+    update_model_field_in_config(config_path, provider_name, model_name, "weight", &new_weight.to_string(), 0)
 }
 
-/// Update a scalar field `key` of `model_name` under `provider_name` in the
-/// YAML config file, writing the change back in place (comments and layout are
-/// preserved). For `key == "weight"` the mangled form (`- weight: N` as a
-/// separate list item right after `- name:`) is also handled. When no such key
-/// exists in the model entry, a new `key: value` sub-key is inserted after the
-/// `- name:` line.
+/// Like `update_weight_in_config`, but targets the `occurrence`-th (0-based)
+/// model entry whose name matches, so duplicate model names under one provider
+/// can each be updated individually (used by `sys ai chat --test`, where every
+/// configured entry is a separate target).
+pub(crate) fn update_weight_in_config_at(
+    config_path: &Path,
+    provider_name: &str,
+    model_name: &str,
+    occurrence: usize,
+    new_weight: u32,
+) -> Result<()> {
+    update_model_field_in_config(config_path, provider_name, model_name, "weight", &new_weight.to_string(), occurrence)
+}
+
+/// Update a scalar field `key` of the `occurrence`-th (0-based) model entry
+/// named `model_name` under `provider_name` in the YAML config file, writing
+/// the change back in place (comments and layout are preserved). For
+/// `key == "weight"` the mangled form (`- weight: N` as a separate list item
+/// right after `- name:`) is also handled. When no such key exists in the
+/// model entry, a new `key: value` sub-key is inserted after the `- name:`
+/// line.
 fn update_model_field_in_config(
     config_path: &Path,
     provider_name: &str,
     model_name: &str,
     key: &str,
     value: &str,
+    occurrence: usize,
 ) -> Result<()> {
     let text = std::fs::read_to_string(config_path)
         .with_context(|| format!("cannot read config `{}`", config_path.display()))?;
@@ -715,6 +736,7 @@ fn update_model_field_in_config(
     let mut cur_provider: Option<String> = None;
     let mut in_models = false;
     let mut models_indent = 0usize;
+    let mut occ = 0usize;
 
     let mut done = false;
     let mut i = 0usize;
@@ -774,6 +796,11 @@ fn update_model_field_in_config(
                             .map(|p| ci_eq(p, provider_name))
                             .unwrap_or(false);
                         if provider_ok && ci_eq(&mname, model_name) {
+                            if occ != occurrence {
+                                occ += 1;
+                                i += 1;
+                                continue;
+                            }
                             let name_indent = indent;
                             // Mangled form (weight only): the very next line is
                             // `- weight: N` at the same indent.
@@ -2378,7 +2405,7 @@ fn update_model_capabilities(cfg: &mut Config, path: &Path, pi: usize, mi: usize
     if need_ctx {
         if let Some(c) = ctx {
             model.max_input_tokens = Some(c);
-            if let Err(e) = update_model_field_in_config(path, &pname, &mname, "max_input_tokens", &c.to_string()) {
+            if let Err(e) = update_model_field_in_config(path, &pname, &mname, "max_input_tokens", &c.to_string(), 0) {
                 eprintln!("sys: warning: cannot persist max_input_tokens for {pname} / {mname}: {e:#}");
             } else {
                 filled_ctx = Some(c);
@@ -2388,7 +2415,7 @@ fn update_model_capabilities(cfg: &mut Config, path: &Path, pi: usize, mi: usize
     if need_type {
         if let Some(t) = &modl {
             model.model_type = Some(t.clone());
-            if let Err(e) = update_model_field_in_config(path, &pname, &mname, "type", t) {
+            if let Err(e) = update_model_field_in_config(path, &pname, &mname, "type", t, 0) {
                 eprintln!("sys: warning: cannot persist type for {pname} / {mname}: {e:#}");
             } else {
                 filled_type = Some(t.clone());
@@ -2495,6 +2522,232 @@ fn chat_with(cfg: &mut Config, path: &Path, msg: &str, debug: bool, no_stream: b
 }
 
 // ---------------------------------------------------------------------------
+// `sys ai chat --test`: parallel chat feedback-time probe
+// ---------------------------------------------------------------------------
+
+/// Resolve the models to test: with a `-m` override the usual selector rules
+/// apply (see `resolve_targets`); without one, every configured model is
+/// tested.
+fn test_targets(cfg: &Config, model_override: Option<&str>) -> Result<Vec<Target>> {
+    if let Some(sel) = model_override {
+        return resolve_targets(cfg, sel);
+    }
+    let mut out = Vec::new();
+    for (pi, p) in cfg.providers.iter().enumerate() {
+        for mi in 0..p.models.len() {
+            out.push(Target { provider: pi, model: mi });
+        }
+    }
+    if out.is_empty() {
+        bail!("no models configured under `clients` to test");
+    }
+    Ok(out)
+}
+
+/// Read a streaming response just until the first non-empty content delta
+/// arrives, then stop (the connection is dropped, so a full reply is never
+/// awaited). A body that turns out not to be SSE is judged as a whole.
+/// Returns the elapsed time since `start`.
+fn first_token_elapsed(resp: reqwest::blocking::Response, kind: &str, start: Instant) -> Result<Duration> {
+    let mut reader = std::io::BufReader::new(resp);
+    let mut line = String::new();
+    let mut first = true;
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).context("failed reading response stream")?;
+        if n == 0 {
+            bail!("stream ended before any content arrived");
+        }
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if first {
+            first = false;
+            if !t.starts_with("data:") && !t.starts_with("event:") {
+                // Not an SSE stream: judge the whole body as one response.
+                let mut rest = String::new();
+                let _ = reader.read_to_string(&mut rest);
+                let text = extract_content(&format!("{t}\n{rest}"), kind)?;
+                if text.trim().is_empty() {
+                    bail!("response contained no text content");
+                }
+                return Ok(start.elapsed());
+            }
+        }
+        if let Some(d) = t.strip_prefix("data:") {
+            let d = d.trim();
+            if d == "[DONE]" {
+                bail!("stream ended before any content arrived");
+            }
+            let v: Value = serde_json::from_str(d)
+                .with_context(|| format!("invalid stream chunk: {}", d.chars().take(200).collect::<String>()))?;
+            if let Some(err) = v.get("error") {
+                let raw = err.to_string();
+                let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or(&raw);
+                bail!("provider error: {msg}");
+            }
+            let text: String = if kind == "anthropic" {
+                if v.get("type").and_then(|t| t.as_str()) == Some("content_block_delta") {
+                    v.pointer("/delta/text").and_then(|t| t.as_str()).unwrap_or("").to_string()
+                } else {
+                    String::new()
+                }
+            } else {
+                match v.pointer("/choices/0/delta/content") {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(Value::Array(parts)) => parts
+                        .iter()
+                        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                        .collect::<String>(),
+                    _ => String::new(),
+                }
+            };
+            if !text.trim().is_empty() {
+                return Ok(start.elapsed());
+            }
+        }
+    }
+}
+
+/// Test one model: POST a streaming chat request and measure the time until
+/// the first token arrives (the connection is dropped right afterwards, so a
+/// full reply is never awaited). Any failure — HTTP error such as 429,
+/// connection error, timeout, empty response — is returned as Err.
+fn test_one(p: &Provider, m: &Model, msg: &str) -> Result<Duration> {
+    let url = chat_url(p);
+    let body = chat_body(p, m, msg, true);
+    let body_bytes = serde_json::to_vec(&body).context("cannot serialize request body")?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STR));
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    if p.kind == "anthropic" {
+        headers.insert("x-api-key", HeaderValue::from_str(&p.api_key).context("invalid api_key")?);
+        headers.insert("anthropic-version", HeaderValue::from_static(ANTHROPIC_VERSION));
+    } else {
+        let auth = format!("Bearer {}", p.api_key);
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&auth).context("invalid api_key")?);
+    }
+    headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+
+    let client = Client::builder()
+        .connect_timeout(TEST_CONNECT_TIMEOUT)
+        .timeout(TEST_TOTAL_TIMEOUT)
+        .build()
+        .context("failed to build HTTP client")?;
+    let start = Instant::now();
+    let resp = client
+        .post(&url)
+        .headers(headers)
+        .body(body_bytes)
+        .send()
+        .with_context(|| format!("request to {url} failed"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().unwrap_or_default();
+        let snippet: String = text.chars().take(300).collect();
+        bail!("{url} returned HTTP {status}: {snippet}");
+    }
+    first_token_elapsed(resp, &p.kind, start)
+}
+
+/// `sys ai chat --test [MSG...] [-m MODEL] [--parallel N]`
+///
+/// Runs a streaming first-token chat test over the selected models (default:
+/// every configured model) in parallel (`--parallel` / the CPU core count)
+/// and prints each model's response time. Models that fail — no feedback,
+/// HTTP error such as 429, connection error, timeout — get their `weight`
+/// set to 0 in the config file.
+fn chat_test(cfg: &Config, path: &Path, msg: &str, model_override: Option<&str>, parallel: Option<usize>) -> Result<()> {
+    let targets = test_targets(cfg, model_override)?;
+    let n = targets.len();
+    let workers = parallel
+        .unwrap_or_else(|| std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1))
+        .max(1)
+        .min(n);
+    let w = targets
+        .iter()
+        .map(|t| format!("{} / {}", cfg.providers[t.provider].name, cfg.providers[t.provider].models[t.model].name).chars().count())
+        .max()
+        .unwrap_or(8)
+        .max(8);
+
+    println!("sys: testing {n} model(s) in parallel ({workers} worker(s)) with `{msg}`");
+
+    // Worker pool: each worker pulls the next target index; results are
+    // collected in input order. Weight updates are applied serially below so
+    // the config file is never written concurrently.
+    let targets = &targets;
+    let next = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+    let (tx, rx) = mpsc::channel::<(usize, Result<Duration>)>();
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let tx = tx.clone();
+            let next = next.clone();
+            scope.spawn(move || loop {
+                let idx = {
+                    let mut guard = next.lock().unwrap();
+                    let i = *guard;
+                    *guard += 1;
+                    i
+                };
+                if idx >= n {
+                    break;
+                }
+                let t = targets[idx];
+                let p = &cfg.providers[t.provider];
+                let m = &p.models[t.model];
+                let _ = tx.send((idx, test_one(p, m, msg)));
+            });
+        }
+    });
+    drop(tx);
+    let mut by_idx: Vec<Option<Result<Duration>>> = (0..n).map(|_| None).collect();
+    for (idx, r) in rx.iter() {
+        by_idx[idx] = Some(r);
+    }
+
+    let mut ok = 0usize;
+    let mut failed = 0usize;
+    for (i, r) in by_idx.into_iter().enumerate() {
+        let t = targets[i];
+        let p = &cfg.providers[t.provider];
+        let m = &p.models[t.model];
+        let name = format!("{} / {}", p.name, m.name);
+        match r.expect("every worker sends exactly one result per target") {
+            Ok(elapsed) => {
+                ok += 1;
+                println!("[OK]   {:<w$}  first token in {:.2}s", name, elapsed.as_secs_f64());
+            }
+            Err(e) => {
+                failed += 1;
+                println!("[FAIL] {:<w$}  {e:#}", name);
+                if m.weight != 0 {
+                    // Duplicate model names under one provider are separate
+                    // targets; zero the weight of this exact entry.
+                    let occ = targets[..i]
+                        .iter()
+                        .filter(|x| {
+                            x.provider == t.provider
+                                && ci_eq(&cfg.providers[x.provider].models[x.model].name, &m.name)
+                        })
+                        .count();
+                    if let Err(e2) = update_weight_in_config_at(path, &p.name, &m.name, occ, 0) {
+                        eprintln!(
+                            "sys: warning: failed to persist weight->0 for {} / {}: {e2:#}",
+                            p.name, m.name
+                        );
+                    }
+                }
+            }
+        }
+    }
+    println!("sys: {ok}/{n} model(s) responded; {failed} failed (weight -> 0)");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 
@@ -2522,13 +2775,15 @@ pub(crate) fn print_models(cfg: &Config) {
 }
 
 /// `sys ai chat [MSG...] [-m MODEL] [--list-model] [--list-provider] [-c FILE] [--debug] [--no-stream] [--update]`
+/// `sys ai chat --test [MSG...] [-m MODEL] [--parallel N]`
 ///
 /// `-m/--model` overrides the top-level `model` from the config (same
 /// `{provider}:{model}` / `{model}` / comma-separated rules). `--list-model`
 /// prints every configured model (grouped by provider); `--list-provider`
 /// prints every configured provider. `--update` fills the target models'
 /// missing `max_input_tokens` / `type` from models.dev into the config file
-/// (best effort) before the request.
+/// (best effort) before the request. `--test` runs a parallel chat
+/// feedback-time test instead of a normal chat (see `chat_test`).
 pub fn cmd_chat(
     words: &[String],
     config: Option<&Path>,
@@ -2538,6 +2793,8 @@ pub fn cmd_chat(
     list_model: bool,
     list_provider: bool,
     update: bool,
+    test: bool,
+    parallel: Option<usize>,
 ) -> Result<()> {
     let (mut cfg, path) = load_config(config)?;
 
@@ -2552,6 +2809,15 @@ pub fn cmd_chat(
             print_models(&cfg);
         }
         return Ok(());
+    }
+
+    if test {
+        let msg = if !words.is_empty() {
+            words.join(" ")
+        } else {
+            "hello".to_string()
+        };
+        return chat_test(&cfg, &path, &msg, model, parallel);
     }
 
     let msg = if !words.is_empty() {
@@ -3394,15 +3660,15 @@ clients:
 "#,
         );
         // Insert a missing key after the name line.
-        update_model_field_in_config(&p, "agnes", "m1", "max_input_tokens", "1048576").unwrap();
+        update_model_field_in_config(&p, "agnes", "m1", "max_input_tokens", "1048576", 0).unwrap();
         let t = std::fs::read_to_string(&p).unwrap();
         assert!(t.contains("      - name: m1\n        max_input_tokens: 1048576"));
         // Replace an existing key.
-        update_model_field_in_config(&p, "agnes", "m1", "weight", "5").unwrap();
+        update_model_field_in_config(&p, "agnes", "m1", "weight", "5", 0).unwrap();
         let t = std::fs::read_to_string(&p).unwrap();
         assert!(t.contains("        weight: 5"));
         // Insert the type field (generic key editing; not read back into Model).
-        update_model_field_in_config(&p, "agnes", "m1", "type", "text,image").unwrap();
+        update_model_field_in_config(&p, "agnes", "m1", "type", "text,image", 0).unwrap();
         let t = std::fs::read_to_string(&p).unwrap();
         assert!(t.contains("        type: text,image"));
         // The file must still parse back into the same model entry.
@@ -3413,7 +3679,35 @@ clients:
         assert_eq!(m.model_type.as_deref(), Some("text,image"));
         assert_eq!(m.weight, 5);
         // Unknown model still errors.
-        assert!(update_model_field_in_config(&p, "agnes", "nope", "type", "text").is_err());
+        assert!(update_model_field_in_config(&p, "agnes", "nope", "type", "text", 0).is_err());
+    }
+
+    #[test]
+    fn update_weight_in_config_at_targets_duplicate_entries() {
+        let p = tmp_config(
+            "dup-weight",
+            r#"clients:
+  - type: openai
+    name: agnes
+    api_base: https://x.example/v1
+    api_key: sk-test
+    models:
+      - name: m1
+        weight: 1
+      - name: m1
+"#,
+        );
+        // Occurrence 1 = the second duplicate entry (no weight line yet);
+        // inserting weight: 0 there must not touch the first entry.
+        update_weight_in_config_at(&p, "agnes", "m1", 1, 0).unwrap();
+        let t = std::fs::read_to_string(&p).unwrap();
+        assert!(t.contains("      - name: m1\n        weight: 1"), "first entry changed: {t}");
+        assert!(t.contains("      - name: m1\n        weight: 0"), "second entry not updated: {t}");
+        // Occurrence 0 still addresses the first entry alone.
+        update_weight_in_config_at(&p, "agnes", "m1", 0, 2).unwrap();
+        let t = std::fs::read_to_string(&p).unwrap();
+        assert!(t.contains("      - name: m1\n        weight: 2"), "first entry not updated: {t}");
+        assert!(t.contains("      - name: m1\n        weight: 0"), "second entry changed: {t}");
     }
 
     #[test]
@@ -3669,5 +3963,130 @@ clients:
         assert_eq!(rows[0].1, "https://x.example/a");
         assert_eq!(rows[1].1, "https://x.example/b");
         assert_eq!(rows[2].1, "https://x.example/c");
+    }
+
+    // --- `sys ai chat --test` ----------------------------------------------
+
+    fn local_provider(port: u16) -> Provider {
+        Provider {
+            kind: "openai".to_string(),
+            name: "local".to_string(),
+            api_base: format!("http://127.0.0.1:{port}/v1"),
+            api_key: "sk-local".to_string(),
+            models: Vec::new(),
+        }
+    }
+
+    fn local_model() -> Model {
+        Model {
+            name: "m1".to_string(),
+            weight: 1,
+            max_tokens: None,
+            max_input_tokens: None,
+            model_type: None,
+        }
+    }
+
+    /// Serve one plain HTTP response (status line + body), then close.
+    fn spawn_one_shot_server(status_line: &'static str, body: &'static [u8]) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                let head = format!("{status_line}\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n");
+                let _ = sock.write_all(head.as_bytes());
+                let _ = sock.write_all(body);
+                let _ = sock.flush();
+            }
+        });
+        port
+    }
+
+    /// SSE server: headers + an empty-role delta immediately, the first
+    /// content delta only after a 300 ms sleep, then close.
+    fn spawn_sse_first_token_server() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                let _ = sock.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                );
+                let _ = sock.flush();
+                let _ = sock.write_all(
+                    b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}]}\r\n\r\n",
+                );
+                let _ = sock.flush();
+                std::thread::sleep(Duration::from_millis(300));
+                let _ = sock.write_all(
+                    b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"index\":0}]}\r\n\r\ndata: [DONE]\r\n\r\n",
+                );
+                let _ = sock.flush();
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn test_targets_uses_override_or_all_models() {
+        let cfg = sample_config(); // agnes (1 model) + claude (1 model)
+        let all = test_targets(&cfg, None).unwrap();
+        assert_eq!(all.len(), 2);
+        let one = test_targets(&cfg, Some("agnes-3.0-flash")).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(cfg.providers[one[0].provider].name, "agnes");
+        assert_eq!(cfg.providers[one[0].provider].models[one[0].model].name, "agnes-3.0-flash");
+        let sel = test_targets(&cfg, Some("claude:claude-3-5-sonnet")).unwrap();
+        assert_eq!(sel.len(), 1);
+        assert_eq!(cfg.providers[sel[0].provider].name, "claude");
+    }
+
+    #[test]
+    fn first_token_measures_until_content_delta() {
+        let port = spawn_sse_first_token_server();
+        let p = local_provider(port);
+        let m = local_model();
+        let elapsed = test_one(&p, &m, "hello").unwrap();
+        // The role-only delta must be skipped; the measured time must include
+        // the 300 ms server delay before the first content delta.
+        assert!(
+            elapsed.as_millis() >= 250,
+            "expected >= 250 ms (300 ms server delay), got {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn first_token_fails_on_http_error() {
+        let port = spawn_one_shot_server("HTTP/1.1 429 Too Many Requests", b"{\"error\":{\"message\":\"rate limited\"}}");
+        let p = local_provider(port);
+        let m = local_model();
+        let err = test_one(&p, &m, "hello").unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("429"), "expected HTTP 429 in error, got: {text}");
+    }
+
+    #[test]
+    fn first_token_fails_on_stream_error() {
+        let port = spawn_one_shot_server("HTTP/1.1 200 OK", b"data: {\"error\":{\"message\":\"boom\"}}\r\n\r\n");
+        let p = local_provider(port);
+        let m = local_model();
+        let err = test_one(&p, &m, "hello").unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("boom"), "expected provider error message, got: {text}");
+    }
+
+    #[test]
+    fn first_token_fails_when_stream_has_no_content() {
+        let port = spawn_one_shot_server(
+            "HTTP/1.1 200 OK",
+            b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}]}\r\n\r\ndata: [DONE]\r\n\r\n",
+        );
+        let p = local_provider(port);
+        let m = local_model();
+        assert!(test_one(&p, &m, "hello").is_err());
     }
 }

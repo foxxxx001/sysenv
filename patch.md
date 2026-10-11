@@ -2,6 +2,19 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.66（2026-10-11）
+
+### 新增
+- **`sys ai chat --test`：并行聊天反馈时间测试**。向选中的模型（默认全部配置模型；`-m MODEL` 指定，支持 `provider:model` / `provider:*` / 逗号列表）发起 streaming 聊天，**只测到首个 token 的反馈时间、不等完整回复**（收到首个非空内容增量即断开连接）：
+  - 聊天内容默认 `hello`，也可直接传入 MSG 作为测试内容
+  - 并行执行，默认并行数 = 检测到的 CPU 核心数，可用 `--parallel N` 指定（自动限制在 1..模型数）
+  - 成功打印 `[OK] provider / model  first token in X.XXs`；失败（HTTP 错误如 429、连接错误、超时、无内容反馈）打印 `[FAIL] ...` 并将该模型配置的 `weight` 写为 0（串行写回避免并发改配置；已是 0 则不重写；同一 provider 下的同名模型条目按出现次序精确定位——`update_weight_in_config_at` 新增 occurrence 参数），末尾汇总 `ok/N model(s) responded`
+  - 权重写回失败仅警告、不中断；`--test` 不读 stdin、不走 `--debug`/`--update`/`--no-stream` 路径
+- 新增 6 个单测（全部/`-m`/`provider:model` 目标解析；本地 TCP SSE 服务器验证首 token 计时跳过空增量、HTTP 429 失败、stream 内 error 失败、无内容流失败；同名模型条目按 occurrence 定位）；`cargo test` 227 项全绿
+- 版本 0.4.65 -> 0.4.66
+
+---
+
 ## v0.4.65（2026-10-11）
 
 ### 变更

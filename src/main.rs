@@ -407,6 +407,15 @@ struct ChatArgs {
     /// file (looked up in models.dev, 24 h cache; best effort — only runs with this flag)
     #[arg(long)]
     update: bool,
+    /// Test chat feedback time: send a streaming chat to the selected models
+    /// (default: every configured model), measure only the time until the first
+    /// token arrives, and set `weight: 0` in the config for models that fail
+    /// (HTTP error such as 429, connection error, timeout, no content)
+    #[arg(long)]
+    test: bool,
+    /// Number of models to test in parallel (default: the CPU core count)
+    #[arg(long, value_name = "N")]
+    parallel: Option<usize>,
 }
 
 /// `sys ai server [ADDR]` — serve the configured providers as an
@@ -879,6 +888,8 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             c.list_model,
             c.list_provider,
             c.update,
+            c.test,
+            c.parallel,
         ),
         AiCmd::Server(s) => {
             let bind = server::parse_addr(s.addr.as_deref().unwrap_or(""));
