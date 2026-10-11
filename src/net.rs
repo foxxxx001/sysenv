@@ -494,12 +494,8 @@ fn strip_trailing_commas(s: &str) -> String {
 }
 
 /// Valid tv data: `sites` is a non-empty array whose every element is an
-/// object carrying a `name` key, and the top-level `lives` node exists
-/// (`parses` and `rules` are optional).
+/// object carrying a `name` key (`lives`, `parses` and `rules` are optional).
 fn is_valid_tv(v: &serde_json::Value) -> bool {
-    if v.get("lives").is_none() {
-        return false;
-    }
     match v.get("sites").and_then(|s| s.as_array()) {
         Some(arr) if !arr.is_empty() => {
             arr.iter().all(|site| site.is_object() && site.get("name").is_some())
@@ -632,7 +628,7 @@ fn cmd_json_sorted(
                         if !is_valid_tv(&v) {
                             n_mismatch += 1;
                             println!(
-                                "[FMT] {url}  status={status}  body lacks tv nodes (sites with name, lives)"
+                                "[FMT] {url}  status={status}  body lacks tv nodes (sites with name)"
                             );
                             continue;
                         }
@@ -1637,10 +1633,10 @@ mod tests {
             "rules": []
         });
         assert!(is_valid_tv(&good));
-        // missing lives
+        // lives is optional
         let mut v = good.clone();
         v.as_object_mut().unwrap().remove("lives");
-        assert!(!is_valid_tv(&v));
+        assert!(is_valid_tv(&v));
         // parses is optional
         let mut v = good.clone();
         v.as_object_mut().unwrap().remove("parses");
