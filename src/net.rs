@@ -45,17 +45,6 @@ pub enum NetType {
     Test,
 }
 
-impl NetType {
-    fn label(self) -> &'static str {
-        match self {
-            NetType::Domain => "domain",
-            NetType::Json => "json",
-            NetType::File => "file",
-            NetType::Test => "test",
-        }
-    }
-}
-
 /// Default per-request timeout in seconds.
 pub const DEFAULT_TIMEOUT_SECS: f64 = 10.0;
 
@@ -407,6 +396,9 @@ fn cmd_domain(client: &reqwest::blocking::Client, urls: &[String]) -> Result<()>
     for line in render_domain(&results) {
         println!("{line}");
     }
+    if n_dup > 0 {
+        println!("--- {n_dup} duplicate address(es) skipped ---");
+    }
     Ok(())
 }
 
@@ -502,10 +494,10 @@ fn strip_trailing_commas(s: &str) -> String {
 }
 
 /// Valid tv data: `sites` is a non-empty array whose every element is an
-/// object carrying a `name` key, and the top-level `lives`, `parses` and
-/// `rules` nodes exist.
+/// object carrying a `name` key, and the top-level `lives` and `rules` nodes
+/// exist (`parses` is optional).
 fn is_valid_tv(v: &serde_json::Value) -> bool {
-    if v.get("lives").is_none() || v.get("parses").is_none() || v.get("rules").is_none() {
+    if v.get("lives").is_none() || v.get("rules").is_none() {
         return false;
     }
     match v.get("sites").and_then(|s| s.as_array()) {
@@ -640,7 +632,7 @@ fn cmd_json_sorted(
                         if !is_valid_tv(&v) {
                             n_mismatch += 1;
                             println!(
-                                "[FMT] {url}  status={status}  body lacks tv nodes (sites with name, lives, parses, rules)"
+                                "[FMT] {url}  status={status}  body lacks tv nodes (sites with name, lives, rules)"
                             );
                             continue;
                         }
@@ -1649,6 +1641,14 @@ mod tests {
         let mut v = good.clone();
         v.as_object_mut().unwrap().remove("lives");
         assert!(!is_valid_tv(&v));
+        // missing rules
+        let mut v = good.clone();
+        v.as_object_mut().unwrap().remove("rules");
+        assert!(!is_valid_tv(&v));
+        // parses is optional
+        let mut v = good.clone();
+        v.as_object_mut().unwrap().remove("parses");
+        assert!(is_valid_tv(&v));
         // empty sites
         let mut v = good.clone();
         v["sites"] = serde_json::json!([]);

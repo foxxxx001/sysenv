@@ -2,6 +2,13 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.50（2026-10-11）
+
+### 变更
+- `sys net -t tv` 有效性判定放宽：**去除 `.parses` 节点必须存在的要求**（`parses` 变为可选，如饭太硬.json 无 parses 也判有效）；仍要求 `sites` 非空数组且每元素含 `name`、顶层含 `lives` / `rules`；`[FMT]` 提示同步改为 `body lacks tv nodes (sites with name, lives, rules)`；单测补充 parses 可选与 rules 必需；`cargo test` 199 项全绿
+
+---
+
 ## v0.4.49（2026-10-11）
 
 ### 变更
