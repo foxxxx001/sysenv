@@ -418,6 +418,230 @@ fn cmd_content(
     urls: &[String],
     kind: NetType,
     output: Option<&Path>,
+    sort: &[String],
+) -> Result<()> {
+    if kind == NetType::Json {
+        let keys = parse_sort_keys(sort)?;
+        return cmd_json_sorted(client, urls, output, &keys);
+    }
+    cmd_file_probe(client, urls, output)
+}
+
+/// One analyzed json address (from `-t json --sort`).
+struct SortItem {
+    url: String,
+    /// number of `.sites` nodes
+    count: usize,
+    /// number of `.sites.name` containing "4k" (case-insensitive)
+    name: usize,
+    /// download speed of the `.spider` url in bytes/sec; None if unavailable
+    speed: Option<f64>,
+    /// human-readable note when `speed` is None (why the speed test failed)
+    speed_note: Option<String>,
+}
+
+/// Count `.sites` nodes in the parsed body.
+fn count_sites(v: &serde_json::Value) -> usize {
+    v.get("sites")
+        .and_then(|s| s.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0)
+}
+
+/// Count `.sites.name` entries containing "4k" (case-insensitive).
+fn count_name_4k(v: &serde_json::Value) -> usize {
+    v.get("sites")
+        .and_then(|s| s.as_array())
+        .map(|a| {
+            a.iter()
+                .filter(|site| {
+                    site.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_lowercase().contains("4k"))
+                        .unwrap_or(false)
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Extract the download url from `.spider`: a string of the form
+/// `url;md5;hash` yields the part before the first `;`; an array yields its
+/// first string element.
+fn spider_url(v: &serde_json::Value) -> Option<String> {
+    let sp = v.get("spider")?;
+    if let Some(s) = sp.as_str() {
+        let first = s.split(';').next().unwrap_or(s).trim();
+        if first.is_empty() {
+            None
+        } else {
+            Some(first.to_string())
+        }
+    } else if let Some(arr) = sp.as_array() {
+        arr.iter()
+            .find_map(|e| e.as_str().map(str::trim).filter(|s| !s.is_empty()).map(|s| s.to_string()))
+    } else {
+        None
+    }
+}
+
+/// Download the `.spider` url and measure the speed (bytes / elapsed).
+fn probe_speed(
+    client: &reqwest::blocking::Client,
+    v: &serde_json::Value,
+) -> (Option<f64>, Option<String>) {
+    match spider_url(v) {
+        Some(u) => match request(client, &u, true) {
+            Ok((_, elapsed, Some(body))) => {
+                let secs = elapsed.as_secs_f64();
+                if secs > 0.0 {
+                    (Some(body.len() as f64 / secs), None)
+                } else {
+                    (None, Some("no elapsed time".to_string()))
+                }
+            }
+            Ok(_) => (None, Some("empty body".to_string())),
+            Err(e) => (None, Some(truncate_ellipsis(&e, 40))),
+        },
+        None => (None, Some("no spider url".to_string())),
+    }
+}
+
+fn fmt_speed(bps: f64) -> String {
+    if bps >= 1_000_000.0 {
+        format!("{:.1}MB/s", bps / 1_000_000.0)
+    } else if bps >= 1_000.0 {
+        format!("{:.0}KB/s", bps / 1_000.0)
+    } else {
+        format!("{:.0}B/s", bps)
+    }
+}
+
+fn fmt_speed_line(it: &SortItem) -> String {
+    match it.speed {
+        Some(bps) => fmt_speed(bps),
+        None => it.speed_note.clone().unwrap_or_else(|| "n/a".to_string()),
+    }
+}
+
+fn cmp_speed(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+/// `-t json --sort KEY ...`: probe each address, parse the body as JSON,
+/// compute the count / name / speed statistics, sort by the given keys (in
+/// order; default `name`), then print each url followed by a `#` test-info
+/// line — on screen and in `-o` alike. Failed addresses are reported as
+/// `[NO]`/`[FMT]` and are not part of the sorted output.
+fn cmd_json_sorted(
+    client: &reqwest::blocking::Client,
+    urls: &[String],
+    output: Option<&Path>,
+    keys: &[SortKey],
+) -> Result<()> {
+    let mut items: Vec<SortItem> = Vec::new();
+    let mut n_ok = 0usize;
+    let mut n_mismatch = 0usize;
+    let mut n_no = 0usize;
+    let mut n_dup = 0usize;
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for url in urls {
+        if !seen.insert(dup_key(url)) {
+            n_dup += 1;
+            println!("[DUP] {url}  duplicate (already checked), skipped");
+            continue;
+        }
+        match request(client, url, true) {
+            Ok((status, _, Some(body))) => {
+                match serde_json::from_slice::<serde_json::Value>(&body) {
+                    Ok(v) => {
+                        let (speed, speed_note) = probe_speed(client, &v);
+                        n_ok += 1;
+                        items.push(SortItem {
+                            url: url.clone(),
+                            count: count_sites(&v),
+                            name: count_name_4k(&v),
+                            speed,
+                            speed_note,
+                        });
+                    }
+                    Err(_) => {
+                        n_mismatch += 1;
+                        println!("[FMT] {url}  status={status}  body is not valid JSON");
+                    }
+                }
+            }
+            Ok((status, _, None)) => {
+                n_no += 1;
+                println!("[NO]  {url}  status={status}  unexpected empty body");
+            }
+            Err(e) => {
+                n_no += 1;
+                println!("[NO]  {url}  error={e}");
+            }
+        }
+    }
+
+    let mut sort_keys = keys.to_vec();
+    if sort_keys.is_empty() {
+        sort_keys.push(SortKey::Name);
+    }
+    items.sort_by(|a, b| {
+        for k in &sort_keys {
+            let ord = match k {
+                SortKey::Count => b.count.cmp(&a.count),
+                SortKey::Name => b.name.cmp(&a.name),
+                SortKey::Speed => cmp_speed(a.speed, b.speed),
+            };
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+
+    for it in &items {
+        println!("{}", it.url);
+        println!("# count={} name={} speed={}", it.count, it.name, fmt_speed_line(it));
+    }
+    let dup_part = if n_dup > 0 {
+        format!(", {n_dup} duplicate")
+    } else {
+        String::new()
+    };
+    println!(
+        "--- {} of {} URLs passed ({} unreachable, {} format mismatch{dup_part}) ---",
+        n_ok,
+        urls.len(),
+        n_no,
+        n_mismatch
+    );
+
+    if let Some(out) = output {
+        let mut s = String::new();
+        for it in &items {
+            s.push_str(&it.url);
+            s.push('\n');
+            s.push_str(&format!("# count={} name={} speed={}\n", it.count, it.name, fmt_speed_line(it)));
+        }
+        std::fs::write(out, s).with_context(|| format!("cannot write {}", out.display()))?;
+        println!("wrote {} URL(s) to {}", items.len(), out.display());
+    }
+    Ok(())
+}
+
+/// `-t file` (and json before --sort): report each probe as it finishes and
+/// write the passed (reachable + format-matched) urls to `-o`, one per line.
+fn cmd_file_probe(
+    client: &reqwest::blocking::Client,
+    urls: &[String],
+    output: Option<&Path>,
 ) -> Result<()> {
     let w = urls.iter().map(|u| u.chars().count()).max().unwrap_or(8).max(8);
     let mut passed: Vec<String> = Vec::new();
@@ -436,12 +660,7 @@ fn cmd_content(
         match request(client, url, true) {
             Ok((status, elapsed, Some(body))) => {
                 let got = body_kind(&body);
-                let ok = match kind {
-                    NetType::Json => got == BodyKind::Json,
-                    NetType::File => got == BodyKind::Text,
-                    NetType::Domain | NetType::Test => unreachable!("handled elsewhere"),
-                };
-                if ok {
+                if got == BodyKind::Text {
                     n_ok += 1;
                     passed.push(url.clone());
                     println!(
@@ -457,7 +676,7 @@ fn cmd_content(
                         url,
                         fmt_ms(elapsed),
                         got.label(),
-                        kind.label()
+                        "file"
                     );
                 }
             }
@@ -644,13 +863,14 @@ fn cmd_test(
 // Entry point
 // ---------------------------------------------------------------------------
 
-/// `sys net -i FILE [-t domain|json|file|test] [-o FILE] [--timeout SECONDS] [-x SUFFIX ...]`
+/// `sys net -i FILE [-t domain|json|file|test] [-o FILE] [--timeout SECONDS] [-x SUFFIX ...] [--sort KEY ...]`
 pub fn cmd_net(
     input: &Path,
     kind: NetType,
     output: Option<&Path>,
     timeout_secs: f64,
     exclude: &[String],
+    sort: &[String],
 ) -> Result<()> {
     if !(timeout_secs > 0.0) || !timeout_secs.is_finite() {
         bail!("--timeout must be a positive number of seconds");
@@ -678,6 +898,9 @@ pub fn cmd_net(
             if !excludes.is_empty() {
                 eprintln!("warning: -x/--exclude applies to `-t test` only; ignored");
             }
+            if !sort.is_empty() {
+                eprintln!("warning: --sort applies to `-t json` only; ignored");
+            }
             let urls = read_addresses(input)?;
             cmd_domain(&client, &urls)
         }
@@ -685,11 +908,47 @@ pub fn cmd_net(
             if !excludes.is_empty() {
                 eprintln!("warning: -x/--exclude applies to `-t test` only; ignored");
             }
+            if kind == NetType::File && !sort.is_empty() {
+                eprintln!("warning: --sort applies to `-t json` only; ignored");
+            }
             let urls = read_addresses(input)?;
-            cmd_content(&client, &urls, kind, output)
+            cmd_content(&client, &urls, kind, output, sort)
         }
-        NetType::Test => cmd_test(&client, input, output, &excludes),
+        NetType::Test => {
+            if !sort.is_empty() {
+                eprintln!("warning: --sort applies to `-t json` only; ignored");
+            }
+            cmd_test(&client, input, output, &excludes)
+        }
     }
+}
+
+/// Sort keys for `-t json --sort KEY ...`, applied in the given order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortKey {
+    /// Total number of `.sites` nodes, descending
+    Count,
+    /// Number of `.sites.name` entries containing "4k" (case-insensitive), descending
+    Name,
+    /// Download speed of the `.spider` url, ascending
+    Speed,
+}
+
+/// Parse `--sort` values. `speen` is accepted as a typo for `speed`.
+fn parse_sort_keys(raw: &[String]) -> Result<Vec<SortKey>> {
+    let mut keys = Vec::new();
+    for r in raw {
+        let k = match r.trim().to_ascii_lowercase().as_str() {
+            "count" => SortKey::Count,
+            "name" => SortKey::Name,
+            "speed" | "speen" => SortKey::Speed,
+            other => bail!(
+                "invalid --sort key {other:?} (expected count | name | speed)"
+            ),
+        };
+        keys.push(k);
+    }
+    Ok(keys)
 }
 
 /// Lowercase file-name suffix of a URL's last path segment, if any.
@@ -756,6 +1015,11 @@ mod tests {
     /// shutdown(Write), then the socket is drained until the client closes, so
     /// Windows never sends a RST that would make reqwest fail the exchange.
     fn spawn_server(body: &'static [u8], content_type: &'static str, delay: Duration) -> String {
+        spawn_server_owned(body.to_vec(), content_type, delay)
+    }
+
+    /// Like `spawn_server` but with an owned body (for dynamic JSON fixtures).
+    fn spawn_server_owned(body: Vec<u8>, content_type: &'static str, delay: Duration) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
         let addr = listener.local_addr().expect("local addr");
         let url = format!("http://127.0.0.1:{}/test", addr.port());
@@ -787,7 +1051,7 @@ mod tests {
                     body.len()
                 );
                 let _ = stream.write_all(head.as_bytes());
-                let _ = stream.write_all(body);
+                let _ = stream.write_all(&body);
                 // 3) FIN first, then drain until the client closes so the
                 //    final drop never triggers a Windows RST
                 let _ = stream.shutdown(std::net::Shutdown::Write);
@@ -966,11 +1230,17 @@ mod tests {
         let input = temp_file("in-json");
         let out = temp_file("out-json");
         std::fs::write(&input, format!("probe {url} now\n")).unwrap();
-        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[]).unwrap();
+        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
-        assert_eq!(content.trim(), url);
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2, "url + # info line: {content:?}");
+        assert_eq!(lines[0], url.as_str());
+        assert!(
+            lines[1].starts_with("# count=0 name=0 speed="),
+            "info line: {content:?}"
+        );
     }
 
     #[test]
@@ -979,7 +1249,7 @@ mod tests {
         let input = temp_file("in-file");
         let out = temp_file("out-file");
         std::fs::write(&input, format!("{url}\n")).unwrap();
-        cmd_net(&input, NetType::File, Some(&out), 10.0, &[]).unwrap();
+        cmd_net(&input, NetType::File, Some(&out), 10.0, &[], &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -996,7 +1266,7 @@ mod tests {
         let input = temp_file("in-mix");
         let out = temp_file("out-mix");
         std::fs::write(&input, format!("{text_url}\n{dead_url}\n")).unwrap();
-        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[]).unwrap();
+        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -1009,7 +1279,7 @@ mod tests {
         let input = temp_file("in-json2file");
         let out = temp_file("out-json2file");
         std::fs::write(&input, format!("{json_url}\n")).unwrap();
-        cmd_net(&input, NetType::File, Some(&out), 10.0, &[]).unwrap();
+        cmd_net(&input, NetType::File, Some(&out), 10.0, &[], &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -1020,7 +1290,7 @@ mod tests {
     fn no_addresses_is_an_error() {
         let input = temp_file("empty");
         std::fs::write(&input, "# only comments\n").unwrap();
-        let err = cmd_net(&input, NetType::Domain, None, 10.0, &[]).unwrap_err();
+        let err = cmd_net(&input, NetType::Domain, None, 10.0, &[], &[]).unwrap_err();
         let _ = std::fs::remove_file(&input);
         assert!(err.to_string().contains("no http(s) addresses"));
     }
@@ -1029,7 +1299,7 @@ mod tests {
     fn invalid_timeout_is_rejected() {
         let input = temp_file("tmo");
         std::fs::write(&input, "http://a.com\n").unwrap();
-        let err = cmd_net(&input, NetType::Domain, None, 0.0, &[]).unwrap_err();
+        let err = cmd_net(&input, NetType::Domain, None, 0.0, &[], &[]).unwrap_err();
         let _ = std::fs::remove_file(&input);
         assert!(err.to_string().contains("--timeout"));
     }
@@ -1054,7 +1324,7 @@ mod tests {
             format!("# comment stays\n\n{good}\n{bad}\nplain text line without url\n"),
         )
         .unwrap();
-        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[]).unwrap();
+        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[], &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -1073,7 +1343,7 @@ mod tests {
         let input = temp_file("test-in2");
         let out = temp_file("test-out2");
         std::fs::write(&input, format!("see {bad}, and {good} now\n")).unwrap();
-        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[]).unwrap();
+        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[], &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -1089,7 +1359,7 @@ mod tests {
         let input = temp_file("test-in3");
         let out = temp_file("test-out3");
         std::fs::write(&input, format!("{bad1} and {bad2}\n")).unwrap();
-        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[]).unwrap();
+        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[], &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -1144,13 +1414,13 @@ mod tests {
         let input = temp_file("test-in-x1");
         let out_keep = temp_file("test-out-x1");
         std::fs::write(&input, format!("{m3u}\n")).unwrap();
-        cmd_net(&input, NetType::Test, Some(&out_keep), 10.0, &[]).unwrap();
+        cmd_net(&input, NetType::Test, Some(&out_keep), 10.0, &[], &[]).unwrap();
         let kept = std::fs::read_to_string(&out_keep).unwrap();
         assert!(kept.contains(&m3u), "no -x: reachable URL kept: {kept:?}");
 
         // With -x m3u the line is deleted without probing.
         let out_del = temp_file("test-out-x2");
-        cmd_net(&input, NetType::Test, Some(&out_del), 10.0, &["m3u".to_string()]).unwrap();
+        cmd_net(&input, NetType::Test, Some(&out_del), 10.0, &["m3u".to_string()], &[]).unwrap();
         let deleted = std::fs::read_to_string(&out_del).unwrap();
         assert!(
             deleted.trim().is_empty(),
@@ -1183,6 +1453,7 @@ mod tests {
             Some(&out),
             10.0,
             &["m3u".to_string(), "zip".to_string()],
+            &[],
         )
         .unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
@@ -1212,6 +1483,7 @@ mod tests {
             Some(&out),
             10.0,
             &["m3u".to_string()],
+            &[],
         )
         .unwrap();
         let _ = std::fs::remove_file(&input);
@@ -1236,7 +1508,7 @@ mod tests {
         let input = temp_file("test-in-d1");
         let out = temp_file("test-out-d1");
         std::fs::write(&input, format!("{good}\n{good}\n")).unwrap();
-        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[]).unwrap();
+        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[], &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -1250,7 +1522,7 @@ mod tests {
         let input = temp_file("test-in-d2");
         let out = temp_file("test-out-d2");
         std::fs::write(&input, format!("{good} {good}\n")).unwrap();
-        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[]).unwrap();
+        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[], &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -1265,11 +1537,174 @@ mod tests {
         let input = temp_file("test-in-d3");
         let out = temp_file("test-out-d3");
         std::fs::write(&input, format!("{good}\n{good}\n")).unwrap();
-        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[]).unwrap();
+        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
-        assert_eq!(content.lines().count(), 1, "one URL passed: {content:?}");
-        assert_eq!(content.trim(), good.as_str());
+        assert_eq!(content.lines().count(), 2, "one url + one # line: {content:?}");
+        assert_eq!(content.lines().next().unwrap(), good.as_str());
+        assert!(content.lines().nth(1).unwrap().starts_with("# count="));
+    }
+
+    // --- -t json --sort ---
+
+    const SORT_JSON_3: &[u8] = br#"{"spider":"http://127.0.0.1:1/x.jpg;md5;abc","sites":[
+      {"name":"A 4K"},
+      {"name":"B 4k"},
+      {"name":"C"}
+    ]}"#;
+    const SORT_JSON_1: &[u8] = br#"{"spider":"not a url","sites":[{"name":"D"}]}"#;
+
+    #[test]
+    fn json_stats_are_computed() {
+        let v3: serde_json::Value = serde_json::from_slice(SORT_JSON_3).unwrap();
+        let v1: serde_json::Value = serde_json::from_slice(SORT_JSON_1).unwrap();
+        assert_eq!(count_sites(&v3), 3);
+        assert_eq!(count_name_4k(&v3), 2, "4K and 4k both match");
+        assert_eq!(count_sites(&v1), 1);
+        assert_eq!(count_name_4k(&v1), 0);
+        assert_eq!(
+            spider_url(&v3),
+            Some("http://127.0.0.1:1/x.jpg".to_string()),
+            "semicolon-separated spider string keeps the part before ';'"
+        );
+        assert_eq!(spider_url(&v1), Some("not a url".to_string()));
+        assert_eq!(spider_url(&serde_json::json!({"spider": 42})), None);
+        assert_eq!(spider_url(&serde_json::json!({"sites": []})), None);
+    }
+
+    #[test]
+    fn parse_sort_keys_accepts_aliases_and_rejects_unknown() {
+        assert_eq!(
+            parse_sort_keys(&["count".into(), "name".into(), "speed".into(), "speen".into()]).unwrap(),
+            vec![SortKey::Count, SortKey::Name, SortKey::Speed, SortKey::Speed]
+        );
+        assert_eq!(parse_sort_keys(&[]).unwrap(), vec![]);
+        let err = parse_sort_keys(&["count".into(), "foo".into()]).unwrap_err();
+        assert!(err.to_string().contains("invalid --sort key"));
+    }
+
+    /// `--sort count`: more sites first. Input order is reversed to prove the
+    /// sort actually runs.
+    #[test]
+    fn json_sort_by_count_desc() {
+        let one = spawn_server(SORT_JSON_1, "application/json", Duration::ZERO);
+        let three = spawn_server(SORT_JSON_3, "application/json", Duration::ZERO);
+        let input = temp_file("in-sort-c");
+        let out = temp_file("out-sort-c");
+        std::fs::write(&input, format!("{one}\n{three}\n")).unwrap();
+        cmd_net(
+            &input,
+            NetType::Json,
+            Some(&out),
+            10.0,
+            &[],
+            &["count".to_string()],
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines[0], three.as_str(), "count=3 first: {content:?}");
+        assert!(lines[1].starts_with("# count=3 name=2"));
+        assert_eq!(lines[2], one.as_str(), "count=1 second: {content:?}");
+        assert!(lines[3].starts_with("# count=1 name=0"));
+    }
+
+    /// Default (no --sort): sort by name (4k count) descending.
+    #[test]
+    fn json_sort_defaults_to_name() {
+        let one = spawn_server(SORT_JSON_1, "application/json", Duration::ZERO);
+        let three = spawn_server(SORT_JSON_3, "application/json", Duration::ZERO);
+        let input = temp_file("in-sort-n");
+        let out = temp_file("out-sort-n");
+        std::fs::write(&input, format!("{one}\n{three}\n")).unwrap();
+        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines[0], three.as_str(), "name=2 first (default): {content:?}");
+    }
+
+    /// Multi-key: count equal -> tie broken by name (order of the keys).
+    #[test]
+    fn json_sort_multi_key_uses_key_order() {
+        // count=2 name=2 ; count=2 name=0 ; count=1 name=1
+        let j1 = spawn_server_owned(
+            br#"{"sites":[{"name":"a 4K"},{"name":"b 4K"}]}"#.to_vec(),
+            "application/json",
+            Duration::ZERO,
+        );
+        let j2 = spawn_server_owned(
+            br#"{"sites":[{"name":"a"},{"name":"b"}]}"#.to_vec(),
+            "application/json",
+            Duration::ZERO,
+        );
+        let j3 = spawn_server_owned(
+            br#"{"sites":[{"name":"x 4K"}]}"#.to_vec(),
+            "application/json",
+            Duration::ZERO,
+        );
+        let input = temp_file("in-sort-m");
+        let out = temp_file("out-sort-m");
+        // input order: j2, j3, j1
+        std::fs::write(&input, format!("{j2}\n{j3}\n{j1}\n")).unwrap();
+        cmd_net(
+            &input,
+            NetType::Json,
+            Some(&out),
+            10.0,
+            &[],
+            &["count".to_string(), "name".to_string()],
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        let urls: Vec<&str> = content.lines().step_by(2).collect();
+        // count desc: j1(2),j2(2),j3(1) -> name desc among count=2: j1(name=2) then j2(name=0);
+        // a count-only sort would keep j2 before j1 (stable), so this proves the tie-break.
+        assert_eq!(urls, vec![j1.as_str(), j2.as_str(), j3.as_str()], "{content:?}");
+    }
+
+    /// `--sort speed`: faster spider download first (ascending).
+    #[test]
+    fn json_sort_by_speed_asc() {
+        // A slow downloadable body (small + 400ms delay) and a fast one (large, no delay).
+        let slow = spawn_server_owned(vec![b'x'; 1024], "application/octet-stream", Duration::from_millis(400));
+        let fast = spawn_server_owned(vec![b'y'; 128 * 1024], "application/octet-stream", Duration::ZERO);
+        let jslow = spawn_server_owned(
+            format!(r#"{{"spider":"{slow}","sites":[]}}"#).into_bytes(),
+            "application/json",
+            Duration::ZERO,
+        );
+        let jfast = spawn_server_owned(
+            format!(r#"{{"spider":"{fast}","sites":[]}}"#).into_bytes(),
+            "application/json",
+            Duration::ZERO,
+        );
+        let input = temp_file("in-sort-s");
+        let out = temp_file("out-sort-s");
+        std::fs::write(&input, format!("{jslow}\n{jfast}\n")).unwrap();
+        cmd_net(
+            &input,
+            NetType::Json,
+            Some(&out),
+            10.0,
+            &[],
+            &["speed".to_string()],
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        let urls: Vec<&str> = content.lines().step_by(2).collect();
+        assert_eq!(
+            urls,
+            vec![jslow.as_str(), jfast.as_str()],
+            "ascending speed: slowest first: {content:?}"
+        );
     }
 }

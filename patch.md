@@ -2,6 +2,20 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.46（2026-10-11）
+
+### 变更
+- `sys net -t json` 新增 `--sort` 统计排序输出（预期 JSON 形如附件：顶层 `sites` 数组 + `spider` 字段）：
+  - `--sort count`：统计 `.sites` 节点总数，按数量 **desc** 排序
+  - `--sort name`：统计 `.sites.name` 含 `4k`（大小写不敏感）的数量，按数量 **desc** 排序
+  - `--sort speed`（拼写 `speen` 也接受）：下载 `.spider` 中的 url（字符串 `url;md5;...` 取 `;` 前部分，数组取首个字符串元素），按下载速度 **asc** 排序
+  - `--sort` 可多个（`--sort count name`），按出现顺序多级排序；**不提供默认按 name 排序**
+  - 每个通过的地址打印一行 url，下一行打印 `# count=<N> name=<N> speed=<速度或失败原因>` 测试信息；**屏幕与 `-o` 文件格式一致**（url + `#` 行）；不可达 / 非 JSON 地址照旧打印 `[NO]` / `[FMT]` 且不写入 `-o`
+  - json 模式检测阶段不再逐条打印 `[OK]` 行（改为排序后输出）；file 模式行为不变
+- 新增 6 个单测（统计计算、spider url 提取、--sort 解析别名/非法键、count desc、默认 name、多级排序、speed asc）；`cargo test` 194 项全绿
+
+---
+
 ## v0.4.45（2026-10-10）
 
 ### 变更

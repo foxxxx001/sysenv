@@ -561,6 +561,9 @@ struct NetArgs {
     /// In test mode, skip probing URLs whose file-name suffix matches (case-insensitive, leading dot optional) and remove them directly; repeatable, e.g. -x m3u -x zip
     #[arg(short = 'x', long, value_name = "SUFFIX")]
     exclude: Vec<String>,
+    /// json mode sort keys, applied in order (count | name | speed; speen is accepted as speed); default: name; repeatable, e.g. --sort count name
+    #[arg(long, value_name = "KEY", num_args = 1..)]
+    sort: Vec<String>,
 }
 
 #[derive(Args)]
@@ -935,7 +938,14 @@ fn run_search(s: SearchArgs) -> anyhow::Result<()> {
 }
 
 fn run_net(n: NetArgs) -> anyhow::Result<()> {
-    net::cmd_net(&n.input, n.kind, n.output.as_deref(), n.timeout, &n.exclude)
+    net::cmd_net(
+        &n.input,
+        n.kind,
+        n.output.as_deref(),
+        n.timeout,
+        &n.exclude,
+        &n.sort,
+    )
 }
 
 fn run_task(t: TaskArgs) -> anyhow::Result<()> {
