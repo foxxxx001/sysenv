@@ -416,6 +416,10 @@ struct ChatArgs {
     /// Number of models to test in parallel (default: the CPU core count)
     #[arg(long, value_name = "N")]
     parallel: Option<usize>,
+    /// With --test: delete the failed models from the config file instead of
+    /// setting weight to 0; providers left without any models are removed too
+    #[arg(long, requires = "test")]
+    remove: bool,
 }
 
 /// `sys ai server [ADDR]` — serve the configured providers as an
@@ -890,6 +894,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             c.update,
             c.test,
             c.parallel,
+            c.remove,
         ),
         AiCmd::Server(s) => {
             let bind = server::parse_addr(s.addr.as_deref().unwrap_or(""));

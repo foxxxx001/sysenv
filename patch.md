@@ -2,6 +2,20 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.67（2026-10-11）
+
+### 新增
+- **`sys ai chat --test --remove`：测试失败的模型直接从配置文件删除**（替代置 weight=0）：
+  - `--remove` 必须与 `--test` 同用（clap `requires`）；失败模型（HTTP 错误如 429、连接错误、超时、无内容反馈）的条目从 `clients` 中删除，而非写 `weight: 0`
+  - 同一 provider 下同名模型条目按出现次序精确定位删除（`remove_model_entry_from_config` 的 occurrence 参数）
+  - **删除后无剩余模型的 provider 整体移除**（`remove_provider_entry_from_config`，含 api_key 等整块配置）
+  - 顶层 `model:` 选择器清理（`clean_top_level_model_selector`）：仍能解析到剩余模型的 selector 保留，悬空引用（已删模型 / 已删 provider）剔除，清空则删除 `model:` 行
+  - 输出 `[FAIL] ...  (removed)`，汇总 `... failed (removed from config)`；写回失败仅警告、不中断；删除串行执行避免并发改配置
+- 新增 6 个单测（模型条目删除保留兄弟模型、mangled `- weight:` 同删、同名 occurrence 定位、provider 整块删除、顶层 selector 清理、`apply_test_removals` 编排）；`cargo test` 233 项全绿
+- 版本 0.4.66 -> 0.4.67
+
+---
+
 ## v0.4.66（2026-10-11）
 
 ### 新增

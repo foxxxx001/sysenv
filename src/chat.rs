@@ -872,6 +872,336 @@ fn update_model_field_in_config(
         .with_context(|| format!("cannot write config `{}`", config_path.display()))
 }
 
+/// Remove the `occurrence`-th (0-based) model entry named `model_name` under
+/// `provider_name` from the YAML config file (used by `sys ai chat --test
+/// --remove`). Deletes the `- name:` line, its deeper sub-keys, and the
+/// mangled same-indent `- weight:` continuation; a later entry at the same
+/// indent is left untouched. Returns an error when the entry is not found.
+fn remove_model_entry_from_config(
+    config_path: &Path,
+    provider_name: &str,
+    model_name: &str,
+    occurrence: usize,
+) -> Result<()> {
+    let text = std::fs::read_to_string(config_path)
+        .with_context(|| format!("cannot read config `{}`", config_path.display()))?;
+    let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+
+    let mut provider_indent: Option<usize> = None;
+    let mut cur_provider: Option<String> = None;
+    let mut in_models = false;
+    let mut models_indent = 0usize;
+    let mut occ = 0usize;
+    let mut target: Option<usize> = None;
+
+    let mut i = 0usize;
+    while i < lines.len() && target.is_none() {
+        let (indent, content) = line_parts(&lines[i]);
+        if content.is_empty() {
+            i += 1;
+            continue;
+        }
+        let is_dash = content.starts_with('-');
+
+        if let Some(pi) = provider_indent {
+            if indent < pi {
+                provider_indent = None;
+                cur_provider = None;
+                in_models = false;
+            }
+        }
+
+        if is_dash {
+            let rest = content[1..].trim_start();
+            if let Some(pi) = provider_indent {
+                if indent == pi {
+                    // A new sibling provider entry.
+                    cur_provider = None;
+                    in_models = false;
+                    if let Some((k, v)) = split_kv_opt(rest) {
+                        if k == "name" {
+                            cur_provider = Some(unquote(&v));
+                        }
+                    }
+                    i += 1;
+                    continue;
+                }
+            } else {
+                provider_indent = Some(indent);
+                cur_provider = None;
+                in_models = false;
+                if let Some((k, v)) = split_kv_opt(rest) {
+                    if k == "name" {
+                        cur_provider = Some(unquote(&v));
+                    }
+                }
+                i += 1;
+                continue;
+            }
+            if in_models && indent > models_indent {
+                if let Some((k, v)) = split_kv_opt(rest) {
+                    if k == "name" {
+                        let mname = unquote(&v);
+                        let provider_ok = cur_provider
+                            .as_deref()
+                            .map(|p| ci_eq(p, provider_name))
+                            .unwrap_or(false);
+                        if provider_ok && ci_eq(&mname, model_name) {
+                            if occ == occurrence {
+                                target = Some(i);
+                            } else {
+                                occ += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            i += 1;
+            continue;
+        }
+
+        if let Some((k, v)) = split_kv_opt(&content) {
+            if provider_indent.is_some() {
+                if !in_models {
+                    if k == "name" {
+                        cur_provider = Some(unquote(&v));
+                    } else if k == "models" {
+                        in_models = true;
+                        models_indent = indent;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    let start = target.ok_or_else(|| {
+        anyhow::anyhow!("cannot locate model `{model_name}` of provider `{provider_name}` in `{}`", config_path.display())
+    })?;
+    let name_indent = line_parts(&lines[start]).0;
+    // The entry ends at the next model entry (same indent, not `- weight:`),
+    // at the end of the models list, or at a shallower indent.
+    let mut end = start + 1;
+    while end < lines.len() {
+        let (indent, content) = line_parts(&lines[end]);
+        if content.is_empty() {
+            end += 1;
+            continue;
+        }
+        if indent > name_indent {
+            end += 1;
+            continue;
+        }
+        if indent == name_indent && content.starts_with("- weight:") {
+            // Mangled form: the weight was written as a same-indent list item
+            // and belongs to this entry.
+            end += 1;
+            continue;
+        }
+        break;
+    }
+    lines.drain(start..end);
+    std::fs::write(config_path, lines.join("\n"))
+        .with_context(|| format!("cannot write config `{}`", config_path.display()))
+}
+
+/// Remove the whole provider entry named `provider_name` from the YAML config
+/// file (used by `sys ai chat --test --remove` when a provider is left
+/// without any models). Returns an error when the provider is not found.
+fn remove_provider_entry_from_config(config_path: &Path, provider_name: &str) -> Result<()> {
+    let text = std::fs::read_to_string(config_path)
+        .with_context(|| format!("cannot read config `{}`", config_path.display()))?;
+    let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+
+    let mut provider_indent: Option<usize> = None;
+    let mut entry_start: Option<usize> = None;
+    let mut cur_provider: Option<String> = None;
+    let mut range: Option<(usize, usize)> = None;
+
+    let mut i = 0usize;
+    while i < lines.len() && range.is_none() {
+        let (indent, content) = line_parts(&lines[i]);
+        if content.is_empty() {
+            i += 1;
+            continue;
+        }
+        let is_dash = content.starts_with('-');
+
+        if let Some(pi) = provider_indent {
+            if indent < pi {
+                // Left the clients list: the current provider ended here.
+                if let Some(s) = entry_start {
+                    if cur_provider.as_deref().map(|c| ci_eq(c, provider_name)).unwrap_or(false) {
+                        range = Some((s, i));
+                        break;
+                    }
+                }
+                provider_indent = None;
+                entry_start = None;
+                cur_provider = None;
+                i += 1;
+                continue;
+            }
+        }
+
+        if is_dash {
+            let rest = content[1..].trim_start();
+            if let Some(pi) = provider_indent {
+                if indent == pi {
+                    // A new sibling provider entry: the previous one ended here.
+                    if let Some(s) = entry_start {
+                        if cur_provider.as_deref().map(|c| ci_eq(c, provider_name)).unwrap_or(false) {
+                            range = Some((s, i));
+                            break;
+                        }
+                    }
+                    entry_start = Some(i);
+                    cur_provider = None;
+                    if let Some((k, v)) = split_kv_opt(rest) {
+                        if k == "name" {
+                            cur_provider = Some(unquote(&v));
+                        }
+                    }
+                    i += 1;
+                    continue;
+                }
+            } else {
+                provider_indent = Some(indent);
+                entry_start = Some(i);
+                cur_provider = None;
+                if let Some((k, v)) = split_kv_opt(rest) {
+                    if k == "name" {
+                        cur_provider = Some(unquote(&v));
+                    }
+                }
+                i += 1;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if let Some((k, v)) = split_kv_opt(&content) {
+            if provider_indent.is_some() && k == "name" {
+                cur_provider = Some(unquote(&v));
+            }
+        }
+        i += 1;
+    }
+    // The target provider is the last entry in the list: it ends at EOF.
+    if range.is_none() {
+        if let Some(s) = entry_start {
+            if cur_provider.as_deref().map(|c| ci_eq(c, provider_name)).unwrap_or(false) {
+                range = Some((s, lines.len()));
+            }
+        }
+    }
+
+    let (start, end) = range.ok_or_else(|| {
+        anyhow::anyhow!("cannot locate provider `{provider_name}` in `{}`", config_path.display())
+    })?;
+    lines.drain(start..end);
+    std::fs::write(config_path, lines.join("\n"))
+        .with_context(|| format!("cannot write config `{}`", config_path.display()))
+}
+
+/// Drop dangling model selectors from the top-level `model:` line: parts that
+/// no longer resolve to any remaining configured model (deleted models, fully
+/// removed providers) are removed; when nothing is left the `model:` line is
+/// deleted. No-op when the config has no top-level `model:`.
+fn clean_top_level_model_selector(config_path: &Path) -> Result<()> {
+    let text = std::fs::read_to_string(config_path)
+        .with_context(|| format!("cannot read config `{}`", config_path.display()))?;
+    let y = parse_yaml(&text)?;
+    let cfg = config_from_yaml(&y)
+        .with_context(|| format!("invalid config `{}`", config_path.display()))?;
+    let Some(sel) = cfg.model.as_deref() else {
+        return Ok(());
+    };
+    let mut keep: Vec<String> = Vec::new();
+    for part in split_selector(sel) {
+        if let Some((prov, m)) = part.split_once(':') {
+            let prov = prov.trim();
+            let m = m.trim();
+            if m == "*" {
+                if cfg.providers.iter().any(|p| ci_eq(&p.name, prov) && !p.models.is_empty()) {
+                    keep.push(part.clone());
+                }
+            } else if cfg
+                .providers
+                .iter()
+                .any(|p| ci_eq(&p.name, prov) && p.models.iter().any(|mdl| ci_eq(&mdl.name, m)))
+            {
+                keep.push(part.clone());
+            }
+        } else if cfg
+            .providers
+            .iter()
+            .any(|p| p.models.iter().any(|mdl| ci_eq(&mdl.name, &part)))
+        {
+            keep.push(part.clone());
+        }
+    }
+
+    let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+    let mut done = false;
+    for line in &mut lines {
+        let (indent, content) = line_parts(line);
+        if content.is_empty() {
+            continue;
+        }
+        if indent != 0 {
+            continue;
+        }
+        if let Some((k, _)) = split_kv_opt(&content) {
+            if k == "model" {
+                if keep.is_empty() {
+                    *line = String::new();
+                } else {
+                    *line = format!("model: {}", keep.join(","));
+                }
+                done = true;
+                break;
+            }
+        }
+    }
+    if !done {
+        return Ok(());
+    }
+    std::fs::write(config_path, lines.join("\n"))
+        .with_context(|| format!("cannot write config `{}`", config_path.display()))
+}
+
+/// Apply `--remove` results: delete the failed model entries from the config,
+/// delete providers left without any models, and clean the top-level `model:`
+/// selector. `removals` holds (provider_idx, model_idx) into `cfg`.
+fn apply_test_removals(cfg: &Config, path: &Path, removals: &[(usize, usize)]) -> Result<()> {
+    if removals.is_empty() {
+        return Ok(());
+    }
+    // Duplicate model names under one provider are targeted by occurrence.
+    let mut occ: HashMap<(usize, String), usize> = HashMap::new();
+    for &(pi, mi) in removals {
+        let p = &cfg.providers[pi];
+        let m = &p.models[mi];
+        let o = occ.entry((pi, m.name.clone())).or_insert(0);
+        remove_model_entry_from_config(path, &p.name, &m.name, *o)?;
+        *o += 1;
+    }
+    // Providers left with no models are removed entirely.
+    let mut removed_by_provider: HashMap<usize, Vec<usize>> = HashMap::new();
+    for &(pi, mi) in removals {
+        removed_by_provider.entry(pi).or_default().push(mi);
+    }
+    for (pi, mis) in removed_by_provider {
+        let remaining = cfg.providers[pi].models.iter().enumerate().any(|(i, _)| !mis.contains(&i));
+        if !remaining {
+            remove_provider_entry_from_config(path, &cfg.providers[pi].name)?;
+        }
+    }
+    clean_top_level_model_selector(path)
+}
+
 // ---------------------------------------------------------------------------
 // Chat requests (OpenAI / Anthropic)
 // ---------------------------------------------------------------------------
@@ -2646,20 +2976,21 @@ fn test_one(p: &Provider, m: &Model, msg: &str) -> Result<Duration> {
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().unwrap_or_default();
-        let snippet: String = text.chars().take(300).collect();
+        let snippet: String = text.chars().take(300).collect::<String>().trim().to_string();
         bail!("{url} returned HTTP {status}: {snippet}");
     }
     first_token_elapsed(resp, &p.kind, start)
 }
 
-/// `sys ai chat --test [MSG...] [-m MODEL] [--parallel N]`
+/// `sys ai chat --test [MSG...] [-m MODEL] [--parallel N] [--remove]`
 ///
 /// Runs a streaming first-token chat test over the selected models (default:
 /// every configured model) in parallel (`--parallel` / the CPU core count)
 /// and prints each model's response time. Models that fail — no feedback,
 /// HTTP error such as 429, connection error, timeout — get their `weight`
-/// set to 0 in the config file.
-fn chat_test(cfg: &Config, path: &Path, msg: &str, model_override: Option<&str>, parallel: Option<usize>) -> Result<()> {
+/// set to 0 in the config file; with `--remove` they are deleted from the
+/// config instead (providers left without any models are removed too).
+fn chat_test(cfg: &Config, path: &Path, msg: &str, model_override: Option<&str>, parallel: Option<usize>, remove: bool) -> Result<()> {
     let targets = test_targets(cfg, model_override)?;
     let n = targets.len();
     let workers = parallel
@@ -2673,11 +3004,11 @@ fn chat_test(cfg: &Config, path: &Path, msg: &str, model_override: Option<&str>,
         .unwrap_or(8)
         .max(8);
 
-    println!("sys: testing {n} model(s) in parallel ({workers} worker(s)) with `{msg}`");
+    println!("sys: testing {n} model(s) in parallel ({workers} worker(s)) with `{msg}`{}", if remove { " (--remove: failures deleted from config)" } else { "" });
 
     // Worker pool: each worker pulls the next target index; results are
-    // collected in input order. Weight updates are applied serially below so
-    // the config file is never written concurrently.
+    // collected in input order. Weight updates / removals are applied serially
+    // below so the config file is never written concurrently.
     let targets = &targets;
     let next = std::sync::Arc::new(std::sync::Mutex::new(0usize));
     let (tx, rx) = mpsc::channel::<(usize, Result<Duration>)>();
@@ -2710,6 +3041,7 @@ fn chat_test(cfg: &Config, path: &Path, msg: &str, model_override: Option<&str>,
 
     let mut ok = 0usize;
     let mut failed = 0usize;
+    let mut removals: Vec<(usize, usize)> = Vec::new();
     for (i, r) in by_idx.into_iter().enumerate() {
         let t = targets[i];
         let p = &cfg.providers[t.provider];
@@ -2722,28 +3054,40 @@ fn chat_test(cfg: &Config, path: &Path, msg: &str, model_override: Option<&str>,
             }
             Err(e) => {
                 failed += 1;
-                println!("[FAIL] {:<w$}  {e:#}", name);
-                if m.weight != 0 {
-                    // Duplicate model names under one provider are separate
-                    // targets; zero the weight of this exact entry.
-                    let occ = targets[..i]
-                        .iter()
-                        .filter(|x| {
-                            x.provider == t.provider
-                                && ci_eq(&cfg.providers[x.provider].models[x.model].name, &m.name)
-                        })
-                        .count();
-                    if let Err(e2) = update_weight_in_config_at(path, &p.name, &m.name, occ, 0) {
-                        eprintln!(
-                            "sys: warning: failed to persist weight->0 for {} / {}: {e2:#}",
-                            p.name, m.name
-                        );
+                if remove {
+                    println!("[FAIL] {:<w$}  {e:#}  (removed)", name);
+                    removals.push((t.provider, t.model));
+                } else {
+                    println!("[FAIL] {:<w$}  {e:#}", name);
+                    if m.weight != 0 {
+                        // Duplicate model names under one provider are separate
+                        // targets; zero the weight of this exact entry.
+                        let occ = targets[..i]
+                            .iter()
+                            .filter(|x| {
+                                x.provider == t.provider
+                                    && ci_eq(&cfg.providers[x.provider].models[x.model].name, &m.name)
+                            })
+                            .count();
+                        if let Err(e2) = update_weight_in_config_at(path, &p.name, &m.name, occ, 0) {
+                            eprintln!(
+                                "sys: warning: failed to persist weight->0 for {} / {}: {e2:#}",
+                                p.name, m.name
+                            );
+                        }
                     }
                 }
             }
         }
     }
-    println!("sys: {ok}/{n} model(s) responded; {failed} failed (weight -> 0)");
+    if remove {
+        if let Err(e2) = apply_test_removals(cfg, path, &removals) {
+            eprintln!("sys: warning: failed to remove failed models from `{}`: {e2:#}", path.display());
+        }
+        println!("sys: {ok}/{n} model(s) responded; {failed} failed (removed from config)");
+    } else {
+        println!("sys: {ok}/{n} model(s) responded; {failed} failed (weight -> 0)");
+    }
     Ok(())
 }
 
@@ -2775,7 +3119,7 @@ pub(crate) fn print_models(cfg: &Config) {
 }
 
 /// `sys ai chat [MSG...] [-m MODEL] [--list-model] [--list-provider] [-c FILE] [--debug] [--no-stream] [--update]`
-/// `sys ai chat --test [MSG...] [-m MODEL] [--parallel N]`
+/// `sys ai chat --test [MSG...] [-m MODEL] [--parallel N] [--remove]`
 ///
 /// `-m/--model` overrides the top-level `model` from the config (same
 /// `{provider}:{model}` / `{model}` / comma-separated rules). `--list-model`
@@ -2783,7 +3127,8 @@ pub(crate) fn print_models(cfg: &Config) {
 /// prints every configured provider. `--update` fills the target models'
 /// missing `max_input_tokens` / `type` from models.dev into the config file
 /// (best effort) before the request. `--test` runs a parallel chat
-/// feedback-time test instead of a normal chat (see `chat_test`).
+/// feedback-time test instead of a normal chat (see `chat_test`); `--remove`
+/// deletes the failed models from the config instead of setting weight to 0.
 pub fn cmd_chat(
     words: &[String],
     config: Option<&Path>,
@@ -2795,6 +3140,7 @@ pub fn cmd_chat(
     update: bool,
     test: bool,
     parallel: Option<usize>,
+    remove: bool,
 ) -> Result<()> {
     let (mut cfg, path) = load_config(config)?;
 
@@ -2817,7 +3163,7 @@ pub fn cmd_chat(
         } else {
             "hello".to_string()
         };
-        return chat_test(&cfg, &path, &msg, model, parallel);
+        return chat_test(&cfg, &path, &msg, model, parallel, remove);
     }
 
     let msg = if !words.is_empty() {
@@ -3708,6 +4054,180 @@ clients:
         let t = std::fs::read_to_string(&p).unwrap();
         assert!(t.contains("      - name: m1\n        weight: 2"), "first entry not updated: {t}");
         assert!(t.contains("      - name: m1\n        weight: 0"), "second entry changed: {t}");
+    }
+
+    #[test]
+    fn remove_model_entry_deletes_subkeys_and_keeps_siblings() {
+        let p = tmp_config(
+            "rm-model",
+            r#"clients:
+  - type: openai
+    name: agnes
+    api_base: https://x.example/v1
+    api_key: sk-test
+    models:
+      - name: m1
+        weight: 3
+        type: text,image
+      - name: m2
+        weight: 1
+"#,
+        );
+        remove_model_entry_from_config(&p, "agnes", "m1", 0).unwrap();
+        let t = std::fs::read_to_string(&p).unwrap();
+        assert!(!t.contains("m1"), "m1 entry not removed: {t}");
+        assert!(t.contains("      - name: m2\n        weight: 1"), "sibling m2 damaged: {t}");
+        // The remaining config still parses into exactly one model.
+        let cfg = config_from_yaml(&parse_yaml(&t).unwrap()).unwrap();
+        assert_eq!(cfg.providers[0].models.len(), 1);
+        assert_eq!(cfg.providers[0].models[0].name, "m2");
+    }
+
+    #[test]
+    fn remove_model_entry_handles_mangled_weight_line() {
+        let p = tmp_config(
+            "rm-mangled",
+            r#"clients:
+  - type: openai
+    name: agnes
+    api_base: https://x.example/v1
+    api_key: sk-test
+    models:
+      - name: m1
+      - weight: 1
+      - name: m2
+"#,
+        );
+        remove_model_entry_from_config(&p, "agnes", "m1", 0).unwrap();
+        let t = std::fs::read_to_string(&p).unwrap();
+        assert!(!t.contains("m1") && !t.contains("- weight:"), "entry not fully removed: {t}");
+        assert!(t.contains("      - name: m2"), "sibling m2 damaged: {t}");
+    }
+
+    #[test]
+    fn remove_model_entry_targets_duplicate_by_occurrence() {
+        let p = tmp_config(
+            "rm-dup",
+            r#"clients:
+  - type: openai
+    name: agnes
+    api_base: https://x.example/v1
+    api_key: sk-test
+    models:
+      - name: m1
+        weight: 1
+      - name: m1
+        weight: 2
+"#,
+        );
+        // Remove the second duplicate only.
+        remove_model_entry_from_config(&p, "agnes", "m1", 1).unwrap();
+        let t = std::fs::read_to_string(&p).unwrap();
+        assert!(t.contains("      - name: m1\n        weight: 1"), "first entry removed: {t}");
+        assert!(!t.contains("weight: 2"), "second entry not removed: {t}");
+        let cfg = config_from_yaml(&parse_yaml(&t).unwrap()).unwrap();
+        assert_eq!(cfg.providers[0].models.len(), 1);
+        assert_eq!(cfg.providers[0].models[0].weight, 1);
+    }
+
+    #[test]
+    fn remove_provider_entry_deletes_whole_block() {
+        let p = tmp_config(
+            "rm-provider",
+            r#"clients:
+  - type: openai
+    name: agnes
+    api_base: https://x.example/v1
+    api_key: sk-test
+    models:
+      - name: m1
+  - type: anthropic
+    name: claude
+    api_base: https://api.example.com
+    api_key: sk-ant
+    models:
+      - name: c1
+"#,
+        );
+        remove_provider_entry_from_config(&p, "agnes").unwrap();
+        let t = std::fs::read_to_string(&p).unwrap();
+        assert!(!t.contains("agnes") && !t.contains("m1"), "provider block not removed: {t}");
+        assert!(t.contains("name: claude"), "sibling provider damaged: {t}");
+        let cfg = config_from_yaml(&parse_yaml(&t).unwrap()).unwrap();
+        assert_eq!(cfg.providers.len(), 1);
+        assert_eq!(cfg.providers[0].name, "claude");
+    }
+
+    #[test]
+    fn clean_top_level_model_drops_dangling_selectors() {
+        // m1 and agnes are deleted from the config; the top-level model line
+        // keeps only the still-resolvable claude:c1 selector.
+        let p = tmp_config(
+            "clean-model",
+            r#"model: m1,claude:c1
+clients:
+  - type: anthropic
+    name: claude
+    api_base: https://api.example.com
+    api_key: sk-ant
+    models:
+      - name: c1
+"#,
+        );
+        clean_top_level_model_selector(&p).unwrap();
+        let t = std::fs::read_to_string(&p).unwrap();
+        assert!(t.contains("model: claude:c1"), "dangling m1 kept: {t}");
+        // Removing the last resolvable selector deletes the model line.
+        let p2 = tmp_config(
+            "clean-model2",
+            r#"model: claude:c1
+clients:
+  - type: anthropic
+    name: claude
+    api_base: https://api.example.com
+    api_key: sk-ant
+    models:
+      - name: c1
+"#,
+        );
+        remove_provider_entry_from_config(&p2, "claude").unwrap();
+        clean_top_level_model_selector(&p2).unwrap();
+        let t2 = std::fs::read_to_string(&p2).unwrap();
+        assert!(!t2.contains("model:"), "empty model line not removed: {t2}");
+    }
+
+    #[test]
+    fn apply_test_removals_removes_models_providers_and_selector() {
+        // agnes has two models; both fail -> provider removed and the top-level
+        // selector (which only names agnes models) is dropped. claude survives.
+        let p = tmp_config(
+            "apply-rm",
+            r#"model: agnes-3.0-flash,m1
+clients:
+  - type: openai
+    name: agnes
+    api_base: https://x.example/v1
+    api_key: sk-test
+    models:
+      - name: agnes-3.0-flash
+        weight: 1
+      - name: m1
+        weight: 2
+  - type: anthropic
+    name: claude
+    api_base: https://api.example.com
+    api_key: sk-ant
+    models:
+      - name: c1
+"#,
+        );
+        let cfg = config_from_yaml(&parse_yaml(&std::fs::read_to_string(&p).unwrap()).unwrap()).unwrap();
+        // agnes = provider 0, models 0 and 1 -> both removed -> provider gone.
+        apply_test_removals(&cfg, &p, &[(0, 0), (0, 1)]).unwrap();
+        let t = std::fs::read_to_string(&p).unwrap();
+        assert!(!t.contains("agnes") && !t.contains("m1"), "agnes not removed: {t}");
+        assert!(t.contains("name: claude"), "claude damaged: {t}");
+        assert!(!t.contains("model:"), "dangling top-level model left: {t}");
     }
 
     #[test]
