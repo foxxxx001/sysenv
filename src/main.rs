@@ -546,10 +546,10 @@ enum TaskCmd {
 
 #[derive(Args)]
 struct NetArgs {
-    /// Input file containing http(s) addresses (lines starting with # are skipped; each line may hold several addresses)
+    /// Input file containing http(s) addresses (lines starting with # are skipped; each line may hold several addresses); not used in -t info mode
     #[arg(short = 'i', long, value_name = "FILE")]
-    input: PathBuf,
-    /// Detection type: domain (default, 3 probes averaged) | tv (body must be JSON, analyzed with --sort; old name json) | file (body must be plain text) | test (probe reachability, delete unreachable lines, -o writes the cleaned source)
+    input: Option<PathBuf>,
+    /// Detection type: domain (default, 3 probes averaged) | tv (body must be JSON, analyzed with --sort; old name json) | file (body must be plain text) | test (probe reachability, delete unreachable lines, -o writes the cleaned source) | info (query domain registration info via RDAP for each -n DOMAIN)
     #[arg(short = 't', long, value_name = "TYPE", value_enum, default_value_t = net::NetType::Domain)]
     kind: net::NetType,
     /// Write the passed (reachable + format-matched) URLs, or the cleaned source lines in test mode, to this file
@@ -564,6 +564,9 @@ struct NetArgs {
     /// tv mode sort keys, applied in order (count | name | speed; speen is accepted as speed); default: count name; repeatable, e.g. --sort count name
     #[arg(long, value_name = "KEY", num_args = 1..)]
     sort: Vec<String>,
+    /// Domain names whose registration info is queried in -t info mode (repeatable, e.g. -n a.com -n b.com); when a name has no registration data its parent domain is tried
+    #[arg(short = 'n', long, value_name = "DOMAIN")]
+    names: Vec<String>,
 }
 
 #[derive(Args)]
@@ -938,8 +941,17 @@ fn run_search(s: SearchArgs) -> anyhow::Result<()> {
 }
 
 fn run_net(n: NetArgs) -> anyhow::Result<()> {
+    if n.kind == net::NetType::Info {
+        return net::cmd_net_info(&n.names, n.timeout);
+    }
+    let input = n.input.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "-i/--input is required for -t {:?} (the -t info mode uses -n DOMAIN instead)",
+            n.kind
+        )
+    })?;
     net::cmd_net(
-        &n.input,
+        input,
         n.kind,
         n.output.as_deref(),
         n.timeout,

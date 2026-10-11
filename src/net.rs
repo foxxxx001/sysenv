@@ -16,12 +16,14 @@
 //! - `test`: GET each address and probe reachability only; unreachable
 //!   addresses are reported on screen and removed from the source lines, then
 //!   the cleaned source (kept lines verbatim) is written to `-o`.
+//! - `info`: query domain registration info via RDAP for each `-n DOMAIN`;
+//!   when a name has no registration data, its parent domain is tried next.
 //!
 //! `-o FILE` writes every address that passed (reachable + format matched) to
 //! FILE, one per line (file modes) or url + `#` info line (tv mode), or the
 //! cleaned source lines (test mode).
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use std::collections::HashSet;
 use std::error::Error as _;
 use std::path::Path;
@@ -43,6 +45,10 @@ pub enum NetType {
     /// the source lines, and the cleaned result is written to `-o`
     #[value(name = "test")]
     Test,
+    /// Query domain registration info via RDAP (-n DOMAIN); when a name has
+    /// no registration data, fall back to its parent domain
+    #[value(name = "info")]
+    Info,
 }
 
 /// Default per-request timeout in seconds.
@@ -936,7 +942,7 @@ fn cmd_test(
 // Entry point
 // ---------------------------------------------------------------------------
 
-/// `sys net -i FILE [-t domain|json|file|test] [-o FILE] [--timeout SECONDS] [-x SUFFIX ...] [--sort KEY ...]`
+/// `sys net -i FILE [-t domain|tv|file|test] [-o FILE] [--timeout SECONDS] [-x SUFFIX ...] [--sort KEY ...]` or `sys net -t info -n DOMAIN ...`
 pub fn cmd_net(
     input: &Path,
     kind: NetType,
@@ -993,7 +999,247 @@ pub fn cmd_net(
             }
             cmd_test(&client, input, output, &excludes)
         }
+        NetType::Info => {
+            bail!("`-t info` reads -n DOMAIN, not -i; use `sys net -t info -n example.com`")
+        }
     }
+}
+
+/// `sys net -t info -n DOMAIN ...`: query RDAP registration info for each
+/// domain; when a name has no registration data, fall back to its parent
+/// domain (a.b.example.com → b.example.com → example.com).
+pub fn cmd_net_info(names: &[String], timeout_secs: f64) -> Result<()> {
+    if !(timeout_secs > 0.0) || !timeout_secs.is_finite() {
+        bail!("--timeout must be a positive number of seconds");
+    }
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs_f64(timeout_secs))
+        .user_agent(RDAP_USER_AGENT)
+        .build()
+        .context("cannot build HTTP client")?;
+    let out = cmd_info_with_base(&client, names, RDAP_BASE)?;
+    print!("{out}");
+    Ok(())
+}
+
+/// RDAP bootstrap service (redirects to the registry for each TLD).
+const RDAP_BASE: &str = "https://rdap.org/domain/";
+
+/// Some registries (e.g. Verisign) reject non-browser user agents; use a
+/// generic browser UA for RDAP lookups.
+const RDAP_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
+
+/// Registration info extracted from an RDAP domain object.
+struct RdapInfo {
+    registrar: Option<String>,
+    created: Option<String>,
+    expires: Option<String>,
+    status: Vec<String>,
+    nameservers: Vec<String>,
+}
+
+/// Extract the parent domain (leftmost label dropped): `a.b.example.com` →
+/// `b.example.com` → `example.com` → `com` → None.
+fn parent_domain(d: &str) -> Option<String> {
+    let idx = d.find('.')?;
+    let parent = d[idx + 1..].trim();
+    if parent.is_empty() {
+        None
+    } else {
+        Some(parent.to_string())
+    }
+}
+
+/// Look up one domain via RDAP. `Ok(Some(info))` = registration data found;
+/// `Ok(None)` = the registry answered but has no data for this name (parent
+/// should be tried); `Err(e)` = the lookup itself failed.
+fn rdap_lookup(
+    client: &reqwest::blocking::Client,
+    base: &str,
+    domain: &str,
+) -> Result<Option<RdapInfo>> {
+    let url = format!("{base}{domain}");
+    match request(client, &url, true) {
+        Ok((status, _, Some(body))) => {
+            if status == 404 {
+                return Ok(None);
+            }
+            match serde_json::from_slice::<serde_json::Value>(&body) {
+                Ok(v) => Ok(Some(parse_rdap(&v))),
+                Err(e) => {
+                    let preview = String::from_utf8_lossy(&body[..body.len().min(200)]);
+                    Err(anyhow!(
+                        "rdap response for {domain} is not valid JSON (status {status}): {preview} (parse error: {e})"
+                    ))
+                }
+            }
+        }
+        Ok((status, _, None)) => Err(anyhow!("rdap response for {domain} has no body (status {status})")),
+        Err(e) => Err(anyhow!("rdap lookup for {domain} failed: {e}")),
+    }
+}
+
+/// Extract the useful fields from an RDAP domain object.
+fn parse_rdap(v: &serde_json::Value) -> RdapInfo {
+    let event_date = |action: &str| -> Option<String> {
+        v.get("events")
+            .and_then(|e| e.as_array())
+            .and_then(|arr| {
+                arr.iter().find(|e| {
+                    e.get("eventAction")
+                        .and_then(|a| a.as_str())
+                        .map(|a| a == action)
+                        .unwrap_or(false)
+                })
+            })
+            .and_then(|e| e.get("eventDate"))
+            .and_then(|d| d.as_str())
+            .map(|s| s.to_string())
+    };
+    let entity_fn = |role: &str| -> Option<String> {
+        v.get("entities")
+            .and_then(|e| e.as_array())
+            .and_then(|arr| {
+                arr.iter().find(|e| {
+                    e.get("roles")
+                        .and_then(|r| r.as_array())
+                        .map(|rs| rs.iter().any(|x| x.as_str() == Some(role)))
+                        .unwrap_or(false)
+                })
+            })
+            .and_then(|e| e.get("vcardArray"))
+            .and_then(|va| va.as_array())
+            .and_then(|va| va.get(1))
+            .and_then(|arr| arr.as_array())
+            .and_then(|arr| {
+                arr.iter().find(|f| {
+                    f.as_array()
+                        .and_then(|fa| fa.first())
+                        .and_then(|x| x.as_str())
+                        == Some("fn")
+                })
+            })
+            .and_then(|f| f.as_array())
+            .and_then(|fa| fa.get(3))
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string())
+    };
+    let nameservers = v
+        .get("nameservers")
+        .and_then(|n| n.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|ns| ns.get("ldhName").and_then(|n| n.as_str()))
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let status = v
+        .get("status")
+        .and_then(|s| s.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str())
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    RdapInfo {
+        registrar: entity_fn("registrar"),
+        created: event_date("registration"),
+        expires: event_date("expiration"),
+        status,
+        nameservers,
+    }
+}
+
+/// Format one domain's registration info, noting the fallback source when the
+/// requested name itself had no data (or its lookup failed).
+fn format_info(queried: &str, resolved: &str, fallback: Option<&str>, info: &RdapInfo) -> String {
+    let mut s = String::new();
+    if let Some(reason) = fallback {
+        s.push_str(&format!("{queried}: {reason}, using parent {resolved}\n"));
+    } else {
+        s.push_str(resolved);
+        s.push('\n');
+    }
+    if let Some(r) = &info.registrar {
+        s.push_str(&format!("  Registrar:   {r}\n"));
+    }
+    if let Some(c) = &info.created {
+        s.push_str(&format!("  Created:     {c}\n"));
+    }
+    if let Some(e) = &info.expires {
+        s.push_str(&format!("  Expires:     {e}\n"));
+    }
+    if !info.status.is_empty() {
+        s.push_str(&format!("  Status:      {}\n", info.status.join(", ")));
+    }
+    if info.nameservers.is_empty() {
+        s.push_str("  Nameservers: (none)\n");
+    } else {
+        s.push_str(&format!("  Nameservers: {}\n", info.nameservers.join(", ")));
+    }
+    s
+}
+
+/// `-t info`: for each name, walk down the parent chain until registration
+/// data is found or the chain is exhausted. A 404 (no data) *and* a failed
+/// lookup both fall back to the parent. Returns the screen text.
+fn cmd_info_with_base(
+    client: &reqwest::blocking::Client,
+    names: &[String],
+    base: &str,
+) -> Result<String> {
+    if names.is_empty() {
+        bail!("`-t info` requires at least one `-n DOMAIN` (e.g. `sys net -t info -n example.com`)");
+    }
+    let mut out = String::new();
+    for raw in names {
+        let mut current = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+        if current.is_empty() {
+            out.push_str("(empty domain name)\n");
+            continue;
+        }
+        let mut tried: Vec<String> = Vec::new();
+        let mut last_err: Option<String> = None;
+        loop {
+            tried.push(current.clone());
+            match rdap_lookup(client, base, &current) {
+                Ok(Some(info)) => {
+                    let fallback = match last_err.take() {
+                        Some(e) => Some(format!("lookup on {0} failed ({e})", tried[0])),
+                        None if tried.len() > 1 => Some("no registration data".to_string()),
+                        None => None,
+                    };
+                    out.push_str(&format_info(&tried[0], &current, fallback.as_deref(), &info));
+                    break;
+                }
+                Ok(None) => {}
+                Err(e) => last_err = Some(e.to_string()),
+            }
+            match parent_domain(&current) {
+                Some(parent) => current = parent,
+                None => {
+                    match last_err {
+                        Some(e) => out.push_str(&format!(
+                            "{}: lookup failed (checked: {}), error: {e}\n",
+                            tried[0],
+                            tried.join(", ")
+                        )),
+                        None => out.push_str(&format!(
+                            "{}: no registration info found (checked: {})\n",
+                            tried[0],
+                            tried.join(", ")
+                        )),
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Sort keys for `-t json --sort KEY ...`, applied in the given order.
@@ -1620,6 +1866,160 @@ mod tests {
         assert_eq!(content.lines().count(), 2, "one url + one # line: {content:?}");
         assert_eq!(content.lines().next().unwrap(), good.as_str());
         assert!(content.lines().nth(1).unwrap().starts_with("# count="));
+    }
+
+    // --- -t info ---
+
+    /// A tiny RDAP mock: serves `(status, body)` per request path under
+    /// `/domain/<name>`, answering `n` connections then shutting down.
+    fn spawn_rdap_mock(routes: &[(&str, u16, &[u8])], n: usize) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let routes: Vec<(String, u16, Vec<u8>)> = routes
+            .iter()
+            .map(|(p, s, b)| (p.to_string(), *s, b.to_vec()))
+            .collect();
+        std::thread::spawn(move || {
+            for _ in 0..n {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let req = String::from_utf8_lossy(&buf);
+                let path = req.split_whitespace().nth(1).unwrap_or("/");
+                if let Some((_, status, body)) = routes.iter().find(|(p, _, _)| p == path) {
+                    let reason = if *status == 200 { "OK" } else { "Not Found" };
+                    let head = format!(
+                        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/rdap+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(body);
+                } else {
+                    let body = b"not found";
+                    let head = format!(
+                        "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(body);
+                }
+                let _ = stream.flush();
+            }
+        });
+        format!("http://{addr}/domain/")
+    }
+
+    const RDAP_JSON: &[u8] = br#"{
+      "ldhName": "EXAMPLE.COM",
+      "status": ["client delete prohibited", "client transfer prohibited"],
+      "events": [
+        {"eventAction":"registration","eventDate":"1995-08-14T04:00:00Z"},
+        {"eventAction":"expiration","eventDate":"2026-08-13T04:00:00Z"}
+      ],
+      "entities": [
+        {"roles":["registrar"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","RESERVED-Internet Assigned Numbers Authority"]]]},
+        {"roles":["registrant"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Domain Administrator"]]]}
+      ],
+      "nameservers": [{"ldhName":"a.iana-servers.net"},{"ldhName":"b.iana-servers.net"}]
+    }"#;
+
+    #[test]
+    fn parent_domain_strips_leftmost_label() {
+        assert_eq!(
+            parent_domain("www.example.com"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(parent_domain("example.com"), Some("com".to_string()));
+        assert_eq!(parent_domain("com"), None);
+    }
+
+    #[test]
+    fn parse_rdap_extracts_fields() {
+        let v: serde_json::Value = serde_json::from_slice(RDAP_JSON).unwrap();
+        let info = parse_rdap(&v);
+        assert_eq!(
+            info.registrar.as_deref(),
+            Some("RESERVED-Internet Assigned Numbers Authority")
+        );
+        assert_eq!(info.created.as_deref(), Some("1995-08-14T04:00:00Z"));
+        assert_eq!(info.expires.as_deref(), Some("2026-08-13T04:00:00Z"));
+        assert_eq!(info.status.len(), 2);
+        assert_eq!(
+            info.nameservers,
+            vec!["a.iana-servers.net".to_string(), "b.iana-servers.net".to_string()]
+        );
+    }
+
+    #[test]
+    fn info_mode_falls_back_to_parent() {
+        let base = spawn_rdap_mock(
+            &[
+                ("/domain/www.example.com", 404, b"not found"),
+                ("/domain/example.com", 200, RDAP_JSON),
+            ],
+            2,
+        );
+        let client = test_client();
+        let out = cmd_info_with_base(&client, &["www.example.com".to_string()], &base).unwrap();
+        assert!(
+            out.contains("www.example.com: no registration data, using parent example.com"),
+            "{out}"
+        );
+        assert!(out.contains("Registrar:   RESERVED-Internet Assigned Numbers Authority"));
+        assert!(out.contains("Created:     1995-08-14T04:00:00Z"));
+    }
+
+    #[test]
+    fn info_mode_reports_no_data_when_chain_exhausted() {
+        let base = spawn_rdap_mock(&[("/domain/example.com", 404, b"nf")], 2);
+        let client = test_client();
+        let out = cmd_info_with_base(&client, &["example.com".to_string()], &base).unwrap();
+        assert!(
+            out.contains("no registration info found (checked: example.com, com)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn info_mode_falls_back_on_lookup_error() {
+        // A failed lookup (500 + non-JSON body) on the child also falls back
+        // to the parent, and the fallback reason is annotated.
+        let base = spawn_rdap_mock(
+            &[
+                ("/domain/www.example.com", 500, b"oops"),
+                ("/domain/example.com", 200, RDAP_JSON),
+            ],
+            2,
+        );
+        let client = test_client();
+        let out = cmd_info_with_base(&client, &["www.example.com".to_string()], &base).unwrap();
+        assert!(
+            out.contains("www.example.com: lookup on www.example.com failed"),
+            "{out}"
+        );
+        assert!(out.contains("using parent example.com"), "{out}");
+        assert!(out.contains("Registrar:   RESERVED-Internet Assigned Numbers Authority"));
+    }
+
+    #[test]
+    fn info_mode_direct_hit_and_multiple_names() {
+        let base = spawn_rdap_mock(
+            &[
+                ("/domain/example.com", 200, RDAP_JSON),
+                ("/domain/example.org", 200, RDAP_JSON),
+            ],
+            2,
+        );
+        let client = test_client();
+        let out = cmd_info_with_base(
+            &client,
+            &["example.com".to_string(), "example.org".to_string()],
+            &base,
+        )
+        .unwrap();
+        assert!(out.contains("example.com"), "{out}");
+        assert!(out.contains("example.org"), "{out}");
+        assert!(!out.contains("using parent"), "{out}");
     }
 
     // --- -t json --sort ---

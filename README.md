@@ -58,7 +58,7 @@ Commands:
 | 格式转换      | `con`                | json / csv / md / yaml 互转：默认读 stdin（`cat a.json | sys con`），`-file` 读文件，`-i` 输入格式，`-o` 输出格式，`-out` 写文件；表格类转对象数组（类型推断 + 转义） |
 | 联网搜索      | `search`             | 博查 AI 网页搜索 API（`POST api.bochaai.com/v1/web-search`）：`--freshness`（时间过滤）/ `--summary`（AI 摘要）/ `--count`（1-50）/ `--page` / `--include-domains` / `--exclude-domains`（域名白黑名单），参数与官网接口一致；key 取自配置 `search` 段；`--json` 原始响应 / `--debug` 请求与响应。`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡（`--no-answer` 关闭 AI 答案） |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
-| 网络探测      | `net`                | 从文件批量读取 http(s) 地址并探测：`-i` 读文件（`#` 注释行跳过、每行多个地址、地址截取到空格/标点）；`-t domain`（默认，连续 3 次 GET 取平均响应时间，全部测完按平均时间升序打印）/ `-t tv`（响应体须为 JSON，支持 `--sort` 统计排序；旧名 `json`）/ `-t file`（响应体须为普通文本）/ `-t test`（只探测可访问性，不可访问的屏幕打印错误并从源文件删除，`-o` 输出清理后的源文件行）；tv/file 模式每测完一个即打印 url/可用性/状态码/响应时间/格式，`-o` 把检测成功的 url 写入文件（一行一个）；`--timeout` 单次请求超时 |
+| 网络探测      | `net`                | 从文件批量读取 http(s) 地址并探测：`-i` 读文件（`#` 注释行跳过、每行多个地址、地址截取到空格/标点）；`-t domain`（默认，连续 3 次 GET 取平均响应时间，全部测完按平均时间升序打印）/ `-t tv`（响应体须为 JSON，支持 `--sort` 统计排序；旧名 `json`）/ `-t file`（响应体须为普通文本）/ `-t test`（只探测可访问性，不可访问的屏幕打印错误并从源文件删除，`-o` 输出清理后的源文件行）/ `-t info`（用 `-n` 域名查 RDAP 注册信息，查不到逐层回退上层域名）；tv/file 模式每测完一个即打印 url/可用性/状态码/响应时间/格式，`-o` 把检测成功的 url 写入文件（一行一个）；`--timeout` 单次请求超时 |
 | 快捷垫片      | `short`              | 一键安装九种短命令（spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon）；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
 
 
@@ -863,6 +863,8 @@ sys short --temporary  # 不持久化 PATH，只打印可粘贴的片段
   * `-o FILE`：把**删除后的源文件结果**写入指定文件（保留的行按原顺序、原文本），一行一行
   * `-x SUFFIX`（可重复，如 `-x m3u -x zip`）：文件名后缀匹配（大小写不敏感，前导点可省略）的地址**不发起检测、直接删除**——例如 `-x m3u` 时 `https://www.main.com/123.m3u` 被直接删除；单地址行整体删除，多地址行只删该地址，打印 `[X] <url> excluded (-x m3u)`。仅在 `-t test` 模式生效，其他模式忽略并提示 warning
 
+* `-t info`：通过 RDAP（`rdap.org` 引导）查询 `-n DOMAIN` 的**注册信息**——注册商 / 创建时间 / 到期时间 / 状态 / 域名服务器；若该域名查不到注册数据，自动**逐层回退到其上层域名**（`a.b.example.com` → `b.example.com` → `example.com`），打印时标注 `no registration data, using parent ...`；`-n` 可重复（`-n a.com -n b.com`），此模式不需要 `-i`（`-o` / `-x` / `--sort` 忽略并 warning）
+
 * tv / file 模式**每测完一个立即打印**一条结果：URL / 是否可用 / 状态码 / 响应时间 / 实际格式（json / text / binary）
 
 * `-o FILE`：把**检测成功**（地址可访问且格式符合 `-t` 要求）的 url 写入指定文件（仅 tv / file 模式有效）
@@ -885,6 +887,8 @@ sys net -i urls.txt -t tv -o ok.json.txt   # JSON 统计排序输出（--sort co
 sys net -i urls.txt -t file -o ok.txt      # 只把返回普通文本的可用地址写入文件
 sys net -i urls.txt -t test -o clean.txt   # 探测可访问性，不可访问打印错误并从源文件删除，结果写入 clean.txt
 sys net -i urls.txt -t tv --timeout 5      # 单次请求超时 5 秒
+sys net -t info -n www.example.com         # 查域名注册信息；查不到自动回退上层域名
+sys net -t info -n a.com -n b.com          # 一次查多个域名
 ```
 
 ***

@@ -2,6 +2,15 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.54（2026-10-11）
+
+### 变更
+- `sys net` 新增 **`-t info`**：通过 RDAP（`rdap.org` 引导，HTTP/JSON，复用现有 reqwest）查询 `-n DOMAIN` 的注册信息——注册商 / 创建时间 / 到期时间 / 状态 / 域名服务器；**查不到该域名的注册数据时逐层回退到上层域名**（`a.b.example.com` → `b.example.com` → `example.com`），打印标注 `no registration data, using parent ...`；全链查不到打印 `no registration info found (checked: ...)`；`-n` 可重复
+- `-i` 改为可选（info 模式用 `-n`，其他模式仍必填，缺省报错提示）；`-t info` 不需要 `-i`，`-o` / `-x` / `--sort` 忽略并 warning
+- 新增 5 个单测（parent_domain 剥离、RDAP 字段解析、回退到父域、链耗尽无数据、多域名直查——本地 mock RDAP 服务器）；`cargo test` 204 项全绿
+
+---
+
 ## v0.4.53（2026-10-11）
 
 ### 变更
