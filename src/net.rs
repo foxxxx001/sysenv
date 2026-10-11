@@ -1344,6 +1344,25 @@ fn parent_domain(d: &str) -> Option<String> {
 /// Look up one domain via RDAP. `Ok(Some(info))` = registration data found;
 /// `Ok(None)` = the registry answered but has no data for this name (parent
 /// should be tried); `Err(e)` = the lookup itself failed.
+/// Find the registrar-level RDAP url advertised by a registry response: the
+/// `links` entry with `rel == "related"` and an `application/rdap+json` type
+/// (ICANN profile — registries often hide the registrant, the registrar's own
+/// RDAP server carries the full entity).
+fn related_rdap_url(v: &serde_json::Value) -> Option<String> {
+    v.get("links")?
+        .as_array()?
+        .iter()
+        .find(|l| {
+            l.get("rel").and_then(|r| r.as_str()) == Some("related")
+                && l.get("type")
+                    .and_then(|t| t.as_str())
+                    .map(|t| t.contains("rdap+json"))
+                    .unwrap_or(false)
+        })
+        .and_then(|l| l.get("href").and_then(|h| h.as_str()))
+        .map(|s| s.to_string())
+}
+
 fn rdap_lookup(
     client: &reqwest::blocking::Client,
     base: &str,
@@ -1356,7 +1375,28 @@ fn rdap_lookup(
                 return Ok(None);
             }
             match serde_json::from_slice::<serde_json::Value>(&body) {
-                Ok(v) => Ok(Some(parse_rdap(&v))),
+                Ok(v) => {
+                    let info = parse_rdap(&v);
+                    // The registry response often hides the registrant; when
+                    // no registrant entity is present, follow the advertised
+                    // registrar-level RDAP link and prefer its (fuller) data.
+                    if info.registrant.is_none() && info.org.is_none() {
+                        if let Some(rel) = related_rdap_url(&v) {
+                            if let Ok((s2, _, Some(b2))) = request(client, &rel, true) {
+                                if s2 == 200 {
+                                    if let Ok(v2) = serde_json::from_slice::<serde_json::Value>(&b2)
+                                    {
+                                        let info2 = parse_rdap(&v2);
+                                        if info2.registrant.is_some() || info2.org.is_some() {
+                                            return Ok(Some(info2));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(Some(info))
+                }
                 Err(e) => {
                     let preview = String::from_utf8_lossy(&body[..body.len().min(200)]);
                     Err(anyhow!(
@@ -1374,6 +1414,13 @@ fn rdap_lookup(
 /// entity whose `roles` contain `role` (e.g. "registrant", "registrar").
 /// Returns the raw value (string, or the adr array) when present.
 fn entity_field(v: &serde_json::Value, role: &str, field: &str) -> Option<serde_json::Value> {
+    entity_row(v, role, field).and_then(|row| row.get(3).cloned())
+}
+
+/// Locate the vCard row for `field` inside the entity whose `roles` contain
+/// `role`; returns the whole row array (field name, params object, type,
+/// value) so callers can read both the value and its parameters.
+fn entity_row(v: &serde_json::Value, role: &str, field: &str) -> Option<serde_json::Value> {
     v.get("entities")?
         .as_array()?
         .iter()
@@ -1395,8 +1442,6 @@ fn entity_field(v: &serde_json::Value, role: &str, field: &str) -> Option<serde_
                     == Some(field)
             })
         })
-        .and_then(|f| f.as_array())
-        .and_then(|fa| fa.get(3))
         .cloned()
 }
 
@@ -1452,6 +1497,18 @@ fn parse_rdap(v: &serde_json::Value) -> RdapInfo {
     let text_field = |role: &str, field: &str| -> Option<String> {
         entity_field(v, role, field).and_then(|x| x.as_str().map(|s| s.to_string()))
     };
+    // The adr vCard row is `["adr", {params}, "text", [value...]]`; the
+    // country is often carried as the `cc` parameter (e.g. `{"cc":"CN"}`)
+    // rather than in the value array.
+    let adr_row = entity_row(v, "registrant", "adr");
+    let adr_cc = adr_row
+        .as_ref()
+        .and_then(|row| row.get(1))
+        .and_then(|p| p.get("cc"))
+        .and_then(|c| c.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let adr_val = adr_row.as_ref().and_then(|row| row.get(3));
     let nameservers = v
         .get("nameservers")
         .and_then(|n| n.as_array())
@@ -1477,10 +1534,8 @@ fn parse_rdap(v: &serde_json::Value) -> RdapInfo {
         registrant: text_field("registrant", "fn"),
         org: text_field("registrant", "org"),
         email: text_field("registrant", "email"),
-        address: entity_field(v, "registrant", "adr")
-            .and_then(|a| format_address(&a)),
-        country: entity_field(v, "registrant", "adr")
-            .and_then(|a| adr_country(&a)),
+        address: adr_val.and_then(|a| format_address(a)),
+        country: adr_cc.or_else(|| adr_val.and_then(|a| adr_country(a))),
         created: event_date("registration"),
         expires: event_date("expiration"),
         status,
@@ -2327,6 +2382,53 @@ mod tests {
         assert!(info.address.is_none());
         assert!(info.country.is_none());
         assert_eq!(info.created.as_deref(), Some("1995-08-14T04:00:00Z"));
+    }
+
+    #[test]
+    fn parse_rdap_uses_adr_cc_param_for_country() {
+        // Some registrars (e.g. MarkMonitor) carry the country as the `cc`
+        // parameter of the adr row instead of the 7th value component.
+        let body = r#"{
+              "entities":[
+                {"roles":["registrant"],"vcardArray":["vcard",[
+                  ["version",{},"text","4.0"],
+                  ["fn",{},"text","REDACTED REGISTRANT"],
+                  ["org",{"type":"work"},"text","广州网易计算机系统有限公司"],
+                  ["adr",{"cc":"CN"},"text",["","","REDACTED","REDACTED","","REDACTED",""]]
+                ]]}
+              ]
+            }"#;
+        let v: serde_json::Value = serde_json::from_str(body).unwrap();
+        let info = parse_rdap(&v);
+        assert_eq!(info.org.as_deref(), Some("广州网易计算机系统有限公司"));
+        assert_eq!(info.country.as_deref(), Some("CN"));
+        // The 7th value component is empty, so cc must be the source.
+        assert_eq!(info.address.as_deref(), Some("REDACTED, REDACTED, REDACTED"));
+    }
+
+    #[test]
+    fn info_mode_follows_related_registrar_rdap_link() {
+        // A registry response without a registrant entity advertises a
+        // `related` application/rdap+json link; the registrar-level response
+        // carries the full registrant/org and must be used instead.
+        let registrar = spawn_rdap_mock(&[("/domain/registrar-data", 200, RDAP_JSON)], 1);
+        let registry_json = format!(
+            r#"{{"links":[{{"rel":"self","href":"http://reg/domain/example.com","type":"application/rdap+json"}},
+                {{"rel":"related","href":"{registrar}registrar-data","type":"application/rdap+json"}}],
+              "status":[],"events":[],"nameservers":[]}}"#
+        );
+        let registry = spawn_rdap_mock(
+            &[("/domain/example.com", 200, registry_json.as_bytes())],
+            1,
+        );
+        let client = test_client();
+        let out = cmd_info_with_base(&client, &["example.com".to_string()], &registry).unwrap();
+        assert!(
+            out.contains("Registrant:  Domain Administrator"),
+            "{out}"
+        );
+        assert!(out.contains("Org:         Example Org Co."), "{out}");
+        assert!(out.contains("Country:     US"), "{out}");
     }
 
     #[test]

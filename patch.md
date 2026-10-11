@@ -2,6 +2,15 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.59（2026-10-11）
+
+### 变更
+- `sys net -t info` 补全注册主体：registry 层（Verisign 等）的 RDAP 响应常隐藏 registrant 实体，但响应中的 `related`（application/rdap+json）链接指向注册商级 RDAP——现在**自动跟随该链接**并用更完整的实体数据（如 `www.163.com` → 回退 163.com → Verisign 无主体 → 跟随 MarkMonitor → 输出 `Org: 广州网易计算机系统有限公司`）
+- 国家/地区提取增强：优先取 vCard `adr` 行的 `cc` 参数（MarkMonitor 风格 `{"cc":"CN"}`），其次值数组第 7 位，最后兜底最后一个非空组件
+- 新增 2 个单测（adr cc 参数国家提取、related 链接跟随双服务器 mock）；`cargo test` 213 项全绿
+
+---
+
 ## v0.4.58（2026-10-11）
 
 ### 变更

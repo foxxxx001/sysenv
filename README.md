@@ -869,7 +869,7 @@ sys short --temporary  # 不持久化 PATH，只打印可粘贴的片段
   * `-o FILE`：把**删除后的源文件结果**写入指定文件（保留的行按原顺序、原文本），一行一行
   * `-x SUFFIX`（可重复，如 `-x m3u -x zip`）：文件名后缀匹配（大小写不敏感，前导点可省略）的地址**不发起检测、直接删除**——例如 `-x m3u` 时 `https://www.main.com/123.m3u` 被直接删除；单地址行整体删除，多地址行只删该地址，打印 `[X] <url> excluded (-x m3u)`。仅在 `-t test` 模式生效，其他模式忽略并提示 warning
 
-* `-t info`：通过 RDAP（`rdap.org` 引导）查询 `-n DOMAIN` 的**注册信息**——注册商 / 注册主体（注册人 registrant + 注册组织 org）/ 邮箱 / 地址 / **国家/地区（Country）** / 创建时间 / 到期时间 / 状态 / 域名服务器；若该域名查不到注册数据，自动**逐层回退到其上层域名**（`a.b.example.com` → `b.example.com` → `example.com`），打印时标注 `no registration data, using parent ...`；`-n` 可重复（`-n a.com -n b.com`），此模式不需要 `-i`（`-o` / `-x` / `--sort` 忽略并 warning）
+* `-t info`：通过 RDAP（`rdap.org` 引导）查询 `-n DOMAIN` 的**注册信息**——注册商 / 注册主体（注册人 registrant + 注册组织 org）/ 邮箱 / 地址 / **国家/地区（Country）** / 创建时间 / 到期时间 / 状态 / 域名服务器；若 registry 响应不返回注册主体，自动**跟随响应中的 related RDAP 链接**（ICANN profile：注册商级 RDAP 服务器携带完整实体，如 163.com → MarkMonitor → 广州网易计算机系统有限公司）；若该域名查不到注册数据，自动**逐层回退到其上层域名**（`a.b.example.com` → `b.example.com` → `example.com`），打印时标注 `no registration data, using parent ...`；`-n` 可重复（`-n a.com -n b.com`），此模式不需要 `-i`（`-o` / `-x` / `--sort` 忽略并 warning）
 
 * tv / tvs 模式**多地址并行探测**：`--thread NUM` 指定一次并行测试多少个地址（默认 **CPU 内核数量**）；每个地址测完立即在屏幕打印一条 `[OK]` / `[FMT]` / `[NO]` 结果（含状态码与响应时间），全部完成后输出排序分组结果与汇总行
 
