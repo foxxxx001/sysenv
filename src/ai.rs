@@ -1215,10 +1215,28 @@ struct ProviderInfoRow {
     docs: String,
     /// Official web console URL of the provider ("" when unknown).
     console: String,
+    /// Example request against the provider's own models API, e.g.
+    /// `https://openrouter.ai/api/v1/models  Authorization:"Bearer sk-sample"`.
+    sample: String,
+}
+
+/// Example request hitting the provider's models endpoint with its key,
+/// matching `models_url` (OpenAI-compatible vs Anthropic header).
+fn provider_sample_request(p: &chat::Provider) -> String {
+    let url = models_url(p);
+    if p.kind == "anthropic" {
+        format!(
+            "{url}  x-api-key:\"{}\" anthropic-version:\"{}\"",
+            p.api_key,
+            chat::ANTHROPIC_VERSION
+        )
+    } else {
+        format!("{url}  Authorization:\"Bearer {}\"", p.api_key)
+    }
 }
 
 /// Markdown unordered-list view of `info provider` rows (`-o md`):
-/// `- name` with `api_base / api_key / console / docs` children.
+/// `- name` with `api_base / api_key / console / docs / sample` children.
 fn md_provider_list(rows: &[ProviderInfoRow]) -> String {
     let mut s = String::new();
     for r in rows {
@@ -1227,6 +1245,7 @@ fn md_provider_list(rows: &[ProviderInfoRow]) -> String {
         s.push_str(&format!("  - api_key：{}\n", md_cell(&r.api_key)));
         s.push_str(&format!("  - console：{}\n", md_cell(&r.console)));
         s.push_str(&format!("  - docs：{}\n", md_cell(&r.docs)));
+        s.push_str(&format!("  - sample：{}\n", md_cell(&r.sample)));
     }
     s
 }
@@ -1318,6 +1337,7 @@ fn info_provider_rows(cfg: &chat::Config, keyword: Option<&str>) -> Result<Vec<P
                 api_key: p.api_key.clone(),
                 docs,
                 console,
+                sample: provider_sample_request(p),
             }
         })
         .collect();
@@ -1648,6 +1668,7 @@ pub fn cmd_info(
                                 "api_key": r.api_key,
                                 "docs": r.docs,
                                 "console": r.console,
+                                "sample": r.sample,
                             })
                         })
                         .collect();
@@ -1684,6 +1705,7 @@ pub fn cmd_info(
                                 "api_key": r.api_key,
                                 "docs": r.docs,
                                 "console": r.console,
+                                "sample": r.sample,
                             })
                         })
                         .collect();
@@ -1723,15 +1745,16 @@ pub fn cmd_info(
                                 "api_key": r.api_key,
                                 "docs": r.docs,
                                 "console": r.console,
+                                "sample": r.sample,
                             })
                         })
                         .collect();
                     println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
                 }
                 Some(OutFormat::Csv) => {
-                    println!("name,api_base,api_key,docs,console");
+                    println!("name,api_base,api_key,docs,console,sample");
                     for r in &rows {
-                        println!("{},{},{},{},{}", r.name, r.api_base, r.api_key, r.docs, r.console);
+                        println!("{},{},{},{},{},{}", r.name, r.api_base, r.api_key, r.docs, r.console, r.sample);
                     }
                 }
                 Some(OutFormat::Md) => {
@@ -4054,6 +4077,28 @@ mod tests {
     }
 
     #[test]
+    fn provider_sample_request_anthropic_uses_x_api_key() {
+        let p = chat::Provider {
+            kind: "anthropic".into(),
+            name: "claude".into(),
+            api_base: "https://api.anthropic.example.com".into(),
+            api_key: "sk-ant-test".into(),
+            models: vec![],
+        };
+        assert_eq!(
+            provider_sample_request(&p),
+            format!(
+                "https://api.anthropic.example.com/v1/models  x-api-key:\"sk-ant-test\" anthropic-version:\"{}\"",
+                chat::ANTHROPIC_VERSION
+            )
+        );
+        // api_base already ending in /v1 must not gain another /v1.
+        let mut p2 = p.clone();
+        p2.api_base = "https://api.anthropic.example.com/v1".into();
+        assert!(provider_sample_request(&p2).starts_with("https://api.anthropic.example.com/v1/models"));
+    }
+
+    #[test]
     fn md_table_renders_escaping_and_separator() {
         let t = md_table(&["a", "b"], &[vec!["x|y".to_string(), "line\nbreak".to_string()]]);
         let lines: Vec<&str> = t.lines().collect();
@@ -4081,8 +4126,9 @@ mod tests {
         let list = md_provider_list(&rows);
         assert_eq!(
             list,
-            "- agnes\n  - api_base：https://apihub.example.cn/v1\n  - api_key：sk-test-0000\n  - console：https://platform.agnes-ai.cn\n  - docs：https://wiki.agnes-ai.cn/zh-Hans/docs\n"
+            "- agnes\n  - api_base：https://apihub.example.cn/v1\n  - api_key：sk-test-0000\n  - console：https://platform.agnes-ai.cn\n  - docs：https://wiki.agnes-ai.cn/zh-Hans/docs\n  - sample：https://apihub.example.cn/v1/models  Authorization:\"Bearer sk-test-0000\"\n"
         );
+        assert_eq!(rows[0].sample, "https://apihub.example.cn/v1/models  Authorization:\"Bearer sk-test-0000\"");
         // `info model -o md` groups children under each provider.
         let mods = info_model_rows(&cfg, None).unwrap();
         assert_eq!(md_model_list(&mods), "- agnes\n  - name：agnes-3.0-flash\n");

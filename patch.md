@@ -2,6 +2,17 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.65（2026-10-11）
+
+### 变更
+- `sys ai info provider` 每条信息新增 **`sample`** 字段：用该 provider 的 `api_base` / `api_key` 对其 models 接口的示例请求
+  - OpenAI 兼容：`https://{api_base}/models  Authorization:"Bearer {api_key}"`（如 `https://openrouter.ai/api/v1/models  Authorization:"Bearer sk-sample"`）
+  - Anthropic：`x-api-key:"{api_key}" anthropic-version:"2023-06-01"`
+  - 出现在默认 YAML 视图、`-o md` 列表（`sample：` 子项）、`-o json` / `-o csv`（新增 `sample` 列）与无字段组合视图的 JSON/YAML 中
+- 新增 2 个单测（md 列表 sample 行、anthropic x-api-key sample）；`cargo test` 221 项全绿
+
+---
+
 ## v0.4.64（2026-10-11）
 
 ### 变更
