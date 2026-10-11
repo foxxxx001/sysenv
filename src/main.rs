@@ -417,7 +417,8 @@ struct ChatArgs {
     #[arg(long, value_name = "N")]
     parallel: Option<usize>,
     /// With --test: delete the failed models from the config file instead of
-    /// setting weight to 0; providers left without any models are removed too
+    /// setting weight to 0 (the original config is backed up first); providers
+    /// left without any models are removed too
     #[arg(long, requires = "test")]
     remove: bool,
 }

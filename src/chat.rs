@@ -1172,13 +1172,23 @@ fn clean_top_level_model_selector(config_path: &Path) -> Result<()> {
         .with_context(|| format!("cannot write config `{}`", config_path.display()))
 }
 
-/// Apply `--remove` results: delete the failed model entries from the config,
-/// delete providers left without any models, and clean the top-level `model:`
-/// selector. `removals` holds (provider_idx, model_idx) into `cfg`.
+/// Apply `--remove` results: back up the original config, delete the failed
+/// model entries, delete providers left without any models, and clean the
+/// top-level `model:` selector. `removals` holds (provider_idx, model_idx)
+/// into `cfg`.
 fn apply_test_removals(cfg: &Config, path: &Path, removals: &[(usize, usize)]) -> Result<()> {
     if removals.is_empty() {
         return Ok(());
     }
+    // Back up the original config before deleting anything.
+    let backup = PathBuf::from(format!(
+        "{}.bak-{}",
+        path.display(),
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    ));
+    std::fs::copy(path, &backup)
+        .with_context(|| format!("cannot back up config to `{}`", backup.display()))?;
+    println!("sys: backed up original config to `{}`", backup.display());
     // Duplicate model names under one provider are targeted by occurrence.
     let mut occ: HashMap<(usize, String), usize> = HashMap::new();
     for &(pi, mi) in removals {
@@ -2985,18 +2995,25 @@ fn test_one(p: &Provider, m: &Model, msg: &str) -> Result<Duration> {
 /// `sys ai chat --test [MSG...] [-m MODEL] [--parallel N] [--remove]`
 ///
 /// Runs a streaming first-token chat test over the selected models (default:
-/// every configured model) in parallel (`--parallel` / the CPU core count)
-/// and prints each model's response time. Models that fail — no feedback,
-/// HTTP error such as 429, connection error, timeout — get their `weight`
-/// set to 0 in the config file; with `--remove` they are deleted from the
-/// config instead (providers left without any models are removed too).
+/// every configured model) and prints each model's response time the moment it
+/// completes. Models run in parallel: by default one worker per provider among
+/// the targets (capped at the CPU core count); `--parallel` overrides. Models
+/// that fail — no feedback, HTTP error such as 429, connection error, timeout
+/// — get their `weight` set to 0 in the config file; with `--remove` they are
+/// deleted from the config instead (the original config is backed up first;
+/// providers left without any models are removed too).
 fn chat_test(cfg: &Config, path: &Path, msg: &str, model_override: Option<&str>, parallel: Option<usize>, remove: bool) -> Result<()> {
     let targets = test_targets(cfg, model_override)?;
     let n = targets.len();
-    let workers = parallel
-        .unwrap_or_else(|| std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1))
-        .max(1)
-        .min(n);
+    let provider_count = {
+        let mut seen = std::collections::HashSet::new();
+        for t in &targets {
+            seen.insert(t.provider);
+        }
+        seen.len()
+    };
+    let cpu = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1);
+    let workers = test_worker_count(provider_count, n, cpu, parallel);
     let w = targets
         .iter()
         .map(|t| format!("{} / {}", cfg.providers[t.provider].name, cfg.providers[t.provider].models[t.model].name).chars().count())
@@ -3004,11 +3021,12 @@ fn chat_test(cfg: &Config, path: &Path, msg: &str, model_override: Option<&str>,
         .unwrap_or(8)
         .max(8);
 
-    println!("sys: testing {n} model(s) in parallel ({workers} worker(s)) with `{msg}`{}", if remove { " (--remove: failures deleted from config)" } else { "" });
+    println!("sys: testing {n} model(s) across {provider_count} provider(s) in parallel ({workers} worker(s)) with `{msg}`{}", if remove { " (--remove: failures deleted from config)" } else { "" });
 
-    // Worker pool: each worker pulls the next target index; results are
-    // collected in input order. Weight updates / removals are applied serially
-    // below so the config file is never written concurrently.
+    // Worker pool: each worker pulls the next target index and sends its result
+    // as soon as that single test finishes. The main thread prints each result
+    // immediately (completion order). Weight updates / removals are applied
+    // serially below so the config file is never written concurrently.
     let targets = &targets;
     let next = std::sync::Arc::new(std::sync::Mutex::new(0usize));
     let (tx, rx) = mpsc::channel::<(usize, Result<Duration>)>();
@@ -3034,20 +3052,15 @@ fn chat_test(cfg: &Config, path: &Path, msg: &str, model_override: Option<&str>,
         }
     });
     drop(tx);
-    let mut by_idx: Vec<Option<Result<Duration>>> = (0..n).map(|_| None).collect();
-    for (idx, r) in rx.iter() {
-        by_idx[idx] = Some(r);
-    }
-
     let mut ok = 0usize;
     let mut failed = 0usize;
     let mut removals: Vec<(usize, usize)> = Vec::new();
-    for (i, r) in by_idx.into_iter().enumerate() {
-        let t = targets[i];
+    for (idx, r) in rx.iter() {
+        let t = targets[idx];
         let p = &cfg.providers[t.provider];
         let m = &p.models[t.model];
         let name = format!("{} / {}", p.name, m.name);
-        match r.expect("every worker sends exactly one result per target") {
+        match r {
             Ok(elapsed) => {
                 ok += 1;
                 println!("[OK]   {:<w$}  first token in {:.2}s", name, elapsed.as_secs_f64());
@@ -3062,7 +3075,7 @@ fn chat_test(cfg: &Config, path: &Path, msg: &str, model_override: Option<&str>,
                     if m.weight != 0 {
                         // Duplicate model names under one provider are separate
                         // targets; zero the weight of this exact entry.
-                        let occ = targets[..i]
+                        let occ = targets[..idx]
                             .iter()
                             .filter(|x| {
                                 x.provider == t.provider
@@ -3089,6 +3102,16 @@ fn chat_test(cfg: &Config, path: &Path, msg: &str, model_override: Option<&str>,
         println!("sys: {ok}/{n} model(s) responded; {failed} failed (weight -> 0)");
     }
     Ok(())
+}
+
+/// Parallel worker count for `--test`: an explicit `--parallel` wins (capped at
+/// the number of targets); otherwise one worker per distinct provider among the
+/// targets, capped at the CPU core count.
+fn test_worker_count(provider_count: usize, target_count: usize, cpu: usize, user: Option<usize>) -> usize {
+    match user {
+        Some(p) => p.max(1).min(target_count.max(1)),
+        None => provider_count.max(1).min(cpu.max(1)),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4228,6 +4251,91 @@ clients:
         assert!(!t.contains("agnes") && !t.contains("m1"), "agnes not removed: {t}");
         assert!(t.contains("name: claude"), "claude damaged: {t}");
         assert!(!t.contains("model:"), "dangling top-level model left: {t}");
+    }
+
+    #[test]
+    fn apply_test_removals_backs_up_config_before_deleting() {
+        let p = tmp_config(
+            "rm-backup",
+            r#"clients:
+  - type: openai
+    name: agnes
+    api_base: https://x.example/v1
+    api_key: sk-test
+    models:
+      - name: m1
+      - name: m2
+"#,
+        );
+        let before = std::fs::read_to_string(&p).unwrap();
+        let cfg = config_from_yaml(&parse_yaml(&before).unwrap()).unwrap();
+        // Remove stale backups left by earlier runs in the shared temp dir.
+        let stem = std::path::Path::new(&p).file_stem().unwrap().to_string_lossy().to_string();
+        let dir = std::path::Path::new(&p).parent().unwrap();
+        for e in std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()) {
+            let n = e.file_name().to_string_lossy().to_string();
+            if n.starts_with(&stem) && n.contains(".bak-") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+        apply_test_removals(&cfg, &p, &[(0, 0)]).unwrap();
+        // The original config is preserved verbatim in a timestamped .bak-* copy
+        // named after this config file.
+        let backups: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|q| q.file_name().map(|n| n.to_string_lossy().starts_with(&stem)).unwrap_or(false))
+            .filter(|q| q.to_string_lossy().contains(".bak-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "expected exactly one backup: {backups:?}");
+        assert_eq!(
+            std::fs::read_to_string(&backups[0]).unwrap(),
+            before,
+            "backup content differs from original"
+        );
+        // And the live file was modified by the removal.
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert!(!after.contains("m1"), "m1 not removed: {after}");
+        assert!(after.contains("m2"), "m2 damaged: {after}");
+    }
+
+    #[test]
+    fn apply_test_removals_skips_backup_when_nothing_to_remove() {
+        let p = tmp_config(
+            "rm-nobackup",
+            r#"clients:
+  - type: openai
+    name: agnes
+    api_base: https://x.example/v1
+    api_key: sk-test
+    models:
+      - name: m1
+"#,
+        );
+        apply_test_removals(&Config { model: None, stream: false, providers: Vec::new(), tasks: Vec::new(), search: Vec::new() }, &p, &[]).unwrap();
+        let stem = std::path::Path::new(&p).file_stem().unwrap().to_string_lossy().to_string();
+        let dir = std::path::Path::new(&p).parent().unwrap();
+        let n = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&stem))
+            .count();
+        assert_eq!(n, 1, "no backup expected for empty removals");
+    }
+
+    #[test]
+    fn test_worker_count_defaults_to_provider_count_capped_at_cpu() {
+        // Default: one worker per provider, never above the CPU core count.
+        assert_eq!(test_worker_count(3, 9, 8, None), 3);
+        assert_eq!(test_worker_count(5, 5, 8, None), 5);
+        // CPU cap wins when providers exceed cores.
+        assert_eq!(test_worker_count(12, 20, 8, None), 8);
+        assert_eq!(test_worker_count(4, 4, 2, None), 2);
+        // Explicit --parallel overrides (capped at the target count).
+        assert_eq!(test_worker_count(3, 9, 8, Some(2)), 2);
+        assert_eq!(test_worker_count(3, 9, 8, Some(100)), 9);
+        assert_eq!(test_worker_count(3, 9, 8, Some(0)), 1);
     }
 
     #[test]
