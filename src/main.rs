@@ -421,6 +421,10 @@ struct ChatArgs {
     /// left without any models are removed too
     #[arg(long, requires = "test")]
     remove: bool,
+    /// Query a configured provider's model list through its {api_base}/v1/models
+    /// endpoint and exit (PROVIDER = a `name` under `clients`, e.g. modelscope)
+    #[arg(long, value_name = "PROVIDER")]
+    query_model: Option<String>,
 }
 
 /// `sys ai server [ADDR]` — serve the configured providers as an
@@ -896,6 +900,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             c.test,
             c.parallel,
             c.remove,
+            c.query_model.as_deref(),
         ),
         AiCmd::Server(s) => {
             let bind = server::parse_addr(s.addr.as_deref().unwrap_or(""));

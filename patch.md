@@ -2,6 +2,20 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.69（2026-10-11）
+
+### 新增
+- **`sys ai chat --query-model PROVIDER`：查询 provider 的模型列表**（调用其 `{api_base}/v1/models` 接口）：
+  - PROVIDER 为配置 `clients` 下的 provider 名称（如 `modelscope`）；不存在时列出可用 provider
+  - URL 拼法：`api_base` 已以 `/v1` 结尾则拼 `/models`，否则拼 `/v1/models`
+  - 认证与 chat 一致（openai 用 Bearer；anthropic 用 `x-api-key` + `anthropic-version`）；连接 10s / 总 30s 超时
+  - 响应解析：优先 `data[]`、回退 `models[]`，条目取 `id`（含可选 `owned_by`）；`error` 对象报错；解析前剥离 UTF-8 BOM；支持 `next_page` 分页（上限 20 页）；重复 id 去重
+  - 输出：`provider (kind) — url  (N model(s) via API)` 后跟每行 `- id`
+- 新增 7 个单测（models_url 拼法、data[]/models[] 解析、BOM 剥离与错误形状、本地 HTTP 抓取、403 报错、next_page 分页、未知 provider 报错）；`cargo test` 243 项全绿
+- 版本 0.4.68 -> 0.4.69
+
+---
+
 ## v0.4.68（2026-10-11）
 
 ### 新增

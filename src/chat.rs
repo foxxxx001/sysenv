@@ -43,6 +43,9 @@ const STREAM_TIMEOUT: Duration = Duration::from_secs(600);
 /// test (only the first token is awaited).
 const TEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TEST_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
+/// `sys ai chat --query-model` timeouts for the provider's /v1/models call.
+const QUERY_MODEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const QUERY_MODEL_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const USER_AGENT_STR: &str = concat!("sys/", env!("CARGO_PKG_VERSION"));
 
 // ---------------------------------------------------------------------------
@@ -1227,6 +1230,142 @@ pub(crate) fn chat_url(p: &Provider) -> String {
     } else {
         format!("{base}/chat/completions")
     }
+}
+
+/// The provider's model-list endpoint. OpenAI-compatible gateways expose it at
+/// `{api_base}/v1/models`; when `api_base` already ends with `/v1` (the common
+/// convention) the plain `/models` suffix is used.
+fn models_url(p: &Provider) -> String {
+    let base = p.api_base.trim_end_matches('/');
+    if base.ends_with("/v1") {
+        format!("{base}/models")
+    } else {
+        format!("{base}/v1/models")
+    }
+}
+
+/// Parse one page of a models response: entries come from `data[]` (OpenAI
+/// style) or `models[]` (fallback), each entry contributing its `id` plus the
+/// optional `owned_by`; a `next_page` token (when present) is returned for
+/// pagination. A leading UTF-8 BOM is stripped before strict JSON parsing, and
+/// an `error` object in the body is reported as an Err.
+fn parse_models_response(body: &str) -> Result<(Vec<(String, Option<String>)>, Option<String>)> {
+    let body = body.trim_start_matches('\u{feff}').trim();
+    if body.is_empty() {
+        bail!("empty response from the models endpoint");
+    }
+    let v: Value = serde_json::from_str(body).context("invalid JSON from the models endpoint")?;
+    if let Some(err) = v.get("error") {
+        let raw = err.to_string();
+        let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or(&raw);
+        bail!("provider error: {msg}");
+    }
+    let arr = v
+        .get("data")
+        .and_then(|d| d.as_array())
+        .or_else(|| v.get("models").and_then(|m| m.as_array()))
+        .with_context(|| {
+            format!(
+                "unexpected models response (expected a `data`/`models` array): {}",
+                body.chars().take(200).collect::<String>()
+            )
+        })?;
+    let mut entries = Vec::with_capacity(arr.len());
+    for item in arr {
+        let id = item
+            .get("id")
+            .and_then(|i| i.as_str())
+            .with_context(|| format!("model entry without an `id`: {item}"))?
+            .to_string();
+        let owned_by = item.get("owned_by").and_then(|o| o.as_str()).map(|s| s.to_string());
+        entries.push((id, owned_by));
+    }
+    let next_page = v
+        .get("next_page")
+        .and_then(|n| n.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    Ok((entries, next_page))
+}
+
+/// `sys ai chat --query-model PROVIDER`: query the provider's model list via
+/// its {api_base}/v1/models endpoint. Pagination (`next_page`) is followed with
+/// a page cap; duplicate ids are dropped.
+pub(crate) fn query_provider_models(cfg: &Config, provider_name: &str) -> Result<()> {
+    let p = cfg
+        .providers
+        .iter()
+        .find(|p| ci_eq(&p.name, provider_name))
+        .with_context(|| {
+            format!(
+                "no provider named `{provider_name}` (available: {})",
+                cfg.providers.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
+            )
+        })?;
+    let url = models_url(p);
+    let entries = fetch_provider_models(p, &url)?;
+    let mut seen = std::collections::HashSet::new();
+    let ids: Vec<&str> = entries
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .filter(|id| seen.insert(id.to_string()))
+        .collect();
+    println!("{} ({}) — {}  ({} model(s) via API)", p.name, p.kind, url, ids.len());
+    for id in &ids {
+        println!("- {id}");
+    }
+    Ok(())
+}
+
+/// HTTP part of `--query-model`: GET the models endpoint (following `next_page`
+/// up to 20 pages) and return the raw entries.
+fn fetch_provider_models(p: &Provider, first_url: &str) -> Result<Vec<(String, Option<String>)>> {
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STR));
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    if p.kind == "anthropic" {
+        headers.insert("x-api-key", HeaderValue::from_str(&p.api_key).context("invalid api_key")?);
+        headers.insert("anthropic-version", HeaderValue::from_static(ANTHROPIC_VERSION));
+    } else {
+        let auth = format!("Bearer {}", p.api_key);
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&auth).context("invalid api_key")?);
+    }
+    let client = Client::builder()
+        .connect_timeout(QUERY_MODEL_CONNECT_TIMEOUT)
+        .timeout(QUERY_MODEL_TIMEOUT)
+        .build()
+        .context("failed to build HTTP client")?;
+    let mut out = Vec::new();
+    let mut seen_urls = std::collections::HashSet::new();
+    let mut next: Option<String> = None;
+    for _ in 0..20 {
+        let url = match &next {
+            None => first_url.to_string(),
+            Some(n) => format!("{first_url}?next_page={n}"),
+        };
+        if !seen_urls.insert(url.clone()) {
+            break;
+        }
+        let resp = client
+            .get(&url)
+            .headers(headers.clone())
+            .send()
+            .with_context(|| format!("request to {url} failed"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().unwrap_or_default();
+            let snippet: String = text.chars().take(300).collect::<String>().trim().to_string();
+            bail!("{url} returned HTTP {status}: {snippet}");
+        }
+        let text = resp.text().context("cannot read the models response")?;
+        let (entries, np) = parse_models_response(&text)?;
+        out.extend(entries);
+        match np {
+            None => break,
+            Some(tok) => next = Some(tok),
+        }
+    }
+    Ok(out)
 }
 
 fn chat_body(p: &Provider, m: &Model, msg: &str, stream: bool) -> Value {
@@ -3143,15 +3282,18 @@ pub(crate) fn print_models(cfg: &Config) {
 
 /// `sys ai chat [MSG...] [-m MODEL] [--list-model] [--list-provider] [-c FILE] [--debug] [--no-stream] [--update]`
 /// `sys ai chat --test [MSG...] [-m MODEL] [--parallel N] [--remove]`
+/// `sys ai chat --query-model PROVIDER`
 ///
 /// `-m/--model` overrides the top-level `model` from the config (same
 /// `{provider}:{model}` / `{model}` / comma-separated rules). `--list-model`
 /// prints every configured model (grouped by provider); `--list-provider`
 /// prints every configured provider. `--update` fills the target models'
 /// missing `max_input_tokens` / `type` from models.dev into the config file
-/// (best effort) before the request. `--test` runs a parallel chat
-/// feedback-time test instead of a normal chat (see `chat_test`); `--remove`
-/// deletes the failed models from the config instead of setting weight to 0.
+/// (best effort) before the request. `--query-model PROVIDER` queries the
+/// provider's model list through its {api_base}/v1/models endpoint and exits.
+/// `--test` runs a parallel chat feedback-time test instead of a normal chat
+/// (see `chat_test`); `--remove` deletes the failed models from the config
+/// instead of setting weight to 0.
 pub fn cmd_chat(
     words: &[String],
     config: Option<&Path>,
@@ -3164,6 +3306,7 @@ pub fn cmd_chat(
     test: bool,
     parallel: Option<usize>,
     remove: bool,
+    query_model: Option<&str>,
 ) -> Result<()> {
     let (mut cfg, path) = load_config(config)?;
 
@@ -3178,6 +3321,10 @@ pub fn cmd_chat(
             print_models(&cfg);
         }
         return Ok(());
+    }
+
+    if let Some(pname) = query_model {
+        return query_provider_models(&cfg, pname);
     }
 
     if test {
@@ -4716,5 +4863,111 @@ clients:
         let p = local_provider(port);
         let m = local_model();
         assert!(test_one(&p, &m, "hello").is_err());
+    }
+
+    #[test]
+    fn models_url_builds_v1_models_endpoint() {
+        let p = local_provider(1234); // api_base ends with /v1
+        assert_eq!(models_url(&p), "http://127.0.0.1:1234/v1/models");
+        let p2 = Provider {
+            api_base: "https://gateway.example.com".to_string(),
+            ..local_provider(1)
+        };
+        assert_eq!(models_url(&p2), "https://gateway.example.com/v1/models");
+    }
+
+    #[test]
+    fn parse_models_response_extracts_data_and_models_arrays() {
+        let (entries, next) = parse_models_response(
+            r#"{"data":[{"id":"a-1","owned_by":"acme"},{"id":"b-2"}],"next_page":"tok"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            entries,
+            vec![("a-1".to_string(), Some("acme".to_string())), ("b-2".to_string(), None)]
+        );
+        assert_eq!(next.as_deref(), Some("tok"));
+        // `models[]` fallback shape.
+        let (entries2, next2) = parse_models_response(r#"{"models":[{"id":"m1"}]}"#).unwrap();
+        assert_eq!(entries2, vec![("m1".to_string(), None)]);
+        assert!(next2.is_none());
+    }
+
+    #[test]
+    fn parse_models_response_strips_bom_and_reports_bad_shapes() {
+        // A leading UTF-8 BOM must not break strict JSON parsing.
+        let body = "\u{feff}{\"data\":[{\"id\":\"x\"}]}";
+        let (entries, _) = parse_models_response(body).unwrap();
+        assert_eq!(entries, vec![("x".to_string(), None)]);
+        // `error` object -> Err with the provider message.
+        let err = parse_models_response(r#"{"error":{"message":"invalid key"}}"#).unwrap_err();
+        assert!(format!("{err:#}").contains("invalid key"));
+        // Neither data nor models -> Err.
+        assert!(parse_models_response(r#"{"foo":[]}"#).is_err());
+        // Entry without an id -> Err.
+        assert!(parse_models_response(r#"{"data":[{"owned_by":"x"}]}"#).is_err());
+    }
+
+    #[test]
+    fn fetch_provider_models_reads_local_endpoint() {
+        let port = spawn_one_shot_server(
+            "HTTP/1.1 200 OK",
+            b"{\"data\":[{\"id\":\"a\"},{\"id\":\"b\",\"owned_by\":\"o\"}]}",
+        );
+        let p = local_provider(port);
+        let entries = fetch_provider_models(&p, &models_url(&p)).unwrap();
+        let ids: Vec<&str> = entries.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b"]);
+        assert_eq!(entries[1].1.as_deref(), Some("o"));
+    }
+
+    #[test]
+    fn fetch_provider_models_fails_on_http_error() {
+        let port = spawn_one_shot_server("HTTP/1.1 403 Forbidden", b"{\"error\":{\"message\":\"denied\"}}");
+        let p = local_provider(port);
+        let err = fetch_provider_models(&p, &models_url(&p)).unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("403"), "expected HTTP 403 in error, got: {text}");
+    }
+
+    #[test]
+    fn fetch_provider_models_follows_next_page() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let pages: [&[u8]; 2] = [
+                br#"{"data":[{"id":"p1"}],"next_page":"abc"}"#,
+                br#"{"data":[{"id":"p2"}]}"#,
+            ];
+            for body in pages {
+                if let Ok((mut sock, _)) = listener.accept() {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf);
+                    let _ = sock.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                    );
+                    let _ = sock.write_all(body);
+                    let _ = sock.flush();
+                }
+            }
+        });
+        let p = local_provider(port);
+        let entries = fetch_provider_models(&p, &models_url(&p)).unwrap();
+        let ids: Vec<&str> = entries.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, vec!["p1", "p2"]);
+    }
+
+    #[test]
+    fn query_provider_models_rejects_unknown_provider() {
+        let cfg = Config {
+            model: None,
+            stream: false,
+            providers: vec![local_provider(1234)],
+            tasks: Vec::new(),
+            search: Vec::new(),
+        };
+        let err = query_provider_models(&cfg, "nope").unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("available"), "expected available list, got: {text}");
     }
 }
