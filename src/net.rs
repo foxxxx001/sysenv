@@ -1186,6 +1186,7 @@ struct RdapInfo {
     org: Option<String>,
     email: Option<String>,
     address: Option<String>,
+    country: Option<String>,
     created: Option<String>,
     expires: Option<String>,
     status: Vec<String>,
@@ -1279,6 +1280,22 @@ fn format_address(adr: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// Extract the country from a vCard `adr` value: the 7th component (index 6)
+/// per RFC 6350; falls back to the last non-empty component.
+fn adr_country(adr: &serde_json::Value) -> Option<String> {
+    let parts = adr.as_array()?;
+    if let Some(c) = parts.get(6).and_then(|p| p.as_str()) {
+        let c = c.trim();
+        if !c.is_empty() {
+            return Some(c.to_string());
+        }
+    }
+    parts
+        .iter()
+        .rev()
+        .find_map(|p| p.as_str().map(str::trim).filter(|s| !s.is_empty()).map(|s| s.to_string()))
+}
+
 /// Extract the useful fields from an RDAP domain object.
 fn parse_rdap(v: &serde_json::Value) -> RdapInfo {
     let event_date = |action: &str| -> Option<String> {
@@ -1326,6 +1343,8 @@ fn parse_rdap(v: &serde_json::Value) -> RdapInfo {
         email: text_field("registrant", "email"),
         address: entity_field(v, "registrant", "adr")
             .and_then(|a| format_address(&a)),
+        country: entity_field(v, "registrant", "adr")
+            .and_then(|a| adr_country(&a)),
         created: event_date("registration"),
         expires: event_date("expiration"),
         status,
@@ -1357,6 +1376,9 @@ fn format_info(queried: &str, resolved: &str, fallback: Option<&str>, info: &Rda
     }
     if let Some(a) = &info.address {
         s.push_str(&format!("  Address:     {a}\n"));
+    }
+    if let Some(c) = &info.country {
+        s.push_str(&format!("  Country:     {c}\n"));
     }
     if let Some(c) = &info.created {
         s.push_str(&format!("  Created:     {c}\n"));
@@ -2139,6 +2161,7 @@ mod tests {
             info.address.as_deref(),
             Some("123 Main St, Springfield, IL, 62701, US")
         );
+        assert_eq!(info.country.as_deref(), Some("US"));
         assert_eq!(info.created.as_deref(), Some("1995-08-14T04:00:00Z"));
         assert_eq!(info.expires.as_deref(), Some("2026-08-13T04:00:00Z"));
         assert_eq!(info.status.len(), 2);
@@ -2167,6 +2190,7 @@ mod tests {
         assert!(info.org.is_none());
         assert!(info.email.is_none());
         assert!(info.address.is_none());
+        assert!(info.country.is_none());
         assert_eq!(info.created.as_deref(), Some("1995-08-14T04:00:00Z"));
     }
 

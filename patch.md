@@ -2,6 +2,14 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.57（2026-10-11）
+
+### 变更
+- `sys net -t info` 输出新增 **国家/地区（Country）** 行：从注册主体（registrant）vCard `adr` 的第 7 个组件（RFC 6350 country，缺省时取最后一个非空组件）提取；注册主体（Registrant + Org）此前已输出，保持不变
+- 单测断言更新（country=US、缺失 registrant 时 country 为 None）；`cargo test` 209 项全绿
+
+---
+
 ## v0.4.56（2026-10-11）
 
 ### 变更
