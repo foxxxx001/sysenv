@@ -8,17 +8,18 @@
 //! Detection types (`-t`):
 //! - `domain` (default): GET each address 3 times and average the response
 //!   time, then print every address sorted by that average;
-//! - `json`: GET each address; the body must parse as JSON — every address is
-//!   reported (url / reachability / response time) as soon as it is probed;
+//! - `tv` (old name `json`): GET each address; the body must parse as JSON,
+//!   then the data is analyzed (`.sites` count, `.sites.name` 4k count,
+//!   `.spider` download speed) and sorted with `--sort`;
 //! - `file`: GET each address; the body must be plain text (UTF-8, not JSON,
-//!   not binary) — same per-address reporting;
+//!   not binary) — per-address reporting as each probe finishes;
 //! - `test`: GET each address and probe reachability only; unreachable
 //!   addresses are reported on screen and removed from the source lines, then
 //!   the cleaned source (kept lines verbatim) is written to `-o`.
 //!
 //! `-o FILE` writes every address that passed (reachable + format matched) to
-//! FILE, one per line (json / file modes), or the cleaned source lines
-//! (test mode).
+//! FILE, one per line (file modes) or url + `#` info line (tv mode), or the
+//! cleaned source lines (test mode).
 
 use anyhow::{Context, Result, bail};
 use std::collections::HashSet;
@@ -32,8 +33,8 @@ pub enum NetType {
     /// Probe the address 3 times and average the response time
     #[value(name = "domain")]
     Domain,
-    /// The response body must parse as JSON
-    #[value(name = "json")]
+    /// The response body must parse as JSON (old name: json)
+    #[value(name = "tv", alias = "json")]
     Json,
     /// The response body must be plain text (not JSON, not binary)
     #[value(name = "file")]
@@ -891,7 +892,7 @@ pub fn cmd_net(
         NetType::Domain => {
             if let Some(out) = output {
                 eprintln!(
-                    "warning: -o/--output applies to `-t json|file|test` only; ignored ({})",
+                    "warning: -o/--output applies to `-t tv|file|test` only; ignored ({})",
                     out.display()
                 );
             }
@@ -899,7 +900,7 @@ pub fn cmd_net(
                 eprintln!("warning: -x/--exclude applies to `-t test` only; ignored");
             }
             if !sort.is_empty() {
-                eprintln!("warning: --sort applies to `-t json` only; ignored");
+                eprintln!("warning: --sort applies to `-t tv` only; ignored");
             }
             let urls = read_addresses(input)?;
             cmd_domain(&client, &urls)
@@ -909,14 +910,14 @@ pub fn cmd_net(
                 eprintln!("warning: -x/--exclude applies to `-t test` only; ignored");
             }
             if kind == NetType::File && !sort.is_empty() {
-                eprintln!("warning: --sort applies to `-t json` only; ignored");
+                eprintln!("warning: --sort applies to `-t tv` only; ignored");
             }
             let urls = read_addresses(input)?;
             cmd_content(&client, &urls, kind, output, sort)
         }
         NetType::Test => {
             if !sort.is_empty() {
-                eprintln!("warning: --sort applies to `-t json` only; ignored");
+                eprintln!("warning: --sort applies to `-t tv` only; ignored");
             }
             cmd_test(&client, input, output, &excludes)
         }

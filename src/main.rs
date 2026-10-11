@@ -94,7 +94,7 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     Ai(AiArgs),
     /// Web search via the configured Bocha AI API (web-search; --ai uses ai-search)
     Search(SearchArgs),
-    /// Probe domains / URLs read from a file: -i FILE [-t domain|json|file|test] [-o FILE] [--timeout SECONDS]
+    /// Probe domains / URLs read from a file: -i FILE [-t domain|tv|file|test] [-o FILE] [--timeout SECONDS]
     Net(NetArgs),
     /// Query and kill processes (list PID/name/path; kill by PID or name; no args lists all)
     Task(TaskArgs),
@@ -549,7 +549,7 @@ struct NetArgs {
     /// Input file containing http(s) addresses (lines starting with # are skipped; each line may hold several addresses)
     #[arg(short = 'i', long, value_name = "FILE")]
     input: PathBuf,
-    /// Detection type: domain (default, 3 probes averaged) | json (body must be JSON) | file (body must be plain text) | test (probe reachability, delete unreachable lines, -o writes the cleaned source)
+    /// Detection type: domain (default, 3 probes averaged) | tv (body must be JSON, analyzed with --sort; old name json) | file (body must be plain text) | test (probe reachability, delete unreachable lines, -o writes the cleaned source)
     #[arg(short = 't', long, value_name = "TYPE", value_enum, default_value_t = net::NetType::Domain)]
     kind: net::NetType,
     /// Write the passed (reachable + format-matched) URLs, or the cleaned source lines in test mode, to this file
@@ -561,7 +561,7 @@ struct NetArgs {
     /// In test mode, skip probing URLs whose file-name suffix matches (case-insensitive, leading dot optional) and remove them directly; repeatable, e.g. -x m3u -x zip
     #[arg(short = 'x', long, value_name = "SUFFIX")]
     exclude: Vec<String>,
-    /// json mode sort keys, applied in order (count | name | speed; speen is accepted as speed); default: name; repeatable, e.g. --sort count name
+    /// tv mode sort keys, applied in order (count | name | speed; speen is accepted as speed); default: name; repeatable, e.g. --sort count name
     #[arg(long, value_name = "KEY", num_args = 1..)]
     sort: Vec<String>,
 }
