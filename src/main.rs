@@ -561,7 +561,7 @@ struct NetArgs {
     /// In test mode, skip probing URLs whose file-name suffix matches (case-insensitive, leading dot optional) and remove them directly; repeatable, e.g. -x m3u -x zip
     #[arg(short = 'x', long, value_name = "SUFFIX")]
     exclude: Vec<String>,
-    /// tv mode sort keys, applied in order (count | name | speed; speen is accepted as speed); default: name; repeatable, e.g. --sort count name
+    /// tv mode sort keys, applied in order (count | name | speed; speen is accepted as speed); default: count name; repeatable, e.g. --sort count name
     #[arg(long, value_name = "KEY", num_args = 1..)]
     sort: Vec<String>,
 }

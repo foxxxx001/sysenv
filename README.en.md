@@ -570,7 +570,7 @@ Reads http(s) addresses from a file and probes each one for reachability and res
   - `--sort count`: total number of `.sites` nodes, **desc**
   - `--sort name`: number of `.sites.name` entries containing `4k` (case-insensitive), **desc**
   - `--sort speed` (typo `speen` also accepted): downloads the `.spider` url (string `url;md5;...` keeps the part before `;`, an array uses its first string element) and sorts by download speed **asc**
-  - `--sort` is repeatable (e.g. `--sort count name`), applied in order for multi-key sorting; **defaults to `name` when omitted**
+  - `--sort` is repeatable (e.g. `--sort count name`), applied in order for multi-key sorting; **defaults to `count, name` when omitted**
   - each passed address prints its url, followed by a `# count=<N> name=<N> speed=<speed or failure reason>` test-info line; **screen and `-o` share the same format** (url + `#` line); unreachable / non-JSON addresses are still reported as `[NO]` / `[FMT]` and not written to `-o`
 - `-t file`: GET each address; the body must be **plain text** (valid UTF-8, non-binary, and not JSON) to pass
 - `-t test`: probes **reachability only** (any HTTP response counts as reachable, same rule as tv/file):

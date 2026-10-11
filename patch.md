@@ -2,6 +2,13 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.48（2026-10-11）
+
+### 变更
+- `sys net -t tv`（旧名 `-t json`）`--sort` 参数不提供时的默认排序由 `name` 改为 **`count, name`**（先按 `.sites` 节点总数 desc，再按 `.sites.name` 含 `4k` 数量 desc）；help / README 同步更新；`cargo test` 194 项全绿
+
+---
+
 ## v0.4.47（2026-10-11）
 
 ### 变更

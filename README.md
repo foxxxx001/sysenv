@@ -851,7 +851,7 @@ sys short --temporary  # 不持久化 PATH，只打印可粘贴的片段
   * `--sort count`：统计 `.sites` 节点总数，按数量 **desc** 排序
   * `--sort name`：统计 `.sites.name` 中含 `4k`（大小写不敏感）的数量，按数量 **desc** 排序
   * `--sort speed`（拼写 `speen` 也接受）：下载 `.spider` 中的 url（字符串 `url;md5;...` 取 `;` 前部分，数组取首个字符串元素），按下载速度 **asc** 排序
-  * `--sort` 可多个（如 `--sort count name`），按出现顺序多级排序；**不提供默认按 name 排序**
+  * `--sort` 可多个（如 `--sort count name`），按出现顺序多级排序；**不提供默认按 count, name 排序**
   * 每个通过的地址打印一行 url，下一行打印 `# count=<N> name=<N> speed=<速度或失败原因>` 测试信息；**屏幕与 `-o` 文件格式一致**（url + `#` 行）；不可达 / 非 JSON 地址照旧打印 `[NO]` / `[FMT]`，不写入 `-o`
 
 * `-t file`：对每个地址发起 GET，响应体必须是**普通文本**（UTF-8 非二进制，且不是 JSON）才算通过

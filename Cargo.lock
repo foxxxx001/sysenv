@@ -1143,7 +1143,7 @@ dependencies = [
 
 [[package]]
 name = "sys"
-version = "0.4.47"
+version = "0.4.48"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

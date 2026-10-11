@@ -534,11 +534,11 @@ fn cmp_speed(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
     }
 }
 
-/// `-t json --sort KEY ...`: probe each address, parse the body as JSON,
+/// `-t tv --sort KEY ...`: probe each address, parse the body as JSON,
 /// compute the count / name / speed statistics, sort by the given keys (in
-/// order; default `name`), then print each url followed by a `#` test-info
-/// line — on screen and in `-o` alike. Failed addresses are reported as
-/// `[NO]`/`[FMT]` and are not part of the sorted output.
+/// order; default `count, name`), then print each url followed by a `#`
+/// test-info line — on screen and in `-o` alike. Failed addresses are
+/// reported as `[NO]`/`[FMT]` and are not part of the sorted output.
 fn cmd_json_sorted(
     client: &reqwest::blocking::Client,
     urls: &[String],
@@ -591,6 +591,7 @@ fn cmd_json_sorted(
 
     let mut sort_keys = keys.to_vec();
     if sort_keys.is_empty() {
+        sort_keys.push(SortKey::Count);
         sort_keys.push(SortKey::Name);
     }
     items.sort_by(|a, b| {
@@ -1613,20 +1614,32 @@ mod tests {
         assert!(lines[3].starts_with("# count=1 name=0"));
     }
 
-    /// Default (no --sort): sort by name (4k count) descending.
+    /// Default (no --sort): sort by count desc, then name (4k count) desc.
+    /// A higher count beats a higher name count.
     #[test]
-    fn json_sort_defaults_to_name() {
-        let one = spawn_server(SORT_JSON_1, "application/json", Duration::ZERO);
-        let three = spawn_server(SORT_JSON_3, "application/json", Duration::ZERO);
+    fn json_sort_defaults_to_count_then_name() {
+        // A: count=2 name=0 ; B: count=1 name=1
+        let a = spawn_server_owned(
+            br#"{"sites":[{"name":"a"},{"name":"b"}]}"#.to_vec(),
+            "application/json",
+            Duration::ZERO,
+        );
+        let b = spawn_server_owned(
+            br#"{"sites":[{"name":"x 4K"}]}"#.to_vec(),
+            "application/json",
+            Duration::ZERO,
+        );
         let input = temp_file("in-sort-n");
         let out = temp_file("out-sort-n");
-        std::fs::write(&input, format!("{one}\n{three}\n")).unwrap();
+        // input order: b (name=1) first, a (count=2) second
+        std::fs::write(&input, format!("{b}\n{a}\n")).unwrap();
         cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
         let lines: Vec<&str> = content.lines().collect();
-        assert_eq!(lines[0], three.as_str(), "name=2 first (default): {content:?}");
+        assert_eq!(lines[0], a.as_str(), "count=2 first (default): {content:?}");
+        assert_eq!(lines[2], b.as_str(), "name=1 second: {content:?}");
     }
 
     /// Multi-key: count equal -> tie broken by name (order of the keys).
