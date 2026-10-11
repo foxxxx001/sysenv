@@ -428,7 +428,7 @@ fn cmd_content(
     cmd_file_probe(client, urls, output)
 }
 
-/// One analyzed json address (from `-t json --sort`).
+/// One analyzed json address (from `-t tv --sort`).
 struct SortItem {
     url: String,
     /// number of `.sites` nodes
@@ -439,6 +439,81 @@ struct SortItem {
     speed: Option<f64>,
     /// human-readable note when `speed` is None (why the speed test failed)
     speed_note: Option<String>,
+}
+
+/// Parse a body as a tv JSON document: strict first, then retry after
+/// stripping trailing commas (a common real-world blemish). Returns `None`
+/// when the body still does not parse.
+fn parse_tv_json(body: &[u8]) -> Option<serde_json::Value> {
+    if let Ok(v) = serde_json::from_slice(body) {
+        return Some(v);
+    }
+    let s = std::str::from_utf8(body).ok()?;
+    let cleaned = strip_trailing_commas(s);
+    serde_json::from_str(&cleaned).ok()
+}
+
+/// Remove commas that are immediately followed (ignoring whitespace) by `}`
+/// or `]` outside of string literals — i.e. trailing commas in arrays and
+/// objects.
+fn strip_trailing_commas(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if c == '"' {
+            in_string = true;
+            out.push(c);
+            continue;
+        }
+        if c != ',' {
+            out.push(c);
+            continue;
+        }
+        // Peek the next non-whitespace char.
+        let mut ahead = chars.clone();
+        let mut next = ahead.next();
+        while let Some(nc) = next {
+            if nc.is_whitespace() {
+                next = ahead.next();
+            } else {
+                break;
+            }
+        }
+        if matches!(next, Some('}') | Some(']')) {
+            // Trailing comma: drop it.
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Valid tv data: `sites` is a non-empty array whose every element is an
+/// object carrying a `name` key, and the top-level `lives`, `parses` and
+/// `rules` nodes exist.
+fn is_valid_tv(v: &serde_json::Value) -> bool {
+    if v.get("lives").is_none() || v.get("parses").is_none() || v.get("rules").is_none() {
+        return false;
+    }
+    match v.get("sites").and_then(|s| s.as_array()) {
+        Some(arr) if !arr.is_empty() => {
+            arr.iter().all(|site| site.is_object() && site.get("name").is_some())
+        }
+        _ => false,
+    }
 }
 
 /// Count `.sites` nodes in the parsed body.
@@ -560,8 +635,15 @@ fn cmd_json_sorted(
         }
         match request(client, url, true) {
             Ok((status, _, Some(body))) => {
-                match serde_json::from_slice::<serde_json::Value>(&body) {
-                    Ok(v) => {
+                match parse_tv_json(&body) {
+                    Some(v) => {
+                        if !is_valid_tv(&v) {
+                            n_mismatch += 1;
+                            println!(
+                                "[FMT] {url}  status={status}  body lacks tv nodes (sites with name, lives, parses, rules)"
+                            );
+                            continue;
+                        }
                         let (speed, speed_note) = probe_speed(client, &v);
                         n_ok += 1;
                         items.push(SortItem {
@@ -572,7 +654,7 @@ fn cmd_json_sorted(
                             speed_note,
                         });
                     }
-                    Err(_) => {
+                    None => {
                         n_mismatch += 1;
                         println!("[FMT] {url}  status={status}  body is not valid JSON");
                     }
@@ -999,6 +1081,9 @@ mod tests {
     use std::net::TcpListener;
 
     const JSON_BODY: &[u8] = br#"{"ok":true,"n":42}"#;
+    /// A structurally valid tv document (sites non-empty with name, plus
+    /// lives / parses / rules).
+    const TV_BODY: &[u8] = br#"{"sites":[{"name":"a"}],"lives":[{"name":"l1"}],"parses":[{"name":"p1"}],"rules":[{"name":"r1"}]}"#;
     const TEXT_BODY: &[u8] = b"hello plain text file\nsecond line\n";
     const BIN_BODY: &[u8] = &[0x89, b'P', b'N', b'G', 0, 1, 2, 3, 0xFF, 0xFE, 0xFD];
 
@@ -1228,7 +1313,7 @@ mod tests {
 
     #[test]
     fn cmd_json_writes_passed_urls_to_output() {
-        let url = spawn_server(JSON_BODY, "application/json", Duration::ZERO);
+        let url = spawn_server(TV_BODY, "application/json", Duration::ZERO);
         let input = temp_file("in-json");
         let out = temp_file("out-json");
         std::fs::write(&input, format!("probe {url} now\n")).unwrap();
@@ -1240,7 +1325,7 @@ mod tests {
         assert_eq!(lines.len(), 2, "url + # info line: {content:?}");
         assert_eq!(lines[0], url.as_str());
         assert!(
-            lines[1].starts_with("# count=0 name=0 speed="),
+            lines[1].starts_with("# count=1 name=0 speed="),
             "info line: {content:?}"
         );
     }
@@ -1535,7 +1620,7 @@ mod tests {
     /// json mode: a duplicated URL is not probed and not written to -o.
     #[test]
     fn json_mode_duplicate_not_passed() {
-        let good = spawn_server(JSON_BODY, "application/json", Duration::ZERO);
+        let good = spawn_server(TV_BODY, "application/json", Duration::ZERO);
         let input = temp_file("test-in-d3");
         let out = temp_file("test-out-d3");
         std::fs::write(&input, format!("{good}\n{good}\n")).unwrap();
@@ -1550,12 +1635,95 @@ mod tests {
 
     // --- -t json --sort ---
 
-    const SORT_JSON_3: &[u8] = br#"{"spider":"http://127.0.0.1:1/x.jpg;md5;abc","sites":[
+    /// tv validity: node completeness rules.
+    #[test]
+    fn tv_validity_checks_nodes() {
+        let good = serde_json::json!({
+            "sites": [{"name": "a"}],
+            "lives": [],
+            "parses": [],
+            "rules": []
+        });
+        assert!(is_valid_tv(&good));
+        // missing lives
+        let mut v = good.clone();
+        v.as_object_mut().unwrap().remove("lives");
+        assert!(!is_valid_tv(&v));
+        // empty sites
+        let mut v = good.clone();
+        v["sites"] = serde_json::json!([]);
+        assert!(!is_valid_tv(&v));
+        // site without name
+        let mut v = good.clone();
+        v["sites"] = serde_json::json!([{"key": "x"}]);
+        assert!(!is_valid_tv(&v));
+        // sites not an array
+        let mut v = good.clone();
+        v["sites"] = serde_json::json!("nope");
+        assert!(!is_valid_tv(&v));
+        // name key present (value type irrelevant) still counts
+        let mut v = good.clone();
+        v["sites"] = serde_json::json!([{"name": 42}]);
+        assert!(is_valid_tv(&v));
+    }
+
+    /// strip_trailing_commas removes commas before } / ] outside strings only.
+    #[test]
+    fn strip_trailing_commas_removes_only_real_trailing_commas() {
+        let input = r#"{"a":[1,2,],"b":"x,y,","c":{"d":3,},"e":"},"}"#;
+        let out = strip_trailing_commas(input);
+        assert_eq!(out, r#"{"a":[1,2],"b":"x,y,","c":{"d":3},"e":"},"}"#);
+        // no trailing commas -> unchanged
+        assert_eq!(strip_trailing_commas(r#"{"a":[1,2]}"#), r#"{"a":[1,2]}"#);
+    }
+
+    /// parse_tv_json falls back to trailing-comma-stripped parsing.
+    #[test]
+    fn parse_tv_json_tolerates_trailing_commas() {
+        let body = br#"{"sites":[{"name":"a"},],"lives":[],"parses":[],"rules":[],}"#;
+        let v = parse_tv_json(body).expect("trailing commas tolerated");
+        assert!(is_valid_tv(&v));
+        // garbage still fails
+        assert!(parse_tv_json(b"not json").is_none());
+    }
+
+    /// End-to-end: a body with trailing commas still passes tv mode.
+    #[test]
+    fn cmd_json_accepts_trailing_comma_tv_body() {
+        let body =
+            br#"{"sites":[{"name":"a"},{"name":"b"},],"lives":[],"parses":[],"rules":[],}"#.to_vec();
+        let url = spawn_server_owned(body, "application/json", Duration::ZERO);
+        let input = temp_file("in-tv-lenient");
+        let out = temp_file("out-tv-lenient");
+        std::fs::write(&input, format!("{url}\n")).unwrap();
+        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(content.lines().next().unwrap(), url.as_str());
+        assert!(content.lines().nth(1).unwrap().starts_with("# count=2 name=0"));
+    }
+
+    /// A body that parses as JSON but lacks tv nodes is a format mismatch.
+    #[test]
+    fn cmd_json_rejects_non_tv_json() {
+        let url = spawn_server(JSON_BODY, "application/json", Duration::ZERO);
+        let input = temp_file("in-tv-notv");
+        let out = temp_file("out-tv-notv");
+        std::fs::write(&input, format!("{url}\n")).unwrap();
+        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        assert!(content.is_empty(), "non-tv JSON must not pass: {content:?}");
+    }
+
+    const SORT_JSON_3: &[u8] = br#"{"spider":"http://127.0.0.1:1/x.jpg;md5;abc","lives":[],"parses":[],"rules":[],"sites":[
       {"name":"A 4K"},
       {"name":"B 4k"},
       {"name":"C"}
     ]}"#;
-    const SORT_JSON_1: &[u8] = br#"{"spider":"not a url","sites":[{"name":"D"}]}"#;
+    const SORT_JSON_1: &[u8] = br#"{"spider":"not a url","lives":[],"parses":[],"rules":[],"sites":[{"name":"D"}]}"#;
 
     #[test]
     fn json_stats_are_computed() {
@@ -1620,12 +1788,12 @@ mod tests {
     fn json_sort_defaults_to_count_then_name() {
         // A: count=2 name=0 ; B: count=1 name=1
         let a = spawn_server_owned(
-            br#"{"sites":[{"name":"a"},{"name":"b"}]}"#.to_vec(),
+            br#"{"sites":[{"name":"a"},{"name":"b"}],"lives":[],"parses":[],"rules":[]}"#.to_vec(),
             "application/json",
             Duration::ZERO,
         );
         let b = spawn_server_owned(
-            br#"{"sites":[{"name":"x 4K"}]}"#.to_vec(),
+            br#"{"sites":[{"name":"x 4K"}],"lives":[],"parses":[],"rules":[]}"#.to_vec(),
             "application/json",
             Duration::ZERO,
         );
@@ -1647,17 +1815,17 @@ mod tests {
     fn json_sort_multi_key_uses_key_order() {
         // count=2 name=2 ; count=2 name=0 ; count=1 name=1
         let j1 = spawn_server_owned(
-            br#"{"sites":[{"name":"a 4K"},{"name":"b 4K"}]}"#.to_vec(),
+            br#"{"sites":[{"name":"a 4K"},{"name":"b 4K"}],"lives":[],"parses":[],"rules":[]}"#.to_vec(),
             "application/json",
             Duration::ZERO,
         );
         let j2 = spawn_server_owned(
-            br#"{"sites":[{"name":"a"},{"name":"b"}]}"#.to_vec(),
+            br#"{"sites":[{"name":"a"},{"name":"b"}],"lives":[],"parses":[],"rules":[]}"#.to_vec(),
             "application/json",
             Duration::ZERO,
         );
         let j3 = spawn_server_owned(
-            br#"{"sites":[{"name":"x 4K"}]}"#.to_vec(),
+            br#"{"sites":[{"name":"x 4K"}],"lives":[],"parses":[],"rules":[]}"#.to_vec(),
             "application/json",
             Duration::ZERO,
         );
@@ -1690,12 +1858,14 @@ mod tests {
         let slow = spawn_server_owned(vec![b'x'; 1024], "application/octet-stream", Duration::from_millis(400));
         let fast = spawn_server_owned(vec![b'y'; 128 * 1024], "application/octet-stream", Duration::ZERO);
         let jslow = spawn_server_owned(
-            format!(r#"{{"spider":"{slow}","sites":[]}}"#).into_bytes(),
+            format!(r#"{{"spider":"{slow}","sites":[{{"name":"s"}}],"lives":[],"parses":[],"rules":[]}}"#)
+                .into_bytes(),
             "application/json",
             Duration::ZERO,
         );
         let jfast = spawn_server_owned(
-            format!(r#"{{"spider":"{fast}","sites":[]}}"#).into_bytes(),
+            format!(r#"{{"spider":"{fast}","sites":[{{"name":"f"}}],"lives":[],"parses":[],"rules":[]}}"#)
+                .into_bytes(),
             "application/json",
             Duration::ZERO,
         );

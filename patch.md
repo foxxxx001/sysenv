@@ -2,6 +2,14 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.49（2026-10-11）
+
+### 变更
+- `sys net -t tv`（旧名 `-t json`）有效性判定收紧：响应体除能解析为 JSON（**宽容**：先严格解析、失败则清理尾随逗号后重试，容忍真实数据常见瑕疵）外，还须满足 **tv 节点齐全**——`sites` 为非空数组且每个元素含 `name` 字段，顶层含 `lives` / `parses` / `rules` 节点；普通 JSON 或节点缺失判 `[FMT] body lacks tv nodes (sites with name, lives, parses, rules)`，无法解析判 `[FMT] body is not valid JSON`
+- 新增 5 个单测（tv 节点判定、尾随逗号清理、宽容解析、端到端尾随逗号通过、非 tv JSON 拒绝）；既有 sort fixture 补齐 lives/parses/rules 与 name；`cargo test` 199 项全绿
+
+---
+
 ## v0.4.48（2026-10-11）
 
 ### 变更
