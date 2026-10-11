@@ -38,6 +38,11 @@ pub enum NetType {
     /// The response body must parse as JSON (old name: json)
     #[value(name = "tv", alias = "json")]
     Json,
+    /// Like tv, but accepts both tv JSON (`.sites` -> "单仓" group) and
+    /// aggregator JSON (`.urls` -> "多仓" group); the two groups are printed
+    /// separately, multi-warehouse items sorted by url count only
+    #[value(name = "tvs")]
+    Tvs,
     /// The response body must be plain text (not JSON, not binary)
     #[value(name = "file")]
     File,
@@ -412,20 +417,6 @@ fn cmd_domain(client: &reqwest::blocking::Client, urls: &[String]) -> Result<()>
 // json / file modes
 // ---------------------------------------------------------------------------
 
-fn cmd_content(
-    client: &reqwest::blocking::Client,
-    urls: &[String],
-    kind: NetType,
-    output: Option<&Path>,
-    sort: &[String],
-) -> Result<()> {
-    if kind == NetType::Json {
-        let keys = parse_sort_keys(sort)?;
-        return cmd_json_sorted(client, urls, output, &keys);
-    }
-    cmd_file_probe(client, urls, output)
-}
-
 /// One analyzed json address (from `-t tv --sort`).
 struct SortItem {
     url: String,
@@ -714,6 +705,160 @@ fn cmd_json_sorted(
     Ok(())
 }
 
+/// One aggregator (`.urls`) address from `-t tvs`.
+struct TvsMultiItem {
+    url: String,
+    /// number of `.urls` nodes
+    count: usize,
+}
+
+/// `-t tvs`: like tv, but accepts both tv JSON (`.sites` -> "单仓" group) and
+/// aggregator JSON (`.urls` -> "多仓" group). The two groups are printed
+/// separately (single first, then multi), each with its own `#` test-info
+/// line, on screen and in `-o` alike. The single group uses the tv
+/// `--sort KEY ...` rules (default `count, name`); the multi group is sorted
+/// by url count descending only.
+fn cmd_tvs(
+    client: &reqwest::blocking::Client,
+    urls: &[String],
+    output: Option<&Path>,
+    keys: &[SortKey],
+) -> Result<()> {
+    let mut singles: Vec<SortItem> = Vec::new();
+    let mut multis: Vec<TvsMultiItem> = Vec::new();
+    let mut n_ok = 0usize;
+    let mut n_mismatch = 0usize;
+    let mut n_no = 0usize;
+    let mut n_dup = 0usize;
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for url in urls {
+        if !seen.insert(dup_key(url)) {
+            n_dup += 1;
+            println!("[DUP] {url}  duplicate (already checked), skipped");
+            continue;
+        }
+        match request(client, url, true) {
+            Ok((status, _, Some(body))) => match parse_tv_json(&body) {
+                Some(v) => {
+                    if is_valid_tv(&v) {
+                        let (speed, speed_note) = probe_speed(client, &v);
+                        n_ok += 1;
+                        singles.push(SortItem {
+                            url: url.clone(),
+                            count: count_sites(&v),
+                            name: count_name_4k(&v),
+                            speed,
+                            speed_note,
+                        });
+                    } else if let Some(arr) = v.get("urls").and_then(|u| u.as_array()) {
+                        n_ok += 1;
+                        multis.push(TvsMultiItem {
+                            url: url.clone(),
+                            count: arr.len(),
+                        });
+                    } else {
+                        n_mismatch += 1;
+                        println!(
+                            "[FMT] {url}  status={status}  body lacks tv nodes (sites with name) or urls"
+                        );
+                    }
+                }
+                None => {
+                    n_mismatch += 1;
+                    println!("[FMT] {url}  status={status}  body is not valid JSON");
+                }
+            },
+            Ok((status, _, None)) => {
+                n_no += 1;
+                println!("[NO]  {url}  status={status}  unexpected empty body");
+            }
+            Err(e) => {
+                n_no += 1;
+                println!("[NO]  {url}  error={e}");
+            }
+        }
+    }
+
+    // Single group: tv sort rules (default count, name).
+    let mut sort_keys = keys.to_vec();
+    if sort_keys.is_empty() {
+        sort_keys.push(SortKey::Count);
+        sort_keys.push(SortKey::Name);
+    }
+    singles.sort_by(|a, b| {
+        for k in &sort_keys {
+            let ord = match k {
+                SortKey::Count => b.count.cmp(&a.count),
+                SortKey::Name => b.name.cmp(&a.name),
+                SortKey::Speed => cmp_speed(a.speed, b.speed),
+            };
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+    // Multi group: url count descending only.
+    multis.sort_by(|a, b| b.count.cmp(&a.count));
+
+    let mut file = String::new();
+    if !singles.is_empty() {
+        let title = format!("--- 单仓 ({}) ---", singles.len());
+        println!("{title}");
+        file.push_str(&title);
+        file.push('\n');
+        for it in &singles {
+            println!("{}", it.url);
+            println!("# count={} name={} speed={}", it.count, it.name, fmt_speed_line(it));
+            file.push_str(&it.url);
+            file.push('\n');
+            file.push_str(&format!(
+                "# count={} name={} speed={}\n",
+                it.count,
+                it.name,
+                fmt_speed_line(it)
+            ));
+        }
+    }
+    if !multis.is_empty() {
+        let title = format!("--- 多仓 ({}) ---", multis.len());
+        println!("{title}");
+        file.push_str(&title);
+        file.push('\n');
+        for it in &multis {
+            println!("{}", it.url);
+            println!("# count={}", it.count);
+            file.push_str(&it.url);
+            file.push('\n');
+            file.push_str(&format!("# count={}\n", it.count));
+        }
+    }
+
+    let dup_part = if n_dup > 0 {
+        format!(", {n_dup} duplicate")
+    } else {
+        String::new()
+    };
+    println!(
+        "--- {} of {} URLs passed ({} unreachable, {} format mismatch{dup_part}) ---",
+        n_ok,
+        urls.len(),
+        n_no,
+        n_mismatch
+    );
+
+    if let Some(out) = output {
+        std::fs::write(out, file).with_context(|| format!("cannot write {}", out.display()))?;
+        println!(
+            "wrote {} URL(s) to {}",
+            singles.len() + multis.len(),
+            out.display()
+        );
+    }
+    Ok(())
+}
+
 /// `-t file` (and json before --sort): report each probe as it finishes and
 /// write the passed (reachable + format-matched) urls to `-o`, one per line.
 fn cmd_file_probe(
@@ -942,7 +1087,7 @@ fn cmd_test(
 // Entry point
 // ---------------------------------------------------------------------------
 
-/// `sys net -i FILE [-t domain|tv|file|test] [-o FILE] [--timeout SECONDS] [-x SUFFIX ...] [--sort KEY ...]` or `sys net -t info -n DOMAIN ...`
+/// `sys net -i FILE [-t domain|tv|tvs|file|test] [-o FILE] [--timeout SECONDS] [-x SUFFIX ...] [--sort KEY ...]` or `sys net -t info -n DOMAIN ...`
 pub fn cmd_net(
     input: &Path,
     kind: NetType,
@@ -983,15 +1128,19 @@ pub fn cmd_net(
             let urls = read_addresses(input)?;
             cmd_domain(&client, &urls)
         }
-        NetType::Json | NetType::File => {
+        NetType::Json | NetType::File | NetType::Tvs => {
             if !excludes.is_empty() {
                 eprintln!("warning: -x/--exclude applies to `-t test` only; ignored");
             }
             if kind == NetType::File && !sort.is_empty() {
-                eprintln!("warning: --sort applies to `-t tv` only; ignored");
+                eprintln!("warning: --sort applies to `-t tv|tvs` only; ignored");
             }
             let urls = read_addresses(input)?;
-            cmd_content(&client, &urls, kind, output, sort)
+            match kind {
+                NetType::Json => cmd_json_sorted(&client, &urls, output, &parse_sort_keys(sort)?),
+                NetType::Tvs => cmd_tvs(&client, &urls, output, &parse_sort_keys(sort)?),
+                _ => cmd_file_probe(&client, &urls, output),
+            }
         }
         NetType::Test => {
             if !sort.is_empty() {
@@ -2358,5 +2507,64 @@ mod tests {
             vec![jslow.as_str(), jfast.as_str()],
             "ascending speed: slowest first: {content:?}"
         );
+    }
+
+    // --- -t tvs ---
+
+    const TVS_BODY_2: &[u8] =
+        br#"{"urls":[{"url":"a","name":"a"},{"url":"b","name":"b"}]}"#;
+    const TVS_BODY_3: &[u8] = br#"{"urls":[{"url":"a","name":"a"},{"url":"b","name":"b"},{"url":"c","name":"c"}]}"#;
+
+    #[test]
+    fn tvs_groups_single_and_multi() {
+        let single = spawn_server_owned(TV_BODY.to_vec(), "application/json", Duration::ZERO);
+        let multi3 = spawn_server_owned(TVS_BODY_3.to_vec(), "application/json", Duration::ZERO);
+        let multi2 = spawn_server_owned(TVS_BODY_2.to_vec(), "application/json", Duration::ZERO);
+        let out = temp_file("out-tvs1");
+        let client = test_client();
+        cmd_tvs(
+            &client,
+            &[single.clone(), multi3.clone(), multi2.clone()],
+            Some(&out),
+            &[],
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&out);
+        // Both group headers, single first.
+        assert!(content.starts_with("--- 单仓 (1) ---"), "{content}");
+        assert!(content.contains("--- 多仓 (2) ---"), "{content}");
+        // Single item carries the tv-style info line.
+        assert!(content.contains(&format!("{single}\n# count=1 name=0")), "{content}");
+        // Multi items carry only the url count, sorted descending (3 before 2).
+        assert!(content.contains(&format!("{multi3}\n# count=3")), "{content}");
+        assert!(content.contains(&format!("{multi2}\n# count=2")), "{content}");
+        let i3 = content.find(&multi3).unwrap();
+        let i2 = content.find(&multi2).unwrap();
+        assert!(i3 < i2, "multi group must be count desc: {content}");
+    }
+
+    #[test]
+    fn tvs_only_multi_group_omits_single_header() {
+        let multi = spawn_server_owned(TVS_BODY_3.to_vec(), "application/json", Duration::ZERO);
+        let out = temp_file("out-tvs2");
+        let client = test_client();
+        cmd_tvs(&client, &[multi.clone()], Some(&out), &[]).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&out);
+        assert!(content.contains("--- 多仓 (1) ---"), "{content}");
+        assert!(!content.contains("单仓"), "{content}");
+        assert!(content.contains(&format!("{multi}\n# count=3")), "{content}");
+    }
+
+    #[test]
+    fn tvs_rejects_body_without_sites_or_urls() {
+        let bad = spawn_server_owned(br#"{"foo":1}"#.to_vec(), "application/json", Duration::ZERO);
+        let out = temp_file("out-tvs3");
+        let client = test_client();
+        cmd_tvs(&client, &[bad], Some(&out), &[]).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&out);
+        assert!(content.is_empty(), "{content}");
     }
 }

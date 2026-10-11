@@ -58,7 +58,7 @@ Commands:
 | 格式转换      | `con`                | json / csv / md / yaml 互转：默认读 stdin（`cat a.json | sys con`），`-file` 读文件，`-i` 输入格式，`-o` 输出格式，`-out` 写文件；表格类转对象数组（类型推断 + 转义） |
 | 联网搜索      | `search`             | 博查 AI 网页搜索 API（`POST api.bochaai.com/v1/web-search`）：`--freshness`（时间过滤）/ `--summary`（AI 摘要）/ `--count`（1-50）/ `--page` / `--include-domains` / `--exclude-domains`（域名白黑名单），参数与官网接口一致；key 取自配置 `search` 段；`--json` 原始响应 / `--debug` 请求与响应。`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡（`--no-answer` 关闭 AI 答案） |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
-| 网络探测      | `net`                | 从文件批量读取 http(s) 地址并探测：`-i` 读文件（`#` 注释行跳过、每行多个地址、地址截取到空格/标点）；`-t domain`（默认，连续 3 次 GET 取平均响应时间，全部测完按平均时间升序打印）/ `-t tv`（响应体须为 JSON，支持 `--sort` 统计排序；旧名 `json`）/ `-t file`（响应体须为普通文本）/ `-t test`（只探测可访问性，不可访问的屏幕打印错误并从源文件删除，`-o` 输出清理后的源文件行）/ `-t info`（用 `-n` 域名查 RDAP 注册信息，查不到逐层回退上层域名）；tv/file 模式每测完一个即打印 url/可用性/状态码/响应时间/格式，`-o` 把检测成功的 url 写入文件（一行一个）；`--timeout` 单次请求超时 |
+| 网络探测      | `net`                | 从文件批量读取 http(s) 地址并探测：`-i` 读文件（`#` 注释行跳过、每行多个地址、地址截取到空格/标点）；`-t domain`（默认，连续 3 次 GET 取平均响应时间，全部测完按平均时间升序打印）/ `-t tv`（响应体须为 JSON，支持 `--sort` 统计排序；旧名 `json`）/ `-t tvs`（兼容 tv 与聚合两种 JSON：单仓 `.sites` / 多仓 `.urls` 分组输出）/ `-t file`（响应体须为普通文本）/ `-t test`（只探测可访问性，不可访问的屏幕打印错误并从源文件删除，`-o` 输出清理后的源文件行）/ `-t info`（用 `-n` 域名查 RDAP 注册信息，查不到逐层回退上层域名）；tv/file 模式每测完一个即打印 url/可用性/状态码/响应时间/格式，`-o` 把检测成功的 url 写入文件（一行一个）；`--timeout` 单次请求超时 |
 | 快捷垫片      | `short`              | 一键安装九种短命令（spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon）；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
 
 
@@ -856,6 +856,12 @@ sys short --temporary  # 不持久化 PATH，只打印可粘贴的片段
 
 * `-t file`：对每个地址发起 GET，响应体必须是**普通文本**（UTF-8 非二进制，且不是 JSON）才算通过
 
+* `-t tvs`：继承 `-t tv` 全部功能，并**额外支持聚合型 JSON**（如 `{"urls":[{"url":"...","name":"..."}, ...]}`）。每个地址的响应体可为两种格式：
+  * **单仓**：tv JSON（`sites` 非空数组、每元素含 `name`）→ 按 `--sort` 规则统计排序（count / name / speed，默认 count, name），`# count= name= speed=` 测试信息行
+  * **多仓**：只有 `urls` 数组 → 只统计 `urls` 节点数（`# count=N`），按节点数 **desc** 排序
+  * 两种格式都不是 → `[FMT]` 失败，不输出
+  * 最终**分组输出**：单仓组（标题 `--- 单仓 (N) ---`）在前、多仓组（`--- 多仓 (N) ---`）在后，屏幕与 `-o` 文件格式一致
+
 * `-t test`：只探测**可访问性**（收到任何 HTTP 响应即视为可访问，与 tv/file 口径一致）：
   * **每处理一行打印一行结果**，带进度计数 `[当前行/总行数]`（如 `[3/6]`，总行数含空行与注释行）：逐地址显示 `[OK] <url> time=...` 或 `[NO] <url> error=<原因>`，行尾标注 `-> kept` / `-> line deleted` / `-> kept (bad address removed)`；空行 / `#` 注释行 / 无地址行显示 `[skip]`
   * 不可访问的地址从源文件中删除：单地址行不可访问 → 删除整行；多地址行只删除其中不可访问的地址（保留可访问部分），整行全部不可访问才删除整行
@@ -884,6 +890,7 @@ https://www.example.com/readme.txt
 ```
 sys net -i urls.txt -t domain              # 3 次探测取平均，按平均响应时间升序打印
 sys net -i urls.txt -t tv -o ok.json.txt   # JSON 统计排序输出（--sort count name），通过地址 + # 测试信息写入文件
+sys net -i urls.txt -t tvs -o ok.groups.txt # 兼容 tv/聚合两种 JSON：单仓(.sites)/多仓(.urls) 分组输出，多仓按节点数降序
 sys net -i urls.txt -t file -o ok.txt      # 只把返回普通文本的可用地址写入文件
 sys net -i urls.txt -t test -o clean.txt   # 探测可访问性，不可访问打印错误并从源文件删除，结果写入 clean.txt
 sys net -i urls.txt -t tv --timeout 5      # 单次请求超时 5 秒
