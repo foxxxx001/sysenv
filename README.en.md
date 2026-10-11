@@ -569,7 +569,7 @@ Reads http(s) addresses from a file and probes each one for reachability and res
 - `-t tv` (old name `json`): GET each address; the body must be a **valid tv JSON document** to pass — it must parse as JSON (lenient: strict parse first, then a retry with trailing commas stripped) and carry a non-empty `sites` array whose every element has a `name` key (`lives`, `parses` and `rules` are optional); the data is then analyzed and the addresses are sorted with `--sort`:
   - `--sort count`: total number of `.sites` nodes, **desc**
   - `--sort name`: number of `.sites.name` entries containing `4k` (case-insensitive), **desc**
-  - `--sort speed` (typo `speen` also accepted): downloads the `.spider` url (string `url;md5;...` keeps the part before `;`, an array uses its first string element) and sorts by download speed **asc**
+  - `--sort speed`: downloads the `.spider` url (string `url;md5;...` keeps the part before `;`, an array uses its first string element) and sorts by download speed **asc**
   - `--sort` is repeatable (e.g. `--sort count name`), applied in order for multi-key sorting; **defaults to `count, name` when omitted**
   - each passed address prints its url, followed by a `# count=<N> name=<N> speed=<speed or failure reason>` test-info line; **screen and `-o` share the same format** (url + `#` line); unreachable / non-JSON addresses are still reported as `[NO]` / `[FMT]` and not written to `-o`
 - `-t file`: GET each address; the body must be **plain text** (valid UTF-8, non-binary, and not JSON) to pass
@@ -584,6 +584,7 @@ Reads http(s) addresses from a file and probes each one for reachability and res
   - empty lines, `#` comment lines and lines without any address are always kept
   - `-o FILE` writes the **cleaned source result** (kept lines verbatim, in original order), one line each
   - `-x SUFFIX` (repeatable, e.g. `-x m3u -x zip`): addresses whose file-name suffix matches (case-insensitive, leading dot optional) are **removed directly without probing** — e.g. with `-x m3u`, `https://www.main.com/123.m3u` is removed without a request; a single-address line is deleted, a multi-address line drops only that address, printed as `[X] <url> excluded (-x m3u)`. Only active in `-t test` mode; other modes ignore it with a warning
+- tv/tvs modes probe addresses **in parallel**: `--thread NUM` sets how many addresses are tested at once (default: **number of CPU cores**); each address prints one `[OK]` / `[FMT]` / `[NO]` line as soon as it finishes (status + response time), then the sorted/grouped report and the summary line follow when all are done
 - tv/file modes print one result **as soon as each probe finishes**: url / reachability / status code / response time / actual format (json / text / binary)
 - `-o FILE`: writes every **passed** url (reachable and format-matched) to the file (tv/file modes only)
 - `-t info`: queries the **registration info** of each `-n DOMAIN` via RDAP (bootstrapped through `rdap.org`) — registrar / registrant entity (registrant + org) / email / address / **country** / created / expires / status / nameservers; when a name has no registration data, the **parent domain is tried next** (`a.b.example.com` → `b.example.com` → `example.com`), annotated as `no registration data, using parent ...`; `-n` is repeatable (`-n a.com -n b.com`); this mode needs no `-i` (`-o` / `-x` / `--sort` are ignored with a warning)
@@ -606,6 +607,7 @@ sys net -i urls.txt -t tvs -o ok.groups.txt # accepts tv + aggregator JSON: sing
 sys net -i urls.txt -t file -o ok.txt      # write reachable plain-text urls to a file
 sys net -i urls.txt -t test -o clean.txt   # probe reachability, remove unreachable lines, write the cleaned source to clean.txt
 sys net -i urls.txt -t tv --timeout 5      # 5 s per-request timeout
+sys net -i urls.txt -t tv --thread 8        # tv/tvs parallel probing with 8 concurrent addresses (default: CPU cores)
 sys net -t info -n www.example.com         # query registration info; falls back to the parent domain when missing
 sys net -t info -n a.com -n b.com          # query several domains at once
 ```

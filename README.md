@@ -850,7 +850,7 @@ sys short --temporary  # 不持久化 PATH，只打印可粘贴的片段
 * `-t tv`（旧名 `json`）：对每个地址发起 GET，响应体须为**有效的 tv JSON 数据**才算通过——能解析为 JSON（容忍尾随逗号等小瑕疵：先严格解析、失败则清理尾随逗号后重试），且 `sites` 为非空数组、每个元素都含 `name` 字段（`lives` / `parses` / `rules` 均可选）；通过后对数据统计并排序输出：
   * `--sort count`：统计 `.sites` 节点总数，按数量 **desc** 排序
   * `--sort name`：统计 `.sites.name` 中含 `4k`（大小写不敏感）的数量，按数量 **desc** 排序
-  * `--sort speed`（拼写 `speen` 也接受）：下载 `.spider` 中的 url（字符串 `url;md5;...` 取 `;` 前部分，数组取首个字符串元素），按下载速度 **asc** 排序
+  * `--sort speed`：下载 `.spider` 中的 url（字符串 `url;md5;...` 取 `;` 前部分，数组取首个字符串元素），按下载速度 **asc** 排序
   * `--sort` 可多个（如 `--sort count name`），按出现顺序多级排序；**不提供默认按 count, name 排序**
   * 每个通过的地址打印一行 url，下一行打印 `# count=<N> name=<N> speed=<速度或失败原因>` 测试信息；**屏幕与 `-o` 文件格式一致**（url + `#` 行）；不可达 / 非 JSON 地址照旧打印 `[NO]` / `[FMT]`，不写入 `-o`
 
@@ -870,6 +870,8 @@ sys short --temporary  # 不持久化 PATH，只打印可粘贴的片段
   * `-x SUFFIX`（可重复，如 `-x m3u -x zip`）：文件名后缀匹配（大小写不敏感，前导点可省略）的地址**不发起检测、直接删除**——例如 `-x m3u` 时 `https://www.main.com/123.m3u` 被直接删除；单地址行整体删除，多地址行只删该地址，打印 `[X] <url> excluded (-x m3u)`。仅在 `-t test` 模式生效，其他模式忽略并提示 warning
 
 * `-t info`：通过 RDAP（`rdap.org` 引导）查询 `-n DOMAIN` 的**注册信息**——注册商 / 注册主体（注册人 registrant + 注册组织 org）/ 邮箱 / 地址 / **国家/地区（Country）** / 创建时间 / 到期时间 / 状态 / 域名服务器；若该域名查不到注册数据，自动**逐层回退到其上层域名**（`a.b.example.com` → `b.example.com` → `example.com`），打印时标注 `no registration data, using parent ...`；`-n` 可重复（`-n a.com -n b.com`），此模式不需要 `-i`（`-o` / `-x` / `--sort` 忽略并 warning）
+
+* tv / tvs 模式**多地址并行探测**：`--thread NUM` 指定一次并行测试多少个地址（默认 **CPU 内核数量**）；每个地址测完立即在屏幕打印一条 `[OK]` / `[FMT]` / `[NO]` 结果（含状态码与响应时间），全部完成后输出排序分组结果与汇总行
 
 * tv / file 模式**每测完一个立即打印**一条结果：URL / 是否可用 / 状态码 / 响应时间 / 实际格式（json / text / binary）
 
@@ -894,6 +896,7 @@ sys net -i urls.txt -t tvs -o ok.groups.txt # 兼容 tv/聚合两种 JSON：单�
 sys net -i urls.txt -t file -o ok.txt      # 只把返回普通文本的可用地址写入文件
 sys net -i urls.txt -t test -o clean.txt   # 探测可访问性，不可访问打印错误并从源文件删除，结果写入 clean.txt
 sys net -i urls.txt -t tv --timeout 5      # 单次请求超时 5 秒
+sys net -i urls.txt -t tv --thread 8        # tv/tvs 模式并行探测 8 个地址（默认 CPU 内核数）
 sys net -t info -n www.example.com         # 查域名注册信息；查不到自动回退上层域名
 sys net -t info -n a.com -n b.com          # 一次查多个域名
 ```

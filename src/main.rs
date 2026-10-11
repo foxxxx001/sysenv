@@ -558,10 +558,13 @@ struct NetArgs {
     /// Per-request timeout in seconds (default 10)
     #[arg(long, value_name = "SECONDS", default_value_t = net::DEFAULT_TIMEOUT_SECS)]
     timeout: f64,
+    /// In tv/tvs mode, how many addresses are probed concurrently (default: number of CPU cores)
+    #[arg(long = "thread", value_name = "NUM")]
+    threads: Option<usize>,
     /// In test mode, skip probing URLs whose file-name suffix matches (case-insensitive, leading dot optional) and remove them directly; repeatable, e.g. -x m3u -x zip
     #[arg(short = 'x', long, value_name = "SUFFIX")]
     exclude: Vec<String>,
-    /// tv mode sort keys, applied in order (count | name | speed; speen is accepted as speed); default: count name; repeatable, e.g. --sort count name
+    /// tv mode sort keys, applied in order (count | name | speed); default: count name; repeatable, e.g. --sort count name
     #[arg(long, value_name = "KEY", num_args = 1..)]
     sort: Vec<String>,
     /// Domain names whose registration info is queried in -t info mode (repeatable, e.g. -n a.com -n b.com); when a name has no registration data its parent domain is tried
@@ -950,13 +953,14 @@ fn run_net(n: NetArgs) -> anyhow::Result<()> {
             n.kind
         )
     })?;
-    net::cmd_net(
+    net::cmd_net_t(
         input,
         n.kind,
         n.output.as_deref(),
         n.timeout,
         &n.exclude,
         &n.sort,
+        n.threads,
     )
 }
 

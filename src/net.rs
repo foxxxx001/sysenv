@@ -594,65 +594,143 @@ fn cmp_speed(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
     }
 }
 
-/// `-t tv --sort KEY ...`: probe each address, parse the body as JSON,
-/// compute the count / name / speed statistics, sort by the given keys (in
-/// order; default `count, name`), then print each url followed by a `#`
-/// test-info line — on screen and in `-o` alike. Failed addresses are
-/// reported as `[NO]`/`[FMT]` and are not part of the sorted output.
+/// Default parallelism for `-t tv|tvs`: the number of CPU cores.
+fn default_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .max(1)
+}
+
+/// Run `probe` over every unique address with at most `threads` concurrent
+/// workers. Each probe prints its own result line as soon as it finishes;
+/// the collected values come back in input order (used for the sorted
+/// report, whose order is independent of completion order).
+fn probe_parallel<T: Send>(
+    unique: &[String],
+    threads: usize,
+    probe: impl Fn(&str) -> T + Send + Sync,
+) -> Vec<T> {
+    let threads = threads.max(1).min(unique.len().max(1));
+    let next = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+    let (tx, rx) = std::sync::mpsc::channel::<(usize, T)>();
+    std::thread::scope(|scope| {
+        let probe = &probe;
+        for _ in 0..threads {
+            let tx = tx.clone();
+            let next = next.clone();
+            scope.spawn(move || loop {
+                let idx = {
+                    let mut n = next.lock().unwrap();
+                    let i = *n;
+                    *n += 1;
+                    i
+                };
+                if idx >= unique.len() {
+                    break;
+                }
+                let r = probe(&unique[idx]);
+                let _ = tx.send((idx, r));
+            });
+        }
+    });
+    drop(tx);
+    let mut by_idx: Vec<Option<T>> = (0..unique.len()).map(|_| None).collect();
+    for (idx, r) in rx.iter() {
+        by_idx[idx] = Some(r);
+    }
+    by_idx.into_iter().map(|o| o.unwrap()).collect()
+}
+
+/// `-t tv --sort KEY ...`: probe each address (in parallel, `threads`
+/// concurrent, one result line per address as soon as it finishes), parse the
+/// body as JSON, compute the count / name / speed statistics, sort by the
+/// given keys (in order; default `count, name`), then print each url followed
+/// by a `#` test-info line — on screen and in `-o` alike. Failed addresses
+/// are reported as `[NO]`/`[FMT]` and are not part of the sorted output.
 fn cmd_json_sorted(
     client: &reqwest::blocking::Client,
     urls: &[String],
     output: Option<&Path>,
     keys: &[SortKey],
+    threads: usize,
 ) -> Result<()> {
-    let mut items: Vec<SortItem> = Vec::new();
-    let mut n_ok = 0usize;
-    let mut n_mismatch = 0usize;
-    let mut n_no = 0usize;
-    let mut n_dup = 0usize;
+    // Deduplicate first (parallel probing would otherwise race the seen set).
     let mut seen: HashSet<String> = HashSet::new();
-
+    let mut unique: Vec<String> = Vec::with_capacity(urls.len());
+    let mut n_dup = 0usize;
     for url in urls {
         if !seen.insert(dup_key(url)) {
             n_dup += 1;
             println!("[DUP] {url}  duplicate (already checked), skipped");
             continue;
         }
+        unique.push(url.clone());
+    }
+    let w = unique.iter().map(|u| u.chars().count()).max().unwrap_or(8).max(8);
+
+    enum ProbeOut {
+        Ok(SortItem),
+        No,
+        Fmt,
+    }
+    let results = probe_parallel(&unique, threads, |url| {
         match request(client, url, true) {
-            Ok((status, _, Some(body))) => {
-                match parse_tv_json(&body) {
-                    Some(v) => {
-                        if !is_valid_tv(&v) {
-                            n_mismatch += 1;
-                            println!(
-                                "[FMT] {url}  status={status}  body lacks tv nodes (sites with name)"
-                            );
-                            continue;
-                        }
-                        let (speed, speed_note) = probe_speed(client, &v);
-                        n_ok += 1;
-                        items.push(SortItem {
-                            url: url.clone(),
-                            count: count_sites(&v),
-                            name: count_name_4k(&v),
-                            speed,
-                            speed_note,
-                        });
-                    }
-                    None => {
-                        n_mismatch += 1;
-                        println!("[FMT] {url}  status={status}  body is not valid JSON");
-                    }
+            Ok((status, elapsed, Some(body))) => match parse_tv_json(&body) {
+                Some(v) if is_valid_tv(&v) => {
+                    let (speed, speed_note) = probe_speed(client, &v);
+                    println!(
+                        "[OK]  {:<w$}  status={status}  time={:<9}  format=json",
+                        url,
+                        fmt_ms(elapsed)
+                    );
+                    ProbeOut::Ok(SortItem {
+                        url: url.to_string(),
+                        count: count_sites(&v),
+                        name: count_name_4k(&v),
+                        speed,
+                        speed_note,
+                    })
                 }
-            }
+                Some(_) => {
+                    println!(
+                        "[FMT] {:<w$}  status={status}  time={:<9}  body lacks tv nodes (sites with name)",
+                        url,
+                        fmt_ms(elapsed)
+                    );
+                    ProbeOut::Fmt
+                }
+                None => {
+                    println!(
+                        "[FMT] {:<w$}  status={status}  time={:<9}  body is not valid JSON",
+                        url,
+                        fmt_ms(elapsed)
+                    );
+                    ProbeOut::Fmt
+                }
+            },
             Ok((status, _, None)) => {
-                n_no += 1;
-                println!("[NO]  {url}  status={status}  unexpected empty body");
+                println!("[NO]  {:<w$}  status={status}  unexpected empty body", url);
+                ProbeOut::No
             }
             Err(e) => {
-                n_no += 1;
-                println!("[NO]  {url}  error={e}");
+                println!("[NO]  {:<w$}  error={e}", url);
+                ProbeOut::No
             }
+        }
+    });
+    let mut n_ok = 0usize;
+    let mut n_no = 0usize;
+    let mut n_mismatch = 0usize;
+    let mut items: Vec<SortItem> = Vec::new();
+    for r in results {
+        match r {
+            ProbeOut::Ok(it) => {
+                n_ok += 1;
+                items.push(it);
+            }
+            ProbeOut::No => n_no += 1,
+            ProbeOut::Fmt => n_mismatch += 1,
         }
     }
 
@@ -713,70 +791,113 @@ struct TvsMultiItem {
 }
 
 /// `-t tvs`: like tv, but accepts both tv JSON (`.sites` -> "单仓" group) and
-/// aggregator JSON (`.urls` -> "多仓" group). The two groups are printed
-/// separately (single first, then multi), each with its own `#` test-info
-/// line, on screen and in `-o` alike. The single group uses the tv
-/// `--sort KEY ...` rules (default `count, name`); the multi group is sorted
-/// by url count descending only.
+/// aggregator JSON (`.urls` -> "多仓" group). Addresses are probed in
+/// parallel (`threads` concurrent), one result line printed as soon as each
+/// probe finishes; the two groups are then printed separately (single first,
+/// then multi), each with its own `#` test-info line, on screen and in `-o`
+/// alike. The single group uses the tv `--sort KEY ...` rules (default
+/// `count, name`); the multi group is sorted by url count descending only.
 fn cmd_tvs(
     client: &reqwest::blocking::Client,
     urls: &[String],
     output: Option<&Path>,
     keys: &[SortKey],
+    threads: usize,
 ) -> Result<()> {
-    let mut singles: Vec<SortItem> = Vec::new();
-    let mut multis: Vec<TvsMultiItem> = Vec::new();
-    let mut n_ok = 0usize;
-    let mut n_mismatch = 0usize;
-    let mut n_no = 0usize;
-    let mut n_dup = 0usize;
+    // Deduplicate first.
     let mut seen: HashSet<String> = HashSet::new();
-
+    let mut unique: Vec<String> = Vec::with_capacity(urls.len());
+    let mut n_dup = 0usize;
     for url in urls {
         if !seen.insert(dup_key(url)) {
             n_dup += 1;
             println!("[DUP] {url}  duplicate (already checked), skipped");
             continue;
         }
+        unique.push(url.clone());
+    }
+    let w = unique.iter().map(|u| u.chars().count()).max().unwrap_or(8).max(8);
+
+    enum ProbeOut {
+        Single(SortItem),
+        Multi(TvsMultiItem),
+        No,
+        Fmt,
+    }
+    let results = probe_parallel(&unique, threads, |url| {
         match request(client, url, true) {
-            Ok((status, _, Some(body))) => match parse_tv_json(&body) {
-                Some(v) => {
-                    if is_valid_tv(&v) {
-                        let (speed, speed_note) = probe_speed(client, &v);
-                        n_ok += 1;
-                        singles.push(SortItem {
-                            url: url.clone(),
-                            count: count_sites(&v),
-                            name: count_name_4k(&v),
-                            speed,
-                            speed_note,
-                        });
-                    } else if let Some(arr) = v.get("urls").and_then(|u| u.as_array()) {
-                        n_ok += 1;
-                        multis.push(TvsMultiItem {
-                            url: url.clone(),
-                            count: arr.len(),
-                        });
-                    } else {
-                        n_mismatch += 1;
-                        println!(
-                            "[FMT] {url}  status={status}  body lacks tv nodes (sites with name) or urls"
-                        );
-                    }
+            Ok((status, elapsed, Some(body))) => match parse_tv_json(&body) {
+                Some(v) if is_valid_tv(&v) => {
+                    let (speed, speed_note) = probe_speed(client, &v);
+                    println!(
+                        "[OK]  {:<w$}  status={status}  time={:<9}  format=json(tv)",
+                        url,
+                        fmt_ms(elapsed)
+                    );
+                    ProbeOut::Single(SortItem {
+                        url: url.to_string(),
+                        count: count_sites(&v),
+                        name: count_name_4k(&v),
+                        speed,
+                        speed_note,
+                    })
+                }
+                Some(v) if v.get("urls").and_then(|u| u.as_array()).is_some() => {
+                    let count = v.get("urls").and_then(|u| u.as_array()).map(|a| a.len()).unwrap_or(0);
+                    println!(
+                        "[OK]  {:<w$}  status={status}  time={:<9}  format=json(urls)",
+                        url,
+                        fmt_ms(elapsed)
+                    );
+                    ProbeOut::Multi(TvsMultiItem {
+                        url: url.to_string(),
+                        count,
+                    })
+                }
+                Some(_) => {
+                    println!(
+                        "[FMT] {:<w$}  status={status}  time={:<9}  body lacks tv nodes (sites with name) or urls",
+                        url,
+                        fmt_ms(elapsed)
+                    );
+                    ProbeOut::Fmt
                 }
                 None => {
-                    n_mismatch += 1;
-                    println!("[FMT] {url}  status={status}  body is not valid JSON");
+                    println!(
+                        "[FMT] {:<w$}  status={status}  time={:<9}  body is not valid JSON",
+                        url,
+                        fmt_ms(elapsed)
+                    );
+                    ProbeOut::Fmt
                 }
             },
             Ok((status, _, None)) => {
-                n_no += 1;
-                println!("[NO]  {url}  status={status}  unexpected empty body");
+                println!("[NO]  {:<w$}  status={status}  unexpected empty body", url);
+                ProbeOut::No
             }
             Err(e) => {
-                n_no += 1;
-                println!("[NO]  {url}  error={e}");
+                println!("[NO]  {:<w$}  error={e}", url);
+                ProbeOut::No
             }
+        }
+    });
+    let mut n_ok = 0usize;
+    let mut n_no = 0usize;
+    let mut n_mismatch = 0usize;
+    let mut singles: Vec<SortItem> = Vec::new();
+    let mut multis: Vec<TvsMultiItem> = Vec::new();
+    for r in results {
+        match r {
+            ProbeOut::Single(it) => {
+                n_ok += 1;
+                singles.push(it);
+            }
+            ProbeOut::Multi(it) => {
+                n_ok += 1;
+                multis.push(it);
+            }
+            ProbeOut::No => n_no += 1,
+            ProbeOut::Fmt => n_mismatch += 1,
         }
     }
 
@@ -1096,6 +1217,21 @@ pub fn cmd_net(
     exclude: &[String],
     sort: &[String],
 ) -> Result<()> {
+    cmd_net_t(input, kind, output, timeout_secs, exclude, sort, None)
+}
+
+/// Like `cmd_net`, with an explicit parallelism hint for `-t tv|tvs`
+/// (`None` = number of CPU cores).
+pub fn cmd_net_t(
+    input: &Path,
+    kind: NetType,
+    output: Option<&Path>,
+    timeout_secs: f64,
+    exclude: &[String],
+    sort: &[String],
+    threads: Option<usize>,
+) -> Result<()> {
+    let threads = threads.unwrap_or_else(default_threads).max(1);
     if !(timeout_secs > 0.0) || !timeout_secs.is_finite() {
         bail!("--timeout must be a positive number of seconds");
     }
@@ -1137,8 +1273,8 @@ pub fn cmd_net(
             }
             let urls = read_addresses(input)?;
             match kind {
-                NetType::Json => cmd_json_sorted(&client, &urls, output, &parse_sort_keys(sort)?),
-                NetType::Tvs => cmd_tvs(&client, &urls, output, &parse_sort_keys(sort)?),
+                NetType::Json => cmd_json_sorted(&client, &urls, output, &parse_sort_keys(sort)?, threads),
+                NetType::Tvs => cmd_tvs(&client, &urls, output, &parse_sort_keys(sort)?, threads),
                 _ => cmd_file_probe(&client, &urls, output),
             }
         }
@@ -1457,8 +1593,7 @@ fn cmd_info_with_base(
 
 /// Sort keys for `-t json --sort KEY ...`, applied in the given order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SortKey {
-    /// Total number of `.sites` nodes, descending
+enum SortKey {    /// Total number of `.sites` nodes, descending
     Count,
     /// Number of `.sites.name` entries containing "4k" (case-insensitive), descending
     Name,
@@ -1466,14 +1601,14 @@ enum SortKey {
     Speed,
 }
 
-/// Parse `--sort` values. `speen` is accepted as a typo for `speed`.
+/// Parse `--sort` values: count | name | speed.
 fn parse_sort_keys(raw: &[String]) -> Result<Vec<SortKey>> {
     let mut keys = Vec::new();
     for r in raw {
         let k = match r.trim().to_ascii_lowercase().as_str() {
             "count" => SortKey::Count,
             "name" => SortKey::Name,
-            "speed" | "speen" => SortKey::Speed,
+            "speed" => SortKey::Speed,
             other => bail!(
                 "invalid --sort key {other:?} (expected count | name | speed)"
             ),
@@ -2387,12 +2522,15 @@ mod tests {
     #[test]
     fn parse_sort_keys_accepts_aliases_and_rejects_unknown() {
         assert_eq!(
-            parse_sort_keys(&["count".into(), "name".into(), "speed".into(), "speen".into()]).unwrap(),
-            vec![SortKey::Count, SortKey::Name, SortKey::Speed, SortKey::Speed]
+            parse_sort_keys(&["count".into(), "name".into(), "speed".into()]).unwrap(),
+            vec![SortKey::Count, SortKey::Name, SortKey::Speed]
         );
         assert_eq!(parse_sort_keys(&[]).unwrap(), vec![]);
         let err = parse_sort_keys(&["count".into(), "foo".into()]).unwrap_err();
         assert!(err.to_string().contains("invalid --sort key"));
+        // `speen` is no longer accepted (only `speed` is).
+        let err = parse_sort_keys(&["speen".into()]).unwrap_err();
+        assert!(err.to_string().contains("invalid --sort key"), "{err}");
     }
 
     /// `--sort count`: more sites first. Input order is reversed to prove the
@@ -2551,6 +2689,7 @@ mod tests {
             &[single.clone(), multi3.clone(), multi2.clone()],
             Some(&out),
             &[],
+            2,
         )
         .unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
@@ -2573,7 +2712,7 @@ mod tests {
         let multi = spawn_server_owned(TVS_BODY_3.to_vec(), "application/json", Duration::ZERO);
         let out = temp_file("out-tvs2");
         let client = test_client();
-        cmd_tvs(&client, &[multi.clone()], Some(&out), &[]).unwrap();
+        cmd_tvs(&client, &[multi.clone()], Some(&out), &[], 1).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&out);
         assert!(content.contains("--- 多仓 (1) ---"), "{content}");
@@ -2586,9 +2725,53 @@ mod tests {
         let bad = spawn_server_owned(br#"{"foo":1}"#.to_vec(), "application/json", Duration::ZERO);
         let out = temp_file("out-tvs3");
         let client = test_client();
-        cmd_tvs(&client, &[bad], Some(&out), &[]).unwrap();
+        cmd_tvs(&client, &[bad], Some(&out), &[], 1).unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&out);
         assert!(content.is_empty(), "{content}");
+    }
+
+    // --- parallelism ---
+
+    /// tv/tvs probe addresses concurrently: with `threads` < address count
+    /// the collected report still matches the serial result (group order,
+    /// counts), and every address produces one immediate `[OK]`-style line.
+    #[test]
+    fn json_sorted_parallel_matches_serial() {
+        let tv3 = spawn_server_owned(SORT_JSON_3.to_vec(), "application/json", Duration::ZERO);
+        let tv1 = spawn_server_owned(SORT_JSON_1.to_vec(), "application/json", Duration::ZERO);
+        let input = temp_file("in-par");
+        let out = temp_file("out-par");
+        std::fs::write(&input, format!("{tv3}\n{tv1}\n")).unwrap();
+        // Serial (default threads) vs explicit threads=1 must agree.
+        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
+        let serial = std::fs::read_to_string(&out).unwrap();
+        cmd_net_t(&input, NetType::Json, Some(&out), 10.0, &[], &[], Some(1)).unwrap();
+        let parallel = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(serial, parallel, "parallel report must match serial report");
+        assert!(parallel.contains("# count=3 name=2"), "{parallel}");
+        assert!(parallel.contains("# count=1 name=0"), "{parallel}");
+    }
+
+    #[test]
+    fn tvs_parallel_reports_each_address_and_groups() {
+        let single = spawn_server_owned(TV_BODY.to_vec(), "application/json", Duration::ZERO);
+        let multi3 = spawn_server_owned(TVS_BODY_3.to_vec(), "application/json", Duration::ZERO);
+        let multi2 = spawn_server_owned(TVS_BODY_2.to_vec(), "application/json", Duration::ZERO);
+        let out = temp_file("out-par-tvs");
+        let client = test_client();
+        cmd_tvs(&client, &[single.clone(), multi3.clone(), multi2.clone()], Some(&out), &[], 2)
+            .unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&out);
+        assert!(content.starts_with("--- 单仓 (1) ---"), "{content}");
+        assert!(content.contains("--- 多仓 (2) ---"), "{content}");
+        assert!(content.contains(&format!("{multi3}\n# count=3")), "{content}");
+        assert!(content.contains(&format!("{multi2}\n# count=2")), "{content}");
+        let i3 = content.find(&multi3).unwrap();
+        let i2 = content.find(&multi2).unwrap();
+        assert!(i3 < i2, "multi group must be count desc: {content}");
     }
 }
