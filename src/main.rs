@@ -39,7 +39,9 @@ Examples:
   sys ai provider openai
   sys ai info provider
   sys ai info model
-  sys ai info price openai,anthropic
+  sys ai price openai,anthropic
+  sys ai price --src openrouter
+  sys ai price deepseek --src openrouter
   sys ai info balance minimax
   sys ai info sale-price agnes
   sys ai info list-model agnes
@@ -251,6 +253,8 @@ enum AiCmd {
     Provider(AiProviderArgs),
     /// Inspect the local config: providers (name/api_base/api_key), models ({provider}:{name}), model prices (models.dev)
     Info(AiInfoArgs),
+    /// Show model prices (models.dev by default; --src openrouter for openrouter.ai pricing)
+    Price(AiPriceArgs),
     /// Chat with an LLM configured in ~/.sysenv/config.yaml (OpenAI / Anthropic compatible)
     Chat(ChatArgs),
     /// Serve the configured providers as an OpenAI-compatible API server
@@ -260,20 +264,26 @@ enum AiCmd {
     Image(ImageArgs),
     /// Run a chat task template from the config (no -t lists the tasks)
     Task(AiTaskArgs),
-    /// Export the local config to another tool's format (codex | opencode | litellm | freellmapi);
-    /// --show previews the target config file path and content, -f writes with a backup
+    /// Export the local config to another tool's format (codex | opencode | litellm | freellmapi | codebuddy | workbuddy | trae);
+    /// --show previews the target config file path and content, -f writes with a backup,
+    /// --update merges into the software's default config file (backup first)
     Config(AiConfigArgs),
 }
 
 #[derive(Args)]
 struct AiConfigArgs {
-    /// Target format: codex (TOML) | opencode (JSON) | litellm (YAML) | freellmapi (JSON)
+    /// Target format: codex (TOML) | opencode (JSON) | litellm (YAML) | freellmapi (JSON) |
+    /// codebuddy | workbuddy (models.json) | trae (trae_cli.yaml)
     #[arg(value_name = "FORMAT")]
     format: String,
     /// Select models: omit for all; `provider:*` = a provider's whole model list;
-    /// `provider:model` = one specific model
+    /// `provider:model` = one specific model (legacy single selector; prefer -m)
     #[arg(value_name = "SELECT")]
     provider: Option<String>,
+    /// Select models to export, same comma-separated forms as `sys ai chat -m`
+    /// ({provider}:{model} / {provider}:* / bare model name, half/full-width commas)
+    #[arg(short = 'm', long, value_name = "MODEL", conflicts_with = "provider")]
+    models: Option<String>,
     /// Write the export to this file instead of stdout (the previous file is backed up first)
     #[arg(short = 'f', long, value_name = "FILE")]
     file: Option<PathBuf>,
@@ -284,6 +294,11 @@ struct AiConfigArgs {
     /// that would be applied (no file is written)
     #[arg(long)]
     show: bool,
+    /// Update the software's default config file in place: back up a .bak file first,
+    /// merge the missing selected models into it, and report what was added
+    /// (codebuddy / workbuddy / trae only; -f FILE overrides the default path)
+    #[arg(long, conflicts_with = "show")]
+    update: bool,
 }
 
 #[derive(Args)]
@@ -320,6 +335,29 @@ struct AiModelArgs {
     /// Output format: json (JSON array) or csv (table); default is a formatted text view
     #[arg(short = 'o', long = "output-format", value_name = "FORMAT", value_enum, conflicts_with = "json")]
     output: Option<OutFormat>,
+    /// Data source: models (default, models.dev) | openrouter (openrouter.ai catalogue)
+    #[arg(long = "src", value_name = "SRC", default_value = "models")]
+    src: String,
+}
+
+#[derive(Args)]
+struct AiPriceArgs {
+    /// Comma-separated provider names to look up models.dev prices (src=models);
+    /// with --src openrouter: optional model filter (comma-separated model id/name terms)
+    #[arg(value_name = "P1,P2,...")]
+    providers: Vec<String>,
+    /// Data source: models (default, models.dev) | openrouter (openrouter.ai pricing)
+    #[arg(long = "src", value_name = "SRC", default_value = "models")]
+    src: String,
+    /// Maximum number of entries to show (src=openrouter)
+    #[arg(long)]
+    limit: Option<usize>,
+    /// Print the raw JSON (as a JSON array) instead of the formatted view (src=openrouter)
+    #[arg(long)]
+    json: bool,
+    /// Output format: json / csv / yaml / md (src=openrouter)
+    #[arg(short = 'o', long = "output-format", value_name = "FORMAT", value_enum, conflicts_with = "json")]
+    output: Option<OutFormat>,
 }
 
 #[derive(Args)]
@@ -351,13 +389,12 @@ struct CnModelArgs {
 
 #[derive(Args)]
 struct AiInfoArgs {
-    /// What to show: provider | model | price | list-model (omitted: the configured providers and models together)
+    /// What to show: provider | model | balance | sale-price | list-model (omitted: the configured providers and models together; prices moved to `sys ai price`)
     #[arg(value_name = "FIELD")]
     field: Option<String>,
     /// provider KEYWORD: keep only providers whose name contains KEYWORD;
     /// model KEYWORD: keep only models of providers whose name contains KEYWORD
     /// (or `provider:model` / `provider:*` to select specific models);
-    /// price P1,P2,...: comma-separated provider names to look up models.dev prices;
     /// balance PROVIDER: query the provider's official balance with its api_key;
     /// sale-price PROVIDER: scrape the provider's official pricing page;
     /// list-model PROVIDER: query the provider's own models API and list the
@@ -866,6 +903,8 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             m.model_type.as_deref(),
             m.provider.as_deref(),
             m.price,
+            Some(m.src.as_str()),
+            m.limit,
         ),
         AiCmd::CnModel(m) => ai::cmd_cn_model(
             m.name.as_deref(),
@@ -888,6 +927,14 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             a.refresh,
         ),
         AiCmd::Info(i) => ai::cmd_info(i.field.as_deref(), &i.param, i.refresh, i.config.as_deref(), i.output, i.json),
+        AiCmd::Price(p) => ai::cmd_price(
+            &p.providers,
+            Some(p.src.as_str()),
+            p.limit,
+            p.json,
+            p.output,
+            a.refresh,
+        ),
         AiCmd::Chat(c) => chat::cmd_chat(
             &c.msg,
             c.config.as_deref(),
@@ -945,6 +992,8 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             g.file.as_deref(),
             g.config.as_deref(),
             g.show,
+            g.models.as_deref(),
+            g.update,
         ),
     }
 }

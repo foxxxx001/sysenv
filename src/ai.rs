@@ -21,6 +21,390 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 const DATA_URL: &str = "https://models.dev/api.json";
+const OPENROUTER_MODELS_URL: &str = "https://openrouter.ai/api/v1/models";
+
+// ---------------------------------------------------------------------------
+// OpenRouter model catalogue (https://openrouter.ai/api/v1/models)
+// ---------------------------------------------------------------------------
+
+/// Cache file for the OpenRouter catalogue (same 24 h TTL as models.dev).
+fn openrouter_cache_file() -> PathBuf {
+    cache_dir().join("openrouter-models.json")
+}
+
+fn load_openrouter_cache() -> Option<Vec<Value>> {
+    let file = openrouter_cache_file();
+    let meta = std::fs::metadata(&file).ok()?;
+    let mtime = meta.modified().ok()?;
+    if SystemTime::now().duration_since(mtime).map(|d| d < CACHE_TTL).unwrap_or(false) {
+        if let Ok(content) = std::fs::read_to_string(&file) {
+            if let Ok(v) = serde_json::from_str::<Value>(&content) {
+                if let Some(arr) = v.get("data").and_then(|d| d.as_array()).cloned() {
+                    return Some(arr);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn save_openrouter_cache(text: &str) {
+    let dir = cache_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(openrouter_cache_file(), text);
+}
+
+/// Fetch the OpenRouter model catalogue (`data[]` array). Cached for 24 h
+/// unless `refresh` is set; the request has a 30 s timeout.
+fn fetch_openrouter_models(refresh: bool) -> Result<Vec<Value>> {
+    if !refresh {
+        if let Some(arr) = load_openrouter_cache() {
+            return Ok(arr);
+        }
+    }
+    eprintln!("sys: fetching {OPENROUTER_MODELS_URL} ...");
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("cannot build HTTP client")?;
+    let resp = client
+        .get(OPENROUTER_MODELS_URL)
+        .send()
+        .with_context(|| format!("cannot fetch {OPENROUTER_MODELS_URL}"))?;
+    if !resp.status().is_success() {
+        bail!("openrouter.ai returned HTTP {}", resp.status());
+    }
+    let text = resp.text().context("cannot read openrouter.ai response")?;
+    let v: Value = serde_json::from_str(&text).context("invalid JSON received from openrouter.ai")?;
+    let arr = v
+        .get("data")
+        .and_then(|d| d.as_array())
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("unexpected openrouter.ai payload (expected a `data` array)"))?;
+    save_openrouter_cache(&text);
+    Ok(arr)
+}
+
+/// `pricing.prompt` as f64 (missing / non-numeric -> None).
+fn or_price(m: &Value, key: &str) -> Option<f64> {
+    m.get("pricing")
+        .and_then(|p| p.get(key))
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<f64>().ok())
+        .or_else(|| {
+            m.get("pricing")
+                .and_then(|p| p.get(key))
+                .and_then(|v| v.as_f64())
+        })
+}
+
+/// Format a price for display. OpenRouter's `pricing` fields are per-token USD;
+/// every view of them is per 1M tokens, so the value is multiplied by 1e6 here.
+/// Keeps up to 8 decimals and trims trailing zeros (`0.00000025` -> `$0.25`);
+/// None -> "-".
+fn or_fmt_price(v: Option<f64>) -> String {
+    match v {
+        Some(x) => {
+            let mut s = format!("{:.8}", x * 1e6);
+            while s.ends_with('0') && !s.ends_with(".0") {
+                s.pop();
+            }
+            format!("${s}")
+        }
+        None => "-".to_string(),
+    }
+}
+
+/// One row of the OpenRouter model list.
+#[derive(Clone)]
+struct OrModelRow {
+    id: String,
+    name: String,
+    context_length: u64,
+    prompt: Option<f64>,
+    completion: Option<f64>,
+    created: String,
+    /// Raw `created` epoch seconds (0 when missing), for JSON/YAML output.
+    created_ts: i64,
+}
+
+fn or_model_rows(items: &[Value]) -> Vec<OrModelRow> {
+    items
+        .iter()
+        .filter_map(|m| {
+            let id = m.get("id").and_then(|x| x.as_str())?.to_string();
+            let name = m.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let ctx = m.get("context_length").and_then(|x| x.as_u64()).unwrap_or(0);
+            let prompt = or_price(m, "prompt");
+            let created_ts = m.get("created").and_then(|x| x.as_i64()).unwrap_or(0);
+            let created = m
+                .get("created")
+                .and_then(|x| x.as_i64())
+                .map(|ts| {
+                    chrono::DateTime::from_timestamp(ts, 0)
+                        .map(|dt| {
+                            dt.with_timezone(&chrono::Local)
+                                .format("%Y-%m-%d %H:%M:%S")
+                                .to_string()
+                        })
+                        .unwrap_or_else(|| ts.to_string())
+                })
+                .or_else(|| m.get("created").and_then(|x| x.as_str()).map(str::to_string))
+                .unwrap_or_default();
+            Some(OrModelRow { id, name, context_length: ctx, prompt, completion: or_price(m, "completion"), created, created_ts })
+        })
+        .collect()
+}
+
+/// Text view of the OpenRouter model list (aligned columns).
+fn or_model_table(rows: &[OrModelRow]) -> String {
+    let w_id = rows.iter().map(|r| r.id.chars().count()).max().unwrap_or(2).max(2);
+    let w_nm = rows.iter().map(|r| r.name.chars().count()).max().unwrap_or(4).max(4);
+    let w_ctx = rows.iter().map(|r| fmt_num(r.context_length).len()).max().unwrap_or(7).max(7);
+    let w_cr = rows.iter().map(|r| r.created.chars().count()).max().unwrap_or(7).max(7);
+    let mut s = format!(
+        "{:<w_id$}  {:<w_nm$}  {:>w_ctx$}  {:>10}  {:<w_cr$}\n",
+        "ID", "NAME", "CONTEXT", "PRICE/1M", "CREATED"
+    );
+    for r in rows {
+        s.push_str(&format!(
+            "{:<w_id$}  {:<w_nm$}  {:>w_ctx$}  {:>10}  {:<w_cr$}\n",
+            r.id,
+            r.name,
+            fmt_num(r.context_length),
+            or_fmt_price(r.prompt),
+            r.created
+        ));
+    }
+    s
+}
+
+/// Filter OpenRouter rows by a query: exact (case-insensitive) on id / name
+/// first, then substring on id / name. `queries` accepts several
+/// comma-separated terms (half- or full-width); a row matches when any term
+/// matches. Empty list keeps everything.
+fn filter_or_rows(rows: Vec<OrModelRow>, queries: &[String]) -> Vec<OrModelRow> {
+    if queries.is_empty() {
+        return rows;
+    }
+    let exact: Vec<OrModelRow> = rows
+        .iter()
+        .filter(|r| {
+            queries
+                .iter()
+                .any(|q| ci_eq(&r.id, q) || ci_eq(&r.name, q))
+        })
+        .cloned()
+        .collect();
+    if !exact.is_empty() {
+        return exact;
+    }
+    rows.into_iter()
+        .filter(|r| {
+            queries
+                .iter()
+                .any(|q| contains_ci(&r.id, q) || contains_ci(&r.name, q))
+        })
+        .collect()
+}
+
+/// Parse a query string into comma-separated terms (half- or full-width).
+fn parse_or_queries(query: Option<&str>) -> Vec<String> {
+    query
+        .map(|s| {
+            s.split([',', '，'])
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Render the OpenRouter catalogue (`items` = raw `data[]` array) in the
+/// requested format. `query` filters rows (exact then substring), `limit` caps
+/// the output; every price value is per 1M tokens. Pure function (no I/O), so
+/// it is unit-testable.
+fn or_model_view(items: &[Value], query: Option<&str>, limit: Option<usize>, fmt: Option<OutFormat>) -> Result<String> {
+    let queries = parse_or_queries(query);
+    let mut rows = filter_or_rows(or_model_rows(items), &queries);
+    if let Some(n) = limit {
+        rows.truncate(n.max(1));
+    }
+    Ok(match fmt {
+        Some(OutFormat::Json) => {
+            let arr: Vec<Value> = rows
+                .iter()
+                .map(|r| {
+                    json!({
+                        "id": r.id,
+                        "name": r.name,
+                        "context_length": r.context_length,
+                        "price_prompt": r.prompt.map(|x| x * 1e6),
+                        "created": r.created_ts,
+                    })
+                })
+                .collect();
+            serde_json::to_string_pretty(&Value::Array(arr))?
+        }
+        Some(OutFormat::Csv) => {
+            let mut s = String::from("id,name,context_length,price_prompt,created\n");
+            for r in &rows {
+                s.push_str(&format!(
+                    "{},{},{},{},{}\n",
+                    csv_escape(&r.id),
+                    csv_escape(&r.name),
+                    r.context_length,
+                    r.prompt.map(|x| format!("{:.8}", x * 1e6)).unwrap_or_default(),
+                    r.created
+                ));
+            }
+            s
+        }
+        Some(OutFormat::Md) => {
+            let cells: Vec<Vec<String>> = rows
+                .iter()
+                .map(|r| {
+                    vec![
+                        r.id.clone(),
+                        r.name.clone(),
+                        fmt_num(r.context_length),
+                        or_fmt_price(r.prompt),
+                        r.created.clone(),
+                    ]
+                })
+                .collect();
+            md_table(&["id", "name", "context_length", "price/1M", "created"], &cells)
+        }
+        Some(OutFormat::Yaml) => {
+            let arr: Vec<Value> = rows
+                .iter()
+                .map(|r| {
+                    json!({
+                        "id": r.id,
+                        "name": r.name,
+                        "context_length": r.context_length,
+                        "price_prompt": r.prompt.map(|x| x * 1e6),
+                        "created": r.created_ts,
+                    })
+                })
+                .collect();
+            serde_yaml::to_string(&Value::Array(arr))?
+        }
+        None => or_model_table(&rows),
+    })
+}
+
+/// `sys ai model --src openrouter` — list the OpenRouter catalogue.
+pub fn cmd_model_openrouter(query: Option<&str>, json: bool, out: Option<OutFormat>, limit: Option<usize>, refresh: bool) -> Result<()> {
+    let items = fetch_openrouter_models(refresh)?;
+    let fmt = out.or(if json { Some(OutFormat::Json) } else { None });
+    print!("{}", or_model_view(&items, query, limit, fmt)?);
+    Ok(())
+}
+
+/// One row of the OpenRouter price view (`sys ai price --src openrouter`).
+struct OrPriceRow {
+    id: String,
+    name: String,
+    prompt: Option<f64>,
+    completion: Option<f64>,
+}
+
+/// `sys ai price --src openrouter` — prompt/completion prices of the OpenRouter
+/// catalogue (all models, or the comma-separated filtered subset). Prices are
+/// per 1M tokens in every output format.
+pub fn cmd_price_openrouter(query: Option<&str>, json: bool, out: Option<OutFormat>, limit: Option<usize>, refresh: bool) -> Result<()> {
+    let items = fetch_openrouter_models(refresh)?;
+    let queries = parse_or_queries(query);
+    let mut rows: Vec<OrPriceRow> = filter_or_rows(or_model_rows(&items), &queries)
+        .into_iter()
+        .map(|r| OrPriceRow {
+            id: r.id,
+            name: r.name,
+            prompt: r.prompt,
+            completion: r.completion,
+        })
+        .collect();
+    if let Some(n) = limit {
+        rows.truncate(n.max(1));
+    }
+    let fmt = out.or(if json { Some(OutFormat::Json) } else { None });
+    match fmt {
+        Some(OutFormat::Json) => {
+            let arr: Vec<Value> = rows
+                .iter()
+                .map(|r| {
+                    json!({
+                        "id": r.id,
+                        "name": r.name,
+                        "price_prompt": r.prompt.map(|x| x * 1e6),
+                        "price_completion": r.completion.map(|x| x * 1e6),
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
+        }
+        Some(OutFormat::Csv) => {
+            println!("id,name,price_prompt,price_completion");
+            for r in &rows {
+                println!(
+                    "{},{},{},{}",
+                    csv_escape(&r.id),
+                    csv_escape(&r.name),
+                    r.prompt.map(|x| format!("{:.8}", x * 1e6)).unwrap_or_default(),
+                    r.completion.map(|x| format!("{:.8}", x * 1e6)).unwrap_or_default()
+                );
+            }
+        }
+        Some(OutFormat::Md) => {
+            let cells: Vec<Vec<String>> = rows
+                .iter()
+                .map(|r| {
+                    vec![
+                        r.id.clone(),
+                        r.name.clone(),
+                        or_fmt_price(r.prompt),
+                        or_fmt_price(r.completion),
+                    ]
+                })
+                .collect();
+            println!("{}", md_table(&["id", "name", "prompt/1M", "completion/1M"], &cells));
+        }
+        Some(OutFormat::Yaml) => {
+            let arr: Vec<Value> = rows
+                .iter()
+                .map(|r| {
+                    json!({
+                        "id": r.id,
+                        "name": r.name,
+                        "price_prompt": r.prompt.map(|x| x * 1e6),
+                        "price_completion": r.completion.map(|x| x * 1e6),
+                    })
+                })
+                .collect();
+            println!("{}", serde_yaml::to_string(&Value::Array(arr))?);
+        }
+        None => {
+            let w_id = rows.iter().map(|r| r.id.chars().count()).max().unwrap_or(2).max(2);
+            let w_nm = rows.iter().map(|r| r.name.chars().count()).max().unwrap_or(4).max(4);
+            println!(
+                "{:<w_id$}  {:<w_nm$}  {:>12}  {:>12}    (per 1M tokens, USD)",
+                "ID", "NAME", "PROMPT", "COMPLETION"
+            );
+            for r in &rows {
+                println!(
+                    "{:<w_id$}  {:<w_nm$}  {:>12}  {:>12}",
+                    r.id,
+                    r.name,
+                    or_fmt_price(r.prompt),
+                    or_fmt_price(r.completion)
+                );
+            }
+        }
+    }
+    Ok(())
+}
 const CACHE_TTL: Duration = Duration::from_secs(24 * 3600);
 
 // ---------------------------------------------------------------------------
@@ -596,7 +980,15 @@ pub fn cmd_model(
     model_type: Option<&str>,
     provider: Option<&str>,
     price: Option<f64>,
+    src: Option<&str>,
+    limit_flag: Option<usize>,
 ) -> Result<()> {
+    if src.map(|s| ci_eq(s, "openrouter")).unwrap_or(false) {
+        if list || provider.is_some() || price.is_some() || open || model_type.is_some() || updated_after.is_some() {
+            bail!("`--list`, `--provider`, `--price`, `--open`, `--model-type` and `--date` only apply to the models.dev catalogue; with `--src openrouter` use NAME/SEARCH, `--limit`, `--json` or `-o`");
+        }
+        return cmd_model_openrouter(name.or(search), json, out, limit_flag, refresh);
+    }
     let data = fetch_data(refresh)?;
     let fmt = out.or(if json { Some(OutFormat::Json) } else { None });
     // `--price` defaults to 0: keep only free (or unpriced) models.
@@ -1184,9 +1576,9 @@ pub fn cmd_provider(
 //   with KEYWORD only the models of providers whose name contains it are kept
 //   (`provider:model` / `provider:*` select one / all models of a provider;
 //   when no provider matches, models whose name contains KEYWORD are listed).
-// - `info price P1,P2,...`     prints the per-1M-token price list (input /
+// - `sys ai price P1,P2,...`   prints the per-1M-token price list (input /
 //   output / cache_read) of the comma-separated providers (source: models.dev,
-//   24 h cache, --refresh to force).
+//   24 h cache, --refresh to force; prices moved here from the old `info price`).
 // - `info list-model PROVIDER`  queries the provider's own models API
 //   (`GET {api_base}/models` for OpenAI-compatible, `{api_base}/v1/models` for
 //   Anthropic) and prints the models the configured api_key can actually use
@@ -1621,9 +2013,6 @@ fn md_provider_rows(rows: &[(String, Value)]) -> String {
 ///   KEYWORD keeps only the models of providers whose name contains it
 ///   (`provider:model` / `provider:*` select specific models; model-name
 ///   matching is used as a fallback when no provider matches).
-/// - `price P1,P2,...` — per-1M-token prices (input / output / cache_read)
-///   of the comma-separated providers, fetched from models.dev (24 h cache,
-///   `--refresh` forces a re-fetch).
 /// - `balance PROVIDER` — query the provider's official balance with its
 ///   configured api_key (minimax / agnes have API handlers; the rest point to
 ///   their consoles because no API-key balance endpoint is exposed).
@@ -1802,24 +2191,6 @@ pub fn cmd_info(
                 }
             }
         }
-        Some("price") | Some("prices") => {
-            if fmt.is_some() {
-                bail!("`info price` does not support -o/--json (run without it for the price table)");
-            }
-            let providers: Vec<String> = param
-                .join(",")
-                .split([',', '，'])
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect();
-            if providers.is_empty() {
-                bail!("`info price` needs at least one provider name: `sys ai info price openai,anthropic`");
-            }
-            let data = fetch_data(refresh)?;
-            let rows = info_price_rows(&data, &providers)?;
-            print_price_rows(&rows);
-        }
         Some("balance") => {
             if fmt.is_some() {
                 bail!("`info balance` does not support -o/--json (run without it for the balance view)");
@@ -1847,8 +2218,40 @@ pub fn cmd_info(
             let (cfg, _) = chat::load_config(config)?;
             info_model_list(&cfg, &kw, fmt)?;
         }
-        Some(other) => bail!("unknown `info` field `{other}` (expected: provider | model | price | balance | sale-price | list-model)"),
+        Some(other) => bail!("unknown `info` field `{other}` (expected: provider | model | balance | sale-price | list-model; prices moved to `sys ai price`)"),
     }
+    Ok(())
+}
+
+/// `sys ai price P1,P2,... [--src SRC] [--refresh]` — the standalone price
+/// command (moved from `sys ai info price`).
+///
+/// - src = models (default): per-1M-token prices (input / output / cache_read)
+///   of the comma-separated providers from models.dev (24 h cache, `--refresh`
+///   forces a re-fetch) — identical to the old `info price`.
+/// - src = openrouter: the whole openrouter.ai catalogue with each model's
+///   `pricing.prompt` / `pricing.completion` prices (per 1M tokens).
+pub fn cmd_price(
+    providers: &[String],
+    src: Option<&str>,
+    limit: Option<usize>,
+    json: bool,
+    out: Option<OutFormat>,
+    refresh: bool,
+) -> Result<()> {
+    if src.map(|s| ci_eq(s, "openrouter")).unwrap_or(false) {
+        // Join positional args with commas so `sys ai price a b` means the
+        // same as `sys ai price a,b` (two filter terms, not one "a b" term).
+        let q = providers.join(",");
+        let q = q.trim();
+        return cmd_price_openrouter(if q.is_empty() { None } else { Some(q) }, json, out, limit, refresh);
+    }
+    if providers.is_empty() {
+        bail!("`sys ai price` needs at least one provider name: `sys ai price openai,anthropic` (or use --src openrouter)");
+    }
+    let data = fetch_data(refresh)?;
+    let rows = info_price_rows(&data, providers)?;
+    print_price_rows(&rows);
     Ok(())
 }
 
@@ -3225,14 +3628,17 @@ pub fn cmd_cn_model(
 // ---------------------------------------------------------------------------
 // `sys ai config` — export the local config to another tool's format.
 //
-// Formats: codex (TOML), opencode (JSON), litellm (YAML), freellmapi (JSON).
-// Selection: omit = every provider's every model; `provider:*` = one
-// provider's whole model list; `provider:model` = one specific model.
-// `-f/--file FILE` writes to a file instead of stdout.
+// Formats: codex (TOML), opencode (JSON), litellm (YAML), freellmapi (JSON),
+// codebuddy / workbuddy (models.json), trae (trae_cli.yaml).
+// Selection: omit = every provider's every model; `-m` accepts the same
+// comma-separated forms as `sys ai chat -m` (`provider:*` / `provider:model`
+// / bare model name). `-f/--file FILE` writes to a file instead of stdout;
+// `--update` merges into the software's default config file (backup first).
 // ---------------------------------------------------------------------------
 
 /// Pick the (provider_idx, model_idx) pairs described by `selector`:
-/// None -> all, `p:*` -> provider p, `p:m` -> one model of p.
+/// None -> all; otherwise the same formats as `sys ai chat -m`
+/// (comma-separated `p:*` / `p:m` / bare `m`, case-insensitive, deduped).
 fn select_models(cfg: &chat::Config, selector: Option<&str>) -> Result<Vec<(usize, usize)>> {
     match selector.map(str::trim).filter(|s| !s.is_empty()) {
         None => Ok(cfg
@@ -3241,31 +3647,10 @@ fn select_models(cfg: &chat::Config, selector: Option<&str>) -> Result<Vec<(usiz
             .enumerate()
             .flat_map(|(pi, p)| (0..p.models.len()).map(move |mi| (pi, mi)))
             .collect()),
-        Some(sel) => {
-            let (prov, m) = sel
-                .split_once(':')
-                .ok_or_else(|| anyhow::anyhow!("selector `{sel}` must be `provider:*` or `provider:model`"))?;
-            let prov = prov.trim();
-            let m = m.trim();
-            let pi = cfg
-                .providers
-                .iter()
-                .position(|p| contains_ci(&p.name, prov))
-                .ok_or_else(|| anyhow::anyhow!("no provider contains `{prov}` (available: {})", cfg.providers.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")))?;
-            if m == "*" {
-                if cfg.providers[pi].models.is_empty() {
-                    bail!("provider `{}` has no models", cfg.providers[pi].name);
-                }
-                Ok((0..cfg.providers[pi].models.len()).map(|mi| (pi, mi)).collect())
-            } else {
-                let mi = cfg.providers[pi]
-                    .models
-                    .iter()
-                    .position(|mdl| contains_ci(&mdl.name, m))
-                    .ok_or_else(|| anyhow::anyhow!("provider `{}` has no model containing `{m}`", cfg.providers[pi].name))?;
-                Ok(vec![(pi, mi)])
-            }
-        }
+        Some(sel) => Ok(chat::resolve_targets(cfg, sel)?
+            .iter()
+            .map(|t| (t.provider, t.model))
+            .collect()),
     }
 }
 
@@ -3400,38 +3785,151 @@ fn export_freellmapi(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<Str
     Ok(serde_json::to_string_pretty(&json!({ "customProviders": list }))?)
 }
 
-/// `sys ai config FORMAT [SELECT] [--show] [-f FILE] [-c FILE]`
+/// codebuddy / workbuddy: `models.json` entries (deduped by model `id`); the
+/// two tools share the same schema (`~/.codebuddy/models.json` and
+/// `~/.workbuddy/models.json`).
+fn codebuddy_entries(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for (pi, mi) in pairs {
+        let p = &cfg.providers[*pi];
+        let m = &p.models[*mi];
+        if out.iter().any(|v| v["id"].as_str() == Some(m.name.as_str())) {
+            continue;
+        }
+        let mut e = serde_json::Map::new();
+        e.insert("id".to_string(), json!(m.name));
+        e.insert("name".to_string(), json!(m.name));
+        e.insert("vendor".to_string(), json!(p.name));
+        e.insert(
+            "url".to_string(),
+            json!(format!("{}/chat/completions", p.api_base.trim_end_matches('/'))),
+        );
+        e.insert("apiKey".to_string(), json!(p.api_key));
+        if let Some(n) = m.max_input_tokens {
+            e.insert("maxInputTokens".to_string(), json!(n));
+        }
+        if let Some(n) = m.max_tokens {
+            e.insert("maxOutputTokens".to_string(), json!(n));
+        }
+        if let Some(t) = &m.model_type {
+            e.insert("supportsImages".to_string(), json!(t.contains("image")));
+        }
+        out.push(Value::Object(e));
+    }
+    out
+}
+
+fn export_codebuddy(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<String> {
+    let models = codebuddy_entries(cfg, pairs);
+    let available: Vec<Value> = models.iter().map(|m| m["id"].clone()).collect();
+    Ok(serde_json::to_string_pretty(&json!({ "models": models, "availableModels": available }))?
+        + "\n")
+}
+
+/// The model id of a trae `models` entry (`open_ai.model` / `claude.model`).
+fn trae_model_id(v: &Value) -> Option<&str> {
+    v.get("open_ai")
+        .and_then(|o| o.get("model"))
+        .and_then(|m| m.as_str())
+        .or_else(|| {
+            v.get("claude")
+                .and_then(|c| c.get("model"))
+                .and_then(|m| m.as_str())
+        })
+}
+
+/// trae: `trae_cli.yaml` `models` entries (deduped by model id). OpenAI
+/// compatible providers use the `open_ai` block, anthropic the `claude` one.
+fn trae_entries(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Vec<Value> {
+    let mut list: Vec<Value> = Vec::new();
+    for (pi, mi) in pairs {
+        let p = &cfg.providers[*pi];
+        let m = &p.models[*mi];
+        if list.iter().any(|v| trae_model_id(v) == Some(m.name.as_str())) {
+            continue;
+        }
+        if p.kind.eq_ignore_ascii_case("anthropic") {
+            list.push(json!({
+                "name": m.name,
+                "claude": { "base_url": p.api_base, "model": m.name, "api_key": p.api_key }
+            }));
+        } else {
+            list.push(json!({
+                "name": m.name,
+                "open_ai": { "base_url": p.api_base, "api_key": p.api_key, "model": m.name }
+            }));
+        }
+    }
+    list
+}
+
+fn export_trae(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<String> {
+    Ok(serde_yaml::to_string(&json!({ "models": trae_entries(cfg, pairs) }))
+        .context("cannot serialize trae config")?)
+}
+
+/// `sys ai config FORMAT [-m MODEL] [--show] [-f FILE] [-c FILE] [--update]`
 ///
 /// FORMAT: `codex` (TOML) | `opencode` (JSON) | `litellm` (YAML) |
-/// `freellmapi` (JSON). SELECT: omit for all models, `provider:*` for a whole
-/// provider, `provider:model` for one model. The export goes to stdout unless
-/// `-f/--file FILE` is given.
+/// `freellmapi` (JSON) | `codebuddy` | `workbuddy` (models.json) | `trae`
+/// (trae_cli.yaml). SELECTION: omit for all models; `-m` takes the same
+/// comma-separated forms as `sys ai chat -m` (`provider:*`, `provider:model`,
+/// bare model name; the legacy positional SELECT is equivalent to a single
+/// `-m` value). The export goes to stdout unless `-f/--file FILE` is given.
 ///
 /// `--show` previews without touching any file: it prints the target
 /// software's default config file path first, then the config that would be
 /// applied (and the `-f` write target when one is given). Writing with `-f`
 /// backs up an existing file to `FILE.bak-YYYYMMDD-HHMMSS` first, then
 /// overwrites it and prints what actually changed.
+///
+/// `--update` instead merges into the software's default config file (or the
+/// `-f` path when given): the file must exist (a missing file is reported and
+/// nothing happens), a `.bak-*` copy is made first, then the selected models
+/// that are not already present are added and reported.
 pub fn cmd_config(
     format: &str,
     selector: Option<&str>,
     out_file: Option<&Path>,
     config: Option<&Path>,
     show: bool,
+    models: Option<&str>,
+    update: bool,
 ) -> Result<()> {
     let (cfg, _) = chat::load_config(config)?;
-    let pairs = select_models(&cfg, selector)?;
+    let format_lc = format.to_ascii_lowercase();
+    let supported = matches!(
+        format_lc.as_str(),
+        "codex"
+            | "opencode"
+            | "openxode"
+            | "litellm"
+            | "freellmapi"
+            | "codebuddy"
+            | "workbuddy"
+            | "trae"
+    );
+    if !supported {
+        bail!(
+            "unknown format `{format}` (supported: codex, opencode, litellm, freellmapi, codebuddy, workbuddy, trae)"
+        );
+    }
+    let sel = models.or(selector);
+    let pairs = select_models(&cfg, sel)?;
     if pairs.is_empty() {
         bail!("nothing to export (no models selected)");
     }
-    let text = match format.to_ascii_lowercase().as_str() {
+    if update {
+        return cmd_config_update(&format_lc, &cfg, &pairs, out_file);
+    }
+    let text = match format_lc.as_str() {
         "codex" => export_codex(&cfg, &pairs)?,
         "opencode" | "openxode" => export_opencode(&cfg, &pairs)?,
         "litellm" => export_litellm(&cfg, &pairs)?,
         "freellmapi" => export_freellmapi(&cfg, &pairs)?,
-        other => bail!(
-            "unknown format `{other}` (supported: codex, opencode, litellm, freellmapi)"
-        ),
+        "codebuddy" | "workbuddy" => export_codebuddy(&cfg, &pairs)?,
+        "trae" => export_trae(&cfg, &pairs)?,
+        other => unreachable!("format validated above: {other}"),
     };
     if show {
         // Show mode: print the target software's config file path first, then the
@@ -3483,9 +3981,150 @@ pub fn cmd_config(
     Ok(())
 }
 
+/// `--update` mode of `cmd_config`: merge the selected models into the target
+/// software's default config file (or the `-f` override). The file must
+/// already exist — a missing one is reported and nothing is written. A
+/// `.bak-*` copy is made first, then the entries that are not already present
+/// are added; the added model ids are printed on success.
+fn cmd_config_update(
+    format: &str,
+    cfg: &chat::Config,
+    pairs: &[(usize, usize)],
+    out_file: Option<&Path>,
+) -> Result<()> {
+    if !matches!(format, "codebuddy" | "workbuddy" | "trae") {
+        bail!(
+            "`--update` is not supported for `{format}` (only codebuddy, workbuddy, trae; use -f FILE to write)"
+        );
+    }
+    let path = match out_file {
+        Some(p) => p.to_path_buf(),
+        None => software_config_path(format)
+            .ok_or_else(|| anyhow::anyhow!("no default config path for `{format}`; use -f FILE"))?,
+    };
+    if !path.exists() {
+        eprintln!("sys: config file not found at {}; nothing to update", path.display());
+        return Ok(());
+    }
+    let backup = backup_file(&path)?;
+    eprintln!("sys: backed up {} to {}", path.display(), backup.display());
+    let added = match format {
+        "codebuddy" | "workbuddy" => {
+            let entries = codebuddy_entries(cfg, pairs);
+            merge_json_models(&path, &entries)?
+        }
+        "trae" => {
+            let entries = trae_entries(cfg, pairs);
+            merge_trae_models(&path, &entries)?
+        }
+        _ => unreachable!("format checked above"),
+    };
+    if added.is_empty() {
+        eprintln!("sys: nothing to add; selected model(s) already present");
+    } else {
+        eprintln!("sys: added {} model(s): {}", added.len(), added.join(", "));
+    }
+    Ok(())
+}
+
+/// Merge `entries` into an existing models.json-style file (keyed by `id`),
+/// keeping every existing entry; returns the model ids that were added.
+fn merge_json_models(path: &Path, entries: &[Value]) -> Result<Vec<String>> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    // Strip a UTF-8 BOM (Windows editors often save it) before strict parsing.
+    let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+    let mut root: Value = serde_json::from_str(content)
+        .with_context(|| format!("{} is not valid JSON", path.display()))?;
+    let root_obj = root
+        .as_object_mut()
+        .with_context(|| format!("{} is not a JSON object", path.display()))?;
+    let models = root_obj
+        .entry("models".to_string())
+        .or_insert_with(|| json!([]));
+    let models = models
+        .as_array_mut()
+        .with_context(|| format!("{} `models` is not an array", path.display()))?;
+    let mut added: Vec<String> = Vec::new();
+    for e in entries {
+        let id = e["id"].as_str().unwrap_or_default();
+        if id.is_empty() || models.iter().any(|m| m["id"].as_str() == Some(id)) {
+            continue;
+        }
+        models.push(e.clone());
+        added.push(id.to_string());
+    }
+    if !added.is_empty() {
+        let mut avail: Vec<String> = root_obj
+            .get("availableModels")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        for id in &added {
+            if !avail.iter().any(|a| a == id) {
+                avail.push(id.clone());
+            }
+        }
+        root_obj.insert("availableModels".to_string(), json!(avail));
+        let text = serde_json::to_string_pretty(&root)?;
+        std::fs::write(path, text + "\n")
+            .with_context(|| format!("cannot write {}", path.display()))?;
+    }
+    Ok(added)
+}
+
+/// Merge trae `models` entries into an existing trae_cli.yaml (read as YAML
+/// into a JSON value, keyed by each entry's model id); returns the model ids
+/// that were added. Other top-level keys (mcp_servers, allowed_tools, ...)
+/// are preserved.
+/// shortcut: YAML comments in the existing file are dropped on rewrite; the
+/// .bak backup preserves the original, switch to a comment-preserving merge
+/// if that becomes a problem.
+fn merge_trae_models(path: &Path, entries: &[Value]) -> Result<Vec<String>> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+    let mut root: Value = if content.trim().is_empty() {
+        json!({})
+    } else {
+        serde_yaml::from_str(content)
+            .with_context(|| format!("{} is not valid YAML", path.display()))?
+    };
+    let root_obj = root
+        .as_object_mut()
+        .with_context(|| format!("{} is not a YAML mapping", path.display()))?;
+    let models = root_obj
+        .entry("models".to_string())
+        .or_insert_with(|| json!([]));
+    let models = models
+        .as_array_mut()
+        .with_context(|| format!("{} `models` is not a list", path.display()))?;
+    let mut added: Vec<String> = Vec::new();
+    for e in entries {
+        let id = trae_model_id(e).unwrap_or_default();
+        if id.is_empty() || models.iter().any(|m| trae_model_id(m) == Some(id)) {
+            continue;
+        }
+        models.push(e.clone());
+        added.push(id.to_string());
+    }
+    if !added.is_empty() {
+        let text = serde_yaml::to_string(&root)
+            .with_context(|| format!("cannot serialize {}", path.display()))?;
+        std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
+    }
+    Ok(added)
+}
+
 /// Default config file of the target software for `ai config` exports.
 /// Paths are the tools' usual conventions; `-f FILE` always overrides them.
 fn software_config_path(format: &str) -> Option<PathBuf> {
+    if format.eq_ignore_ascii_case("trae") {
+        #[cfg(not(windows))]
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+            return Some(PathBuf::from(xdg).join("trae_cli").join("trae_cli.yaml"));
+        }
+    }
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)?;
@@ -3500,6 +4139,23 @@ fn software_config_path_in(home: &Path, format: &str) -> Option<PathBuf> {
             Some(home.join(".config").join("opencode").join("opencode.json"))
         }
         "litellm" => Some(home.join(".litellm").join("config.yaml")),
+        "codebuddy" => Some(home.join(".codebuddy").join("models.json")),
+        "workbuddy" => Some(home.join(".workbuddy").join("models.json")),
+        "trae" => {
+            #[cfg(windows)]
+            {
+                Some(
+                    home.join("AppData")
+                        .join("Roaming")
+                        .join("trae_cli")
+                        .join("trae_cli.yaml"),
+                )
+            }
+            #[cfg(not(windows))]
+            {
+                Some(home.join(".config").join("trae_cli").join("trae_cli.yaml"))
+            }
+        }
         "freellmapi" => std::env::current_dir()
             .ok()
             .map(|d| d.join("freellmapi.config.json")),
@@ -3593,6 +4249,77 @@ mod tests {
     #[test]
     fn model_no_match() {
         assert!(search_models(&sample_data(), "nope").is_empty());
+    }
+
+    #[test]
+    fn or_fmt_price_is_per_1m_tokens() {
+        // OpenRouter `pricing` is per token; every view is per 1M tokens.
+        assert_eq!(or_fmt_price(Some(0.00000025)), "$0.25");
+        assert_eq!(or_fmt_price(Some(0.000005)), "$5.0");
+        assert_eq!(or_fmt_price(Some(0.0)), "$0.0");
+        assert_eq!(or_fmt_price(None), "-");
+    }
+
+    #[test]
+    fn filter_or_rows_exact_first_then_substring() {
+        let mk = |id: &str, name: &str| OrModelRow {
+            id: id.to_string(),
+            name: name.to_string(),
+            context_length: 0,
+            prompt: None,
+            completion: None,
+            created: String::new(),
+            created_ts: 0,
+        };
+        let rows = vec![
+            mk("deepseek/deepseek-chat", "DeepSeek: Chat"),
+            mk("deepseek/deepseek-r1", "DeepSeek: R1"),
+            mk("openai/gpt-4o", "OpenAI: GPT-4o"),
+            mk("moonshot/deepseek-tokenizer", "Moonshot: tokenizer"),
+        ];
+        // An exact id/name hit wins: only that row, not the substring hits.
+        let got = filter_or_rows(rows.clone(), &["deepseek/deepseek-r1".to_string()]);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].id, "deepseek/deepseek-r1");
+        // No exact hit: case-insensitive substring on id/name.
+        let got = filter_or_rows(rows.clone(), &["gpt".to_string()]);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].id, "openai/gpt-4o");
+        // Empty query keeps everything.
+        assert_eq!(filter_or_rows(rows.clone(), &[]).len(), 4);
+    }
+
+    #[test]
+    fn or_model_view_json_honours_query_and_price_unit() {
+        let items = vec![
+            json!({
+                "id": "deepseek/deepseek-chat",
+                "name": "DeepSeek: Chat",
+                "context_length": 64000,
+                "pricing": { "prompt": "0.00000014", "completion": "0.00000028" },
+                "created": 1700000000,
+            }),
+            json!({
+                "id": "openai/gpt-4o",
+                "name": "OpenAI: GPT-4o",
+                "context_length": 128000,
+                "pricing": { "prompt": "0.0000025", "completion": "0.00001" },
+                "created": 1700000001,
+            }),
+        ];
+        // The JSON view must honour the query filter (not dump all items)...
+        let out = or_model_view(&items, Some("deepseek"), Some(5), Some(OutFormat::Json)).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["id"], "deepseek/deepseek-chat");
+        // ...and report prices per 1M tokens (0.00000014 -> 0.14).
+        assert_eq!(arr[0]["price_prompt"], json!(0.14));
+        assert_eq!(arr[0]["created"], json!(1700000000));
+        // `--limit` also applies to the JSON view.
+        let out = or_model_view(&items, None, Some(1), Some(OutFormat::Json)).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -4545,6 +5272,172 @@ mod tests {
     }
 
     #[test]
+    fn config_select_chat_format() {
+        let cfg = sample_cfg();
+        // comma-separated `sys ai chat -m` format (half- and full-width)
+        let multi = select_models(&cfg, Some("agnes:agn-1,minimax:*")).unwrap();
+        assert_eq!(multi.len(), 2);
+        // bare model name matches across providers
+        let bare = select_models(&cfg, Some("agn-2")).unwrap();
+        assert_eq!(bare, vec![(0, 1)]);
+        // full-width comma separator
+        let full = select_models(&cfg, Some("minimax:mm-1，agnes:agn-1")).unwrap();
+        assert_eq!(full, vec![(1, 0), (0, 0)]);
+        // overlapping selectors are deduplicated
+        let dup = select_models(&cfg, Some("agn-1,agnes:agn-1")).unwrap();
+        assert_eq!(dup, vec![(0, 0)]);
+    }
+
+    #[test]
+    fn config_codebuddy_export_shape() {
+        let cfg = sample_cfg();
+        let all = select_models(&cfg, None).unwrap();
+        let s = export_codebuddy(&cfg, &all).unwrap();
+        let v: Value = serde_json::from_str(&s).unwrap();
+        let models = v["models"].as_array().unwrap();
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0]["id"], "agn-1");
+        assert_eq!(models[0]["name"], "agn-1");
+        assert_eq!(models[0]["vendor"], "agnes");
+        assert_eq!(models[0]["url"], "https://api.agnes.example/v1/chat/completions");
+        assert_eq!(models[0]["apiKey"], "sk-agn");
+        assert_eq!(v["availableModels"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn config_trae_export_shape() {
+        let cfg = sample_cfg();
+        let all = select_models(&cfg, None).unwrap();
+        let s = export_trae(&cfg, &all).unwrap();
+        let v: serde_yaml::Value = serde_yaml::from_str(&s).unwrap();
+        let list = v["models"].as_sequence().unwrap();
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0]["name"], "agn-1");
+        assert_eq!(list[0]["open_ai"]["model"], "agn-1");
+        assert_eq!(list[0]["open_ai"]["base_url"], "https://api.agnes.example/v1");
+        assert_eq!(list[0]["open_ai"]["api_key"], "sk-agn");
+    }
+
+    #[test]
+    fn config_new_formats_dedup_by_model_id() {
+        // two providers sharing a model name -> one entry, first provider wins
+        let mut cfg = sample_cfg();
+        cfg.providers[1].models.push(chat::Model {
+            name: "agn-1".into(),
+            weight: 1,
+            max_tokens: None,
+            max_input_tokens: None,
+            model_type: None,
+        });
+        let all = select_models(&cfg, None).unwrap();
+        let v: Value =
+            serde_json::from_str(&export_codebuddy(&cfg, &all).unwrap()).unwrap();
+        let ids: Vec<&str> = v["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|m| m["id"].as_str())
+            .collect();
+        assert_eq!(ids, vec!["agn-1", "agn-2", "mm-1"]);
+        let t: serde_yaml::Value =
+            serde_yaml::from_str(&export_trae(&cfg, &all).unwrap()).unwrap();
+        assert_eq!(t["models"].as_sequence().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn config_update_merges_models_json() {
+        let dir = std::env::temp_dir().join(format!("sysenv-cfg-update-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("models.json");
+        std::fs::write(
+            &path,
+            r#"{"models":[{"id":"keep-me","name":"keep-me","vendor":"x","url":"u","apiKey":"k"}],"availableModels":["keep-me"]}"#,
+        )
+        .unwrap();
+        let cfg = sample_cfg();
+        let all = select_models(&cfg, None).unwrap();
+        let added = merge_json_models(&path, &codebuddy_entries(&cfg, &all)).unwrap();
+        assert_eq!(added, vec!["agn-1", "agn-2", "mm-1"]);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["models"].as_array().unwrap().len(), 4);
+        assert_eq!(v["models"][0]["id"], "keep-me");
+        assert_eq!(v["availableModels"].as_array().unwrap().len(), 4);
+        // a second merge adds nothing and does not rewrite the file
+        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let added2 = merge_json_models(&path, &codebuddy_entries(&cfg, &all)).unwrap();
+        assert!(added2.is_empty());
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), mtime);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_update_models_json_accepts_bom() {
+        let dir = std::env::temp_dir().join(format!("sysenv-cfg-bom-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("models.json");
+        // Windows editors save models.json with a UTF-8 BOM; it must not break parsing
+        std::fs::write(&path, format!("\u{feff}{{\"models\":[],\"availableModels\":[]}}")).unwrap();
+        let cfg = sample_cfg();
+        let all = select_models(&cfg, None).unwrap();
+        let added = merge_json_models(&path, &codebuddy_entries(&cfg, &all)).unwrap();
+        assert_eq!(added.len(), 3);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_update_trae_yaml_merge() {
+        let dir = std::env::temp_dir().join(format!("sysenv-cfg-trae-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("trae_cli.yaml");
+        std::fs::write(
+            &path,
+            "mcp_servers:\n  foo: 1\nmodels:\n  - name: existing\n    open_ai:\n      base_url: https://old\n      api_key: k\n      model: existing\n",
+        )
+        .unwrap();
+        let cfg = sample_cfg();
+        let all = select_models(&cfg, None).unwrap();
+        let added = merge_trae_models(&path, &trae_entries(&cfg, &all)).unwrap();
+        assert_eq!(added.len(), 3);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("mcp_servers"));
+        assert!(text.contains("existing"));
+        assert!(text.contains("agn-1"));
+        // existing entry is not duplicated on a second merge
+        let added2 = merge_trae_models(&path, &trae_entries(&cfg, &all)).unwrap();
+        assert!(added2.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_update_missing_file_reported() {
+        let dir = std::env::temp_dir().join(format!("sysenv-cfg-miss-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("models.json");
+        let cfg = sample_cfg();
+        let all = select_models(&cfg, None).unwrap();
+        // absent file -> Ok, no file and no backup created
+        cmd_config_update("codebuddy", &cfg, &all, Some(&missing)).unwrap();
+        assert!(!missing.exists());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_update_rejects_unsupported_format() {
+        let dir = std::env::temp_dir().join(format!("sysenv-cfg-un-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[model_providers]\n").unwrap();
+        let cfg = sample_cfg();
+        let all = select_models(&cfg, None).unwrap();
+        assert!(cmd_config_update("codex", &cfg, &all, Some(&path)).is_err());
+        // unchanged and no stray backup
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[model_providers]\n");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn config_unknown_format_rejected() {
         let cfg = sample_cfg();
         let all = select_models(&cfg, None).unwrap();
@@ -4570,6 +5463,29 @@ mod tests {
         assert_eq!(
             software_config_path_in(&home, "litellm"),
             Some(home.join(".litellm").join("config.yaml"))
+        );
+        assert_eq!(
+            software_config_path_in(&home, "codebuddy"),
+            Some(home.join(".codebuddy").join("models.json"))
+        );
+        assert_eq!(
+            software_config_path_in(&home, "workbuddy"),
+            Some(home.join(".workbuddy").join("models.json"))
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            software_config_path_in(&home, "trae"),
+            Some(
+                home.join("AppData")
+                    .join("Roaming")
+                    .join("trae_cli")
+                    .join("trae_cli.yaml")
+            )
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            software_config_path_in(&home, "trae"),
+            Some(home.join(".config").join("trae_cli").join("trae_cli.yaml"))
         );
         assert_eq!(
             software_config_path_in(&home, "freellmapi"),

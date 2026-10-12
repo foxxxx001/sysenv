@@ -2,6 +2,32 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.4.72 (2026-10-12)
+
+### Added
+- **`sys ai config` adds codebuddy / workbuddy / trae export formats**:
+  - **`codebuddy`** (`~/.codebuddy/models.json`) and **`workbuddy`** (`~/.workbuddy/models.json`): share the models.json schema, one entry per model with `id` / `name` / `vendor` / `url` (`{api_base}/chat/completions`) / inline `apiKey`; `maxInputTokens` / `maxOutputTokens` / `supportsImages` are added when the config has `max_input_tokens` / `max_tokens` / a `type` containing `image`; duplicate model ids are deduped (first provider wins) and `availableModels` stays in sync
+  - **`trae`** (trae_cli.yaml): YAML `models` list, OpenAI-compatible providers use the `open_ai` block and anthropic the `claude` block, deduped by model id; default path Windows `%USERPROFILE%\AppData\Roaming\trae_cli\trae_cli.yaml`, Linux `$XDG_CONFIG_HOME` (or `~/.config/trae_cli/trae_cli.yaml`)
+- **`-m/--models` multi-model selection**: exactly the `sys ai chat -m` format (`provider:model` / `provider:*` / bare model name, half-/full-width comma separated, case-insensitive, overlapping selections deduped) via `chat::resolve_targets`; the legacy positional `SELECT` stays as a single selector (mutually exclusive with `-m`)
+- **`--update` in-place merge**: finds the software's default config file for the format (`-f FILE` overrides the path); a missing file prints `config file not found ... nothing to update`; an existing file is first backed up to `.bak-YYYYMMDD-HHMMSS` (never overwriting an older backup), then the missing selected models are merged in (existing entries and other top-level keys kept), and success reports `added N model(s): ...` (or `nothing to add`); supported only for codebuddy / workbuddy / trae (other formats error clearly); mutually exclusive with `--show`
+- README / CHANGELOG updated; version 0.4.71 -> 0.4.72
+
+### Fixed
+- **UTF-8 BOM stripped before merge parsing**: models.json / trae_cli.yaml saved by Windows editors often carry a BOM, which breaks strict JSON / YAML parsing (`expected value at line 1 column 1`); the content is `strip_prefix('\u{feff}')`-ed before parsing
+- 9 new unit tests (chat-format multi-select / dedup, codebuddy/trae export shape and dedup, models.json merge and second-merge no-op, trae YAML merge keeping other keys, missing-file prompt, unsupported-format error, BOM tolerance, default-path mapping); `cargo test` 247 -> 256 all green
+
+---
+
+## v0.4.71 (2026-10-12)
+
+### Added
+- **`sys ai model --src openrouter`**: new `--src` flag (default `models`, unchanged behavior when omitted); with `--src openrouter` it HTTP-GETs `https://openrouter.ai/api/v1/models` and lists each model's `id` / `name` / `context_length` / price (`pricing.prompt`, per 1M tokens) / creation time (`created` unix timestamp shown as local `YYYY-MM-DD HH:MM:SS`); **model-name filtering supported**: `sys ai model deepseek --src openrouter` / `-s QUERY` filter by name (exact first, then substring; comma-separated terms are OR-ed); without a name the full list is shown; supports `--limit N` / `--json` / `-o json|csv|yaml|md`
+- **`sys ai price` standalone command (fully replaces `info price`)**: `sys ai price P1,P2,...` queries models.dev prices (`--refresh`, text table — same behavior as the old `info price`); new `--src` flag (default `models`); with `--src openrouter` it queries openrouter.ai `/api/v1/models` and shows each model's `pricing.prompt` / `pricing.completion` prices (per 1M tokens, USD), with an **optional positional model-name filter** (`sys ai price deepseek --src openrouter`); no filter shows the full list; supports `--limit` / `--json` / `-o json|csv|yaml|md`
+- **Removed `sys ai info price`**: duplicated `sys ai price`; `info` no longer accepts the `price` field (the error points to `sys ai price`)
+- README.md / README.en.md updated; version 0.4.70 -> 0.4.71; `cargo test` 241 tests all green
+
+---
+
 ## v0.4.39 (2026-10-09)
 
 ### Changed

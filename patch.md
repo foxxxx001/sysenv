@@ -2,6 +2,38 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.4.72（2026-10-12）
+
+### 新增
+- **`sys ai config` 新增 codebuddy / workbuddy / trae 导出**：codebuddy / workbuddy 输出 models.json（`~/.codebuddy/models.json` / `~/.workbuddy/models.json`，同 schema：`models` + `availableModels`，每条 `id`/`name`/`vendor`/`url`/`apiKey`，可选 `maxInputTokens`/`maxOutputTokens`/`supportsImages`，同名模型去重）；trae 输出 trae_cli.yaml（Windows `%USERPROFILE%\AppData\Roaming\trae_cli\trae_cli.yaml`、Linux `$XDG_CONFIG_HOME` 或 `~/.config/trae_cli/trae_cli.yaml`，OpenAI 兼容 → `open_ai` 块、anthropic → `claude` 块）
+- **`-m/--models` 多模型选择**：与 `sys ai chat -m` 完全相同的格式（`provider:model` / `provider:*` / 裸模型名，半角/全角逗号多选，重叠去重），复用 `chat::resolve_targets`；原位置参数 `SELECT` 保留兼容（与 `-m` 互斥）
+- **`--update` 就地合并更新**：按格式到该软件默认配置目录找文件（`-f` 覆盖路径）；文件不存在提示 `config file not found ... nothing to update`；存在则先备份 `.bak-*`（不覆盖旧备份），合并写入缺失模型（保留已有条目与其它顶层键），成功提示 `added N model(s): ...`；仅 codebuddy / workbuddy / trae 支持，与 `--show` 互斥
+- 版本 0.4.71 -> 0.4.72；`cargo test` 247 -> 256 项全绿
+
+### 修复
+- **合并解析前剥离 UTF-8 BOM**（Windows 编辑器保存的 JSON/YAML 常见，否则严格解析报 `expected value at line 1 column 1`）
+
+---
+
+## v0.4.71（2026-10-12）
+
+### 新增
+- **`sys ai model --src openrouter`**：新增 `--src` 参数（默认 `models`，不提供时行为与旧版完全一致）；`--src openrouter` 时 HTTP GET 访问 `https://openrouter.ai/api/v1/models`，列表显示模型的 `id` / `name` / `context_length` / 价格（取 `pricing.prompt`，每 1M token）/ 创建时间（`created` unix 时间戳转为本地时间 `YYYY-MM-DD HH:MM:SS`）；**支持模型名称过滤**：`sys ai model deepseek --src openrouter` / `-s 关键词` 按名称筛选（先精确后子串，逗号分隔多词任一命中即保留），不提供时全列表；支持 `--limit N` / `--json` / `-o json|csv|yaml|md`；价格显示保留足够有效位（8 位小数并去尾零）
+- **`sys ai price` 独立命令（完全接管 `info price`）**：`sys ai price P1,P2,...` 查 models.dev 价格（`--refresh` / 文本表，行为同原 `info price`）；新增 `--src` 参数（默认 `models`）；`--src openrouter` 时访问 openrouter.ai `/api/v1/models`，将每个模型 `pricing` 的 `prompt` 与 `completion` 作为价格展示（每 1M token，USD），**可选位置参数作模型名称过滤**（`sys ai price deepseek --src openrouter`），不提供时全列表；支持 `--limit` / `--json` / `-o json|csv|yaml|md`
+- **删除 `sys ai info price`**：功能与 `sys ai price` 重复，`info` 不再接受 `price` 字段（报错提示迁移到 `sys ai price`）
+- README.md / README.en.md 同步用法；版本 0.4.70 -> 0.4.71；`cargo test` 247 项全绿
+
+### 修复
+- **OpenRouter 价格单位修正（per-token → per 1M）**：openrouter.ai `pricing` 字段为每 token USD，此前文本/MD 视图直接展示该值但表头标注 "per 1M tokens"，数值差 1e6；现在所有输出格式（文本 / md / csv / json / yaml）统一换算为每 1M token 价格
+- **`ai model --src openrouter` 的 JSON / YAML 输出忽略过滤与 `--limit`**：原分支遍历全量 `items`（458 个）而非过滤后的行，`sys ai model deepseek --src openrouter --json` 会输出全部模型；改为与 csv/md/文本一致基于过滤 + 截断后的行，`OrModelRow` 新增 `created_ts` 保留原始时间戳
+- **openrouter 目录加入 24h 本地缓存与 30s 请求超时**（原先每次调用实时 GET 全量目录且无超时，`--refresh` 强制重抓）
+- **`--src openrouter` 与其他过滤参数冲突时明确报错**：`--list` / `--provider` / `--price` / `--open` / `--model-type` / `--date` 仅适用于 models.dev 源，此前被静默忽略
+- **`sys ai price` 多位置参数按逗号拼接**：`sys ai price a b --src openrouter` 与 `a,b` 同义（原先拼成一个带空格的查询词）
+- **文档同步**：命令注释 `sys ai models` → `sys ai model`；`info` 模块注释与 README 总览中的过时 `info price` 指引改为指向 `sys ai price`
+- 新增 3 个单测（价格单位换算、过滤精确优先/子串、JSON 视图过滤与 limit）；`cargo test` 241 -> 247 项全绿
+
+---
+
 ## v0.4.70（2026-10-11）
 
 ### 新增

@@ -52,7 +52,7 @@ Commands:
 | 注册表导入导出   | `path export/import` | `.reg` / JSON / TXT 三种格式；合并或 `--replace` 整体替换；跨机迁移备份                                   |
 | 链接到 PATH  | `link`               | 硬链接 → 符号链接 → 拷贝三级自动回退；Windows `.cmd` 垫片；自定义命令名；系统目录或托管目录                               |
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
-| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1039 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度、模态与**参数规模（参数量）**）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key/docs/console/sample（sample 为该 provider models 接口的示例请求，如 `https://openrouter.ai/api/v1/models  Authorization:"Bearer sk-sample"`）、`info model` 列出 `{provider}:{name}` 模型清单、`info price` 查 models.dev 模型价格、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页、`info list-model` 用 provider 的 models 接口查可用模型）；`ai config`（导出配置为 codex / opencode / litellm / freellmapi 格式，支持 `provider:*` / `provider:model` 选择、`--show` 预览目标配置文件地址与内容、`-f` 写文件且写入前自动备份）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前按配置的 max_input_tokens 截断超长消息，能力字段默认只读本地配置、不查询 models.dev，`--update` 显式补齐缺失的 max_input_tokens / type 并写回配置，OpenAI / Anthropic 兼容）；`ai server`（`sys ai server [ADDR]` 以 OpenAI 兼容 API 对外提供 `/v1/chat/completions` 与 `/v1/models` 服务（默认 127.0.0.1:10000，可只给端口/IP；`--help` 查询服务状态并打印配置的 provider/model））；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
+| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1039 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度、模态与**参数规模（参数量）**）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key/docs/console/sample（sample 为该 provider models 接口的示例请求，如 `https://openrouter.ai/api/v1/models  Authorization:"Bearer sk-sample"`）、`info model` 列出 `{provider}:{name}` 模型清单、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页、`info list-model` 用 provider 的 models 接口查可用模型）；`ai price`（models.dev 价格，`--src openrouter` 换 openrouter.ai 目录，见命令参考）；`ai config`（导出配置为 codex / opencode / litellm / freellmapi / codebuddy / workbuddy / trae 格式，支持 `-m` 多模型选择（与 chat 同格式）、`--show` 预览目标配置文件地址与内容、`-f` 写文件且写入前自动备份、`--update` 就地合并更新默认配置文件且先备份）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前按配置的 max_input_tokens 截断超长消息，能力字段默认只读本地配置、不查询 models.dev，`--update` 显式补齐缺失的 max_input_tokens / type 并写回配置，OpenAI / Anthropic 兼容）；`ai server`（`sys ai server [ADDR]` 以 OpenAI 兼容 API 对外提供 `/v1/chat/completions` 与 `/v1/models` 服务（默认 127.0.0.1:10000，可只给端口/IP；`--help` 查询服务状态并打印配置的 provider/model））；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
 | 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin（带扩展名如 `me.txt` 则显示文件，引号包裹强制搜索）；2 参目录树文本/源码搜索（`-e` / `-i` / `-t` / `-w` / `-c`）；3 参 OLD NEW PATH 就地替换；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件 |
 | 格式转换      | `con`                | json / csv / md / yaml 互转：默认读 stdin（`cat a.json | sys con`），`-file` 读文件，`-i` 输入格式，`-o` 输出格式，`-out` 写文件；表格类转对象数组（类型推断 + 转义） |
@@ -302,6 +302,8 @@ sys ai model gpt-4.1 --refresh        # 强制重抓数据（--refresh 属 ai �
 sys ai provider openai                # Provider 详情（api / npm / models 数量与清单）
 sys ai provider -s groq               # Provider 子串搜索
 sys ai provider --list                # 列出全部 Provider
+sys ai model --src openrouter --limit 10   # 数据源 openrouter.ai：id/name/context_length/pricing.prompt/created 列表
+sys ai model --src openrouter -o json      # openrouter 数据源 JSON 输出
 ```
 
 CSV 列：model 为 `id,name,provider,family,status,knowledge_cutoff,description,context,input_limit,output_limit,cost_input,cost_output,cost_cache_read,modalities_input,modalities_output,reasoning,tool_call,structured_output,temperature,attachment,open_weights,release_date,last_updated,canonical_model_id`；provider 为 `id,name,api,env,npm,models_count`。
@@ -517,7 +519,6 @@ sys ai image --list-provider --list-model             # 列出配置中的 Provi
 
 * `info provider [KEYWORD]`：列出 `clients` 中全部 provider 的 `name / api_base / api_key` 及官方 `DOCS`（帮助文档）与 `CONSOLE`（控制台）地址（按 provider 名称匹配内置收录表，未收录显示 `-`）；带 KEYWORD 时只保留名称包含该词的 provider（大小写不敏感），无匹配报错并列出可用名称；**默认输出 YAML 列表**（`-o yaml` 等价），`-o json` / `--json` 输出 JSON 数组，`-o csv` 输出 CSV 表（JSON/YAML 字段 `name` / `api_base` / `api_key` / `docs` / `console`）
 * `info model [KEYWORD]`：列出全部 provider 下的 model，格式 `{provider}:{name}`；带 KEYWORD 时按 provider 名称包含匹配（支持 `provider:model` / `provider:*` 精确选择），无 provider 命中时回退按 model 名称匹配；`-o json` / `-o csv` / `--json` 输出 JSON 数组或 CSV 表（JSON 字段 `provider` / `name`）
-* `info price P1,P2,...`：按逗号分隔（支持全角 `，`）的 provider 名称查询模型价格列表，输出 input / output / cache_read 每 1M token 价格（`$`），数据源 models.dev（id/名称均匹配，复用 24h 缓存，`--refresh` 强制刷新）
 * `info balance PROVIDER`：用该 provider 的 `api_key` 到官方接口查询余额。minimax 走官方 `token_plan/remains`（Token Plan 剩余额度；无订阅时给出按量付费余额入口）；agnes 走 OpenAI 兼容 billing 探测（credit_grants / subscription / usage，无余额字段时提示控制台）；alibaba-cn（阿里云百炼）走官方 `models/limits`（Key 级用量限额/限流配额，可验证 Key；官方无 Key 级现金余额接口，提示到百炼控制台）；modelscope / sensenova / bigmodel / amd / anspire 官方未开放 Key 级余额接口，命令给出对应控制台地址。余额实时查询，不走缓存
 * `info sale-price PROVIDER`：抓取官网定价页并列出全部模型销售价。agnes 抓取 `wiki.agnes-ai.cn` 定价页（文本/图片/视频模型，刊例价 + 现价，人民币）；minimax 抓取 `platform.minimaxi.com` 定价页（语言模型输入/输出/缓存价格，元/百万 tokens）；alibaba-cn 给出百炼官方模型列表与计费说明页地址；其余 provider 给出官网定价页地址。定价页 24h 缓存，`--refresh` 强制重抓
 * `info list-model PROVIDER`：用该 provider 自己的 models 接口实时查询其可用模型列表——OpenAI 兼容 provider 请求 `GET {api_base}/models`（Bearer api_key），anthropic 类型请求 `GET {api_base}/v1/models`（api_base 已以 `/v1` 结尾时直接用 `{api_base}/models`，x-api-key / anthropic-version）；Anthropic `next_page` 分页自动翻页（上限 20 页）。文本视图打印 `MODEL / OWNED_BY / CREATED` 对齐表（openai 的 `owned_by` / `created`、anthropic 的 `display_name` / `created_at` 自动归一，`created` 时间戳在文本视图自动转为本地时间 `YYYY-MM-DD HH:MM:SS`）；`-o json` / `-o csv` / `--json` 输出 JSON 数组或 CSV 表（字段 `id` / `owned_by` / `created`，保持 API 原始时间戳）。实时查询，不走缓存
@@ -535,8 +536,11 @@ sys ai info model modelscope             # 只显示 modelscope 下的模型
 sys ai info model deepseek               # 无 provider 命中时按模型名匹配
 sys ai info model agnes:3.0              # 精确选择 agnes 下名称含 3.0 的模型
 sys ai info model modelscope:*           # modelscope 全部模型
-sys ai info price openai,anthropic       # 查询两个 provider 的模型价格列表
-sys ai info price "openai，deepseek"     # 全角逗号同样支持
+sys ai price openai,anthropic            # 查询两个 provider 的模型价格列表（models.dev）
+sys ai price "openai，deepseek"          # 全角逗号同样支持
+sys ai price --src openrouter            # openrouter.ai 全量模型的 prompt/completion 价格
+sys ai price deepseek --src openrouter   # openrouter 数据源 + 模型名称过滤
+sys ai price --src openrouter --limit 10 # 只显示前 10 条
 sys ai info balance minimax              # 用 minimax 的 api_key 查询官方余额
 sys ai info balance alibaba-cn           # 阿里云百炼：官方 limits 限额 + 控制台指引
 sys ai info sale-price agnes             # 抓取 agnes 官网定价页，列出全部模型销售价
@@ -548,22 +552,27 @@ sys ai info list-model anthropic -o json # anthropic 类型：/v1/models，JSON 
 
 把本地配置（`~/.sysenv/config.yaml` 的 `clients` 段）导出为其他 AI 工具的配置格式，或直接应用到该软件的配置文件：
 
-* `ai config FORMAT [SELECT] [-f FILE] [-c FILE] [--show]`，`FORMAT` 支持：
+* `ai config FORMAT [-m MODEL] [-f FILE] [-c FILE] [--show] [--update]`，`FORMAT` 支持：
   * **`codex`**（TOML）：每个 Provider 一个 `[model_providers.<name>]` 段（`name` / `base_url` / `env_key` / `wire_api = "chat"`）；codex 只从环境变量读 key，导出时生成 `SYS_<PROVIDER>_API_KEY` 命名并打印 `export` 提示到 stderr；顶层 `model` 选中第一个模型的 `provider.model`
   * **`opencode`**（JSON）：每个 Provider 一个条目（`npm: "@ai-sdk/openai-compatible"` + `options.baseURL` / `options.apiKey` 内联 + `models` 映射），可直接合并进 `opencode.json`
   * **`litellm`**（YAML）：每个模型一条 `model_list` 条目，暴露名 `{provider}:{model}`（防冲突），路由到 `openai/{model}`，`api_base` / `api_key` 内联
   * **`freellmapi`**（JSON）：`customProviders` 数组，每个 Provider 一个 `baseUrl` / `label` / `models` 条目（`supportsTools: true`），可合并进 `freellmapi.config.json`
-* `SELECT` 选择导出范围：缺省 = **全部 Provider 的全部模型**；`provider:*` = 指定 Provider 的全部模型；`provider:model` = 指定 Provider 的单个模型（无匹配明确报错）
-* `--show`：**只查看不写入**——先打印对应软件的配置文件地址（codex → `~/.codex/config.toml`、opencode → `~/.config/opencode/opencode.json`、litellm → `~/.litellm/config.yaml`、freellmapi → 当前目录 `freellmapi.config.json`；无默认路径时提示用 `-f` 指定），再打印将要写入该软件的配置信息
+  * **`codebuddy`** / **`workbuddy`**（models.json）：每个模型一条 `id` / `name` / `vendor` / `url`（`{api_base}/chat/completions`）/ 内联 `apiKey`；配置里有 `max_input_tokens` / `max_tokens` / `type`（含 `image`）时带上 `maxInputTokens` / `maxOutputTokens` / `supportsImages`；同名模型去重，`availableModels` 同步；默认路径 `~/.codebuddy/models.json` / `~/.workbuddy/models.json`
+  * **`trae`**（trae_cli.yaml）：`models` 列表，OpenAI 兼容 Provider 用 `open_ai` 块、anthropic 用 `claude` 块，按模型 id 去重；默认路径 Windows `%USERPROFILE%\AppData\Roaming\trae_cli\trae_cli.yaml`（Linux `$XDG_CONFIG_HOME` 或 `~/.config/trae_cli/trae_cli.yaml`）
+* `-m/--models MODEL` 选择导出范围（缺省 = **全部 Provider 的全部模型**），与 `sys ai chat -m` 同格式：`provider:*`（指定 Provider 的全部模型）/ `provider:model`（单个模型）/ 裸模型名（跨 Provider 匹配），半角/全角逗号分隔可指定多个，重叠选择去重（无匹配明确报错）；旧式位置参数 `SELECT` 等价于单个 `-m` 值（二者互斥）
+* `--show`：**只查看不写入**——先打印对应软件的配置文件地址（codex → `~/.codex/config.toml`、opencode → `~/.config/opencode/opencode.json`、litellm → `~/.litellm/config.yaml`、freellmapi → 当前目录 `freellmapi.config.json`、codebuddy → `~/.codebuddy/models.json`、workbuddy → `~/.workbuddy/models.json`、trae → `%USERPROFILE%\AppData\Roaming\trae_cli\trae_cli.yaml`；无默认路径时提示用 `-f` 指定），再打印将要写入该软件的配置信息
 * `-f/--file FILE` **写入文件**（缺省打印到 stdout）：写入前先把已有文件备份为 `FILE.bak-YYYYMMDD-HHMMSS`（同目录），写入后打印实际修改信息（导出的模型数 / 目标文件路径 / 备份文件路径）；目标文件不存在时新建并注明；`-c/--config` 指定配置文件
+* `--update` **就地合并更新**（仅 codebuddy / workbuddy / trae）：按指定格式到该软件默认配置目录找文件（`-f` 可覆盖路径）；文件不存在则提示 `config file not found ... nothing to update`；存在则先备份 `.bak-*`，再合并写入缺失的模型条目（保留已有条目与其它顶层键），成功后提示 `added N model(s): ...`；与 `--show` 互斥
 
 ```
 sys ai config codex --show               # 打印 codex 配置文件地址 + 将写入的配置（不写入）
 sys ai config codex -f ~/.codex/config.toml   # 备份原配置 → 写入 → 打印实际修改信息
 sys ai config codex                      # 全部模型导出为 codex TOML（stdout）
 sys ai config opencode -f opencode.json  # 写入文件（自动备份原文件）
-sys ai config litellm "agnes:*"          # 只导出 agnes 的模型
-sys ai config freellmapi "minimax:MiniMax-M2.7"   # 只导出 minimax 的单个模型
+sys ai config litellm -m "agnes:*"       # 只导出 agnes 的模型（-m 与 chat 同格式）
+sys ai config codebuddy -m "modelscope:*,minimax:MiniMax-M2.7"  # 多个选择
+sys ai config trae --update              # 备份默认 trae_cli.yaml → 合并缺失模型 → 提示新增
+sys ai config workbuddy --update -f ~/.workbuddy/models.json   # 指定文件更新
 ```
 
 #### 5.7 网络搜索（`search`）
