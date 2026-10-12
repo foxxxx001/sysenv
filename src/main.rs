@@ -276,8 +276,9 @@ struct AiConfigArgs {
     /// codebuddy | workbuddy (models.json) | trae (trae_cli.yaml)
     #[arg(value_name = "FORMAT")]
     format: String,
-    /// Select models: omit for all; `provider:*` = a provider's whole model list;
-    /// `provider:model` = one specific model (legacy single selector; prefer -m)
+    /// Select models: omit for the same default as `sys ai chat` (top-level `model:`);
+    /// `provider:*` = a provider's whole model list; `provider:model` = one specific model
+    /// (legacy single selector; prefer -m)
     #[arg(value_name = "SELECT")]
     provider: Option<String>,
     /// Select models to export, same comma-separated forms as `sys ai chat -m`

@@ -3630,28 +3630,28 @@ pub fn cmd_cn_model(
 //
 // Formats: codex (TOML), opencode (JSON), litellm (YAML), freellmapi (JSON),
 // codebuddy / workbuddy (models.json), trae (trae_cli.yaml).
-// Selection: omit = every provider's every model; `-m` accepts the same
-// comma-separated forms as `sys ai chat -m` (`provider:*` / `provider:model`
-// / bare model name). `-f/--file FILE` writes to a file instead of stdout;
-// `--update` merges into the software's default config file (backup first).
+// Selection: omit = the same models `sys ai chat` uses by default (the
+// top-level `model:` selector, or the first provider's first model when none
+// is configured); `-m` accepts the same comma-separated forms as `sys ai
+// chat -m` (`provider:*` / `provider:model` / bare model name).
+// `-f/--file FILE` writes to a file instead of stdout; `--update` merges into
+// the software's default config file (backup first).
 // ---------------------------------------------------------------------------
 
 /// Pick the (provider_idx, model_idx) pairs described by `selector`:
-/// None -> all; otherwise the same formats as `sys ai chat -m`
-/// (comma-separated `p:*` / `p:m` / bare `m`, case-insensitive, deduped).
+/// None -> the models `sys ai chat` would use by default (top-level `model:`
+/// selector, else the first provider's first model); otherwise the same
+/// formats as `sys ai chat -m` (comma-separated `p:*` / `p:m` / bare `m`,
+/// case-insensitive, deduped).
 fn select_models(cfg: &chat::Config, selector: Option<&str>) -> Result<Vec<(usize, usize)>> {
-    match selector.map(str::trim).filter(|s| !s.is_empty()) {
-        None => Ok(cfg
-            .providers
-            .iter()
-            .enumerate()
-            .flat_map(|(pi, p)| (0..p.models.len()).map(move |mi| (pi, mi)))
-            .collect()),
-        Some(sel) => Ok(chat::resolve_targets(cfg, sel)?
-            .iter()
-            .map(|t| (t.provider, t.model))
-            .collect()),
-    }
+    let sel = match selector.map(str::trim).filter(|s| !s.is_empty()) {
+        None => cfg.model.as_deref().unwrap_or("<default>"),
+        Some(sel) => sel,
+    };
+    Ok(chat::resolve_targets(cfg, sel)?
+        .iter()
+        .map(|t| (t.provider, t.model))
+        .collect())
 }
 
 /// Escape a string for a TOML basic string (double-quoted).
@@ -3872,10 +3872,12 @@ fn export_trae(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<String> {
 ///
 /// FORMAT: `codex` (TOML) | `opencode` (JSON) | `litellm` (YAML) |
 /// `freellmapi` (JSON) | `codebuddy` | `workbuddy` (models.json) | `trae`
-/// (trae_cli.yaml). SELECTION: omit for all models; `-m` takes the same
-/// comma-separated forms as `sys ai chat -m` (`provider:*`, `provider:model`,
-/// bare model name; the legacy positional SELECT is equivalent to a single
-/// `-m` value). The export goes to stdout unless `-f/--file FILE` is given.
+/// (trae_cli.yaml). SELECTION: omit = the models `sys ai chat` uses by
+/// default (top-level `model:` selector, else the first provider's first
+/// model); `-m` takes the same comma-separated forms as `sys ai chat -m`
+/// (`provider:*`, `provider:model`, bare model name; the legacy positional
+/// SELECT is equivalent to a single `-m` value). The export goes to stdout
+/// unless `-f/--file FILE` is given.
 ///
 /// `--show` previews without touching any file: it prints the target
 /// software's default config file path first, then the config that would be
@@ -5216,11 +5218,23 @@ mod tests {
         }
     }
 
+    /// Every (provider, model) pair — used by export-shape tests to exercise
+    /// the full export regardless of the config's top-level `model:`.
+    fn all_pairs(cfg: &chat::Config) -> Vec<(usize, usize)> {
+        cfg.providers
+            .iter()
+            .enumerate()
+            .flat_map(|(pi, p)| (0..p.models.len()).map(move |mi| (pi, mi)))
+            .collect()
+    }
+
     #[test]
-    fn config_select_all_and_specific() {
-        let cfg = sample_cfg();
-        let all = select_models(&cfg, None).unwrap();
-        assert_eq!(all.len(), 3);
+    fn config_select_default_follows_chat_model() {
+        let cfg = sample_cfg(); // top-level model: "agnes:agn-1"
+        // no selector -> the same models `sys ai chat` uses by default
+        let d = select_models(&cfg, None).unwrap();
+        assert_eq!(d, vec![(0, 0)]);
+        // explicit selectors keep the chat-format resolution
         let one = select_models(&cfg, Some("agnes:*")).unwrap();
         assert_eq!(one.len(), 2);
         assert!(one.iter().all(|(pi, _)| cfg.providers[*pi].name == "agnes"));
@@ -5229,6 +5243,19 @@ mod tests {
         assert!(select_models(&cfg, Some("zzz:*")).is_err());
         assert!(select_models(&cfg, Some("agnes:nope")).is_err());
         assert!(select_models(&cfg, Some("no-colon")).is_err());
+    }
+
+    #[test]
+    fn config_default_without_top_level_model() {
+        let mut cfg = sample_cfg();
+        cfg.model = None;
+        // no top-level model -> first provider's first model (chat default)
+        let d = select_models(&cfg, None).unwrap();
+        assert_eq!(d, vec![(0, 0)]);
+        // a comma-separated top-level model selects the union
+        cfg.model = Some("agn-2,minimax:mm-1".to_string());
+        let d = select_models(&cfg, None).unwrap();
+        assert_eq!(d, vec![(0, 1), (1, 0)]);
     }
 
     #[test]
@@ -5242,7 +5269,7 @@ mod tests {
     #[test]
     fn config_export_formats() {
         let cfg = sample_cfg();
-        let all = select_models(&cfg, None).unwrap();
+        let all = all_pairs(&cfg);
 
         let codex = export_codex(&cfg, &all).unwrap();
         assert!(codex.contains("model = \"agnes.agn-1\""));
@@ -5291,7 +5318,7 @@ mod tests {
     #[test]
     fn config_codebuddy_export_shape() {
         let cfg = sample_cfg();
-        let all = select_models(&cfg, None).unwrap();
+        let all = all_pairs(&cfg);
         let s = export_codebuddy(&cfg, &all).unwrap();
         let v: Value = serde_json::from_str(&s).unwrap();
         let models = v["models"].as_array().unwrap();
@@ -5307,7 +5334,7 @@ mod tests {
     #[test]
     fn config_trae_export_shape() {
         let cfg = sample_cfg();
-        let all = select_models(&cfg, None).unwrap();
+        let all = all_pairs(&cfg);
         let s = export_trae(&cfg, &all).unwrap();
         let v: serde_yaml::Value = serde_yaml::from_str(&s).unwrap();
         let list = v["models"].as_sequence().unwrap();
@@ -5329,7 +5356,7 @@ mod tests {
             max_input_tokens: None,
             model_type: None,
         });
-        let all = select_models(&cfg, None).unwrap();
+        let all = all_pairs(&cfg);
         let v: Value =
             serde_json::from_str(&export_codebuddy(&cfg, &all).unwrap()).unwrap();
         let ids: Vec<&str> = v["models"]
@@ -5355,7 +5382,7 @@ mod tests {
         )
         .unwrap();
         let cfg = sample_cfg();
-        let all = select_models(&cfg, None).unwrap();
+        let all = all_pairs(&cfg);
         let added = merge_json_models(&path, &codebuddy_entries(&cfg, &all)).unwrap();
         assert_eq!(added, vec!["agn-1", "agn-2", "mm-1"]);
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -5378,7 +5405,7 @@ mod tests {
         // Windows editors save models.json with a UTF-8 BOM; it must not break parsing
         std::fs::write(&path, format!("\u{feff}{{\"models\":[],\"availableModels\":[]}}")).unwrap();
         let cfg = sample_cfg();
-        let all = select_models(&cfg, None).unwrap();
+        let all = all_pairs(&cfg);
         let added = merge_json_models(&path, &codebuddy_entries(&cfg, &all)).unwrap();
         assert_eq!(added.len(), 3);
         std::fs::remove_dir_all(&dir).ok();
@@ -5395,7 +5422,7 @@ mod tests {
         )
         .unwrap();
         let cfg = sample_cfg();
-        let all = select_models(&cfg, None).unwrap();
+        let all = all_pairs(&cfg);
         let added = merge_trae_models(&path, &trae_entries(&cfg, &all)).unwrap();
         assert_eq!(added.len(), 3);
         let text = std::fs::read_to_string(&path).unwrap();
@@ -5414,7 +5441,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let missing = dir.join("models.json");
         let cfg = sample_cfg();
-        let all = select_models(&cfg, None).unwrap();
+        let all = all_pairs(&cfg);
         // absent file -> Ok, no file and no backup created
         cmd_config_update("codebuddy", &cfg, &all, Some(&missing)).unwrap();
         assert!(!missing.exists());
@@ -5429,7 +5456,7 @@ mod tests {
         let path = dir.join("config.toml");
         std::fs::write(&path, "[model_providers]\n").unwrap();
         let cfg = sample_cfg();
-        let all = select_models(&cfg, None).unwrap();
+        let all = all_pairs(&cfg);
         assert!(cmd_config_update("codex", &cfg, &all, Some(&path)).is_err());
         // unchanged and no stray backup
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[model_providers]\n");
@@ -5440,7 +5467,7 @@ mod tests {
     #[test]
     fn config_unknown_format_rejected() {
         let cfg = sample_cfg();
-        let all = select_models(&cfg, None).unwrap();
+        let all = all_pairs(&cfg);
         let err = export_freellmapi(&cfg, &all).err(); // no-op sanity
         assert!(err.is_none());
     }

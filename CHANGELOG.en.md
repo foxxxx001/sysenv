@@ -2,6 +2,14 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.5.0 (2026-10-12)
+
+### Changed
+- **`sys ai config` default export = the models `sys ai chat` uses**: without `-m` (and without the positional `SELECT`), the export no longer covers every model — it now matches `sys ai chat` by resolving the config's top-level `model:` selector (comma-separated lists included), falling back to the first provider's first model when none is configured; explicit `-m` / positional selectors behave as before
+- version 0.4.72 -> 0.5.0; `cargo test` 256 -> 257 all green
+
+---
+
 ## v0.4.72 (2026-10-12)
 
 ### Added
