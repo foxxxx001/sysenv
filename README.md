@@ -48,7 +48,7 @@ Commands:
 
 | 功能        | 子命令                  | 核心特性                                                                                   |
 | --------- | -------------------- | -------------------------------------------------------------------------------------- |
-| PATH 增删查改 | `path`               | 持久化 + 当前会话即时生效；自动转绝对路径与去重；前置插入；user/machine 双作用域；`--temporary` 临时模式                    |
+| PATH 增删查改 | `path`               | add 默认仅当前会话（`--save` 才持久化）；remove 可 `--temporary`；自动转绝对路径与去重；前置插入；user/machine 双作用域                    |
 | 注册表导入导出   | `path export/import` | `.reg` / JSON / TXT 三种格式；合并或 `--replace` 整体替换；跨机迁移备份                                   |
 | 链接到 PATH  | `link`               | 硬链接 → 符号链接 → 拷贝三级自动回退；Windows `.cmd` 垫片；自定义命令名；系统目录或托管目录                               |
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
@@ -117,9 +117,9 @@ cargo clean
 
 * **Ubuntu**：默认写入 `~/.config/sys/` 托管文件，并自动在 shell 启动脚本中注入，使持久化变量 / 路径对新 shell 生效；machine 作用域写 `/etc/environment`，需 root。
 
-* 无论哪种平台，`path add`、`env set` 都会**同时更新当前进程环境**（Linux 下通过向父 shell 输出可粘贴的 export 片段，Windows 下通过注册表广播），保证 "持久化 + 当前生效" 双满足。
+* 无论哪种平台，`path add --save`、`env set` 都会**持久化并同时更新当前进程环境**（Linux 下向父 shell 输出可粘贴的 export 片段，Windows 下注册表广播），保证 "持久化 + 当前生效" 双满足。
 
-* 所有写操作默认持久化；加 `--temporary` 则只打印可粘贴的 shell 片段（`export` / `$env:`），不写入任何持久化存储。
+* `path add` 默认**仅当前会话**：更新当前进程并打印可粘贴的 shell 片段（`export` / `$env:`），不写入任何持久化存储；加 `--save` 才持久化。其余写操作（`path remove`、`env set/unset`、`link`、`short`）默认持久化，加 `--temporary` 仅当前会话。
 
 
 
@@ -133,7 +133,7 @@ cargo clean
 
 * `list`：列出当前生效的完整 PATH（合并了进程与持久化作用域）
 
-* `add`：追加到末尾；`-p/--prepend` 插入到开头；自动转绝对路径、大小写不敏感去重、跳过空条目
+* `add`：追加到末尾；`-p/--prepend` 插入到开头；**默认仅当前会话**（打印可粘贴片段，不持久化），`--save` 持久化供新进程继承；自动转绝对路径、大小写不敏感去重、跳过空条目
 
 * `remove`：按绝对路径匹配移除（任意作用域）
 
@@ -141,9 +141,9 @@ cargo clean
 
 * `export / import`：注册表文件（`.reg`）、JSON（`.json`）、纯文本（`.txt`）三种格式双向转换
 
-* `--scope user|machine`：控制写入作用域
+* `--scope user|machine`：控制 **`--save`** 的写入作用域
 
-* `--temporary`：不持久化，仅打印可粘贴的 PATH 片段
+* `--save`：持久化（默认 user，`--scope machine` 需管理员/root）；不加则仅当前会话
 
 ### 示例
 
@@ -151,10 +151,10 @@ cargo clean
 
 ```
 sys path list                      # 列出当前生效 PATH
-sys path add D:\tools              # 追加（自动转绝对路径、去重）
-sys path add D:\tools -p           # 前置
-sys path add /opt/bin --scope machine   # 机器级（需管理员/root）
-sys path add D:\tools --temporary # 仅当前会话（打印可粘贴片段）
+sys path add D:\tools              # 仅当前会话（打印可粘贴片段，不持久化）
+sys path add D:\tools -p           # 前置（仍仅当前会话）
+sys path add D:\tools --save       # 持久化（user 作用域），新进程自动继承
+sys path add D:\tools --save --scope machine   # 机器级持久化（需管理员/root）
 sys path remove D:\tools
 sys path has D:\tools              # 同时检查当前进程与已持久化作用域
 ```

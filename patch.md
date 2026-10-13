@@ -2,6 +2,20 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.5.1（2026-10-13）
+
+### 变更
+- **`sys path add` 默认仅当前会话，`--save` 才持久化**：`sys path add DIR` 不再写入注册表/持久化存储，只更新当前进程并打印一条可粘贴片段（`export` / `$env:`）供当前 shell 应用；加 `--save` 才持久化（默认 user 作用域，`--scope machine` 需管理员/root）。原 `--temporary` 标志移除（与默认行为重复）
+- **修复 `--temporary` "看起来没生效" 的体验问题**：原实现在临时分支把片段打印两遍（`apply_to_current_env` + hint），且默认行为是持久化、`--temporary` 只打印片段——子进程无法修改父 shell 环境，用户感知为"没生效"。新默认把"仅当前会话"提到首位，输出收敛为一条片段；持久化分支同样只打印一次片段
+- README.md / README.en.md 同步；版本 0.5.0 -> 0.5.1；`cargo test` 257 项全绿（无新增测试，纯行为翻转 + 输出收敛，冒烟验证见下）
+
+### 冒烟验证（真实二进制，Windows）
+- `sys path add D:\x` → 输出 `Temporary: ... added to PATH for this session (not saved).` + 单条 `$env:PATH` 片段；新进程 `sys path has D:\x` 返回 `no`（未持久化）
+- `sys path add --save D:\x` → 持久化 user 作用域，新进程 `has` 返回 `yes`；随后 `path remove` 清理，`has` 返回 `no`（注册表净零）
+- `sys path add --temporary` → clap 报 `unexpected argument '--temporary'`
+
+---
+
 ## v0.5.0（2026-10-12）
 
 ### 变更

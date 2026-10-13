@@ -36,13 +36,34 @@ pub fn cmd_list() -> Result<()> {
     Ok(())
 }
 
-pub fn cmd_add(dir: &str, scope: Scope, prepend: bool, temporary: bool) -> Result<()> {
+/// Add a directory to PATH. Temporary by default: only this process and a
+/// paste-ready snippet for the current shell, nothing persisted. With `save`
+/// the change is persisted (scope user/machine) for new processes and also
+/// applied to this process.
+pub fn cmd_add(dir: &str, scope: Scope, prepend: bool, save: bool) -> Result<()> {
     let abs = common::absolutize_dir(dir)?;
-    let mut entries = if temporary {
-        current_path_entries()
-    } else {
-        persisted_entries(scope)
-    };
+    if !save {
+        let mut entries = current_path_entries();
+        let exists = entries.iter().any(|e| common::path_eq(e, &abs));
+        if exists {
+            println!("{abs} is already in PATH (current session).");
+            return Ok(());
+        }
+        if prepend {
+            entries.insert(0, abs.clone());
+        } else {
+            entries.push(abs.clone());
+        }
+        let value = common::join_path(&entries);
+        unsafe { std::env::set_var("PATH", &value) };
+        println!("Temporary: {abs} added to PATH for this session (not saved).");
+        println!(
+            "Apply to the current shell: {}",
+            common::shell_export_snippet("PATH", &value)
+        );
+        return Ok(());
+    }
+    let mut entries = persisted_entries(scope);
     let exists = entries.iter().any(|e| common::path_eq(e, &abs));
     if !exists {
         if prepend {
@@ -51,27 +72,20 @@ pub fn cmd_add(dir: &str, scope: Scope, prepend: bool, temporary: bool) -> Resul
             entries.push(abs.clone());
         }
     }
-    if temporary {
-        println!("[temporary] PATH updated for this session only (not persisted):");
-        apply_to_current_env(&entries);
-        println!("hint: run `{}` (or paste it) to apply to the current shell.", common::shell_export_snippet("PATH", &common::join_path(&entries)));
-        return Ok(());
-    }
     persist_entries(scope, &entries)?;
     let mut effective = current_path_entries();
     if !effective.iter().any(|e| common::path_eq(e, &abs)) {
         effective = common::merge_entries(&effective, &[abs.clone()]);
-        // Recompute effective PATH including the new entry for this process.
-        apply_to_current_env(&effective);
+        unsafe { std::env::set_var("PATH", &common::join_path(&effective)) };
     }
     if exists {
-        println!("{abs} is already in PATH (scope {}, {} entry)", scope.as_str(), "no change");
-    } else {
         println!(
-            "Added {abs} to PATH (scope {}).",
-            scope.as_str()
+            "{abs} is already in PATH (scope {}, {} entry)",
+            scope.as_str(),
+            "no change"
         );
-        println!("New processes will inherit it automatically.");
+    } else {
+        println!("Saved {abs} to PATH (scope {}); new processes will inherit it.", scope.as_str());
         println!(
             "To apply to the current shell, run: {}",
             common::shell_export_snippet("PATH", &common::join_path(&effective))

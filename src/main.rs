@@ -118,17 +118,17 @@ struct PathArgs {
 enum PathCmd {
     /// List the effective PATH entries of the current process
     List,
-    /// Add a directory to PATH (persisted by default; affects new processes and this process)
+    /// Add a directory to PATH (current session only by default; --save persists for new processes)
     Add {
         /// Directory to add (relative paths are resolved to absolute)
         dir: String,
         /// Prepend instead of append
         #[arg(short = 'p', long)]
         prepend: bool,
-        /// Do not persist; print a snippet to apply to the current shell only
+        /// Persist the change so new processes inherit it (default: current session only)
         #[arg(long)]
-        temporary: bool,
-        /// Scope of the change: user (default) or machine (admin)
+        save: bool,
+        /// Scope of the persisted change: user (default) or machine (admin)
         #[arg(long, value_enum, default_value_t = store::Scope::User)]
         scope: store::Scope,
     },
@@ -854,8 +854,8 @@ fn main() -> ExitCode {
 fn run_path(p: PathArgs) -> anyhow::Result<()> {
     match p.cmd {
         PathCmd::List => path::cmd_list(),
-        PathCmd::Add { dir, prepend, temporary, scope } => {
-            path::cmd_add(&dir, scope, prepend, temporary)
+        PathCmd::Add { dir, prepend, save, scope } => {
+            path::cmd_add(&dir, scope, prepend, save)
         }
         PathCmd::Remove { dir, temporary, scope } => path::cmd_remove(&dir, scope, temporary),
         PathCmd::Has { dir } => path::cmd_has(&dir),

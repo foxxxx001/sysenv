@@ -33,7 +33,7 @@ Commands:
 
 | Feature | Subcommand | Highlights |
 | --- | --- | --- |
-| PATH CRUD | `path` | persisted + effective in the current session; absolute-path normalization and case-insensitive dedup; prepend option; `user`/`machine` scopes; `--temporary` mode |
+| PATH CRUD | `path` | `add` is current-session only by default (`--save` persists); `remove` supports `--temporary`; absolute-path normalization and case-insensitive dedup; prepend; `user`/`machine` scopes |
 | Registry import/export | `path export/import` | `.reg` / JSON / TXT formats; merge or `--replace` full replace; machine migration & backup |
 | Link into PATH | `link` | hard link → symlink → copy fallback chain; Windows `.cmd` shim; custom command name; system or managed directory |
 | Environment variables | `env` | get / set / unset / list; persisted by default; `--temporary` for the current shell only; `machine` scope |
@@ -78,8 +78,8 @@ cargo build --release
 
 - **Windows**: writes the user-scope registry key `HKCU\Environment` by default (inherited by every new process); `--scope machine` writes `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment` (administrator required).
 - **Ubuntu**: writes managed files under `~/.config/sys/` and auto-injects them into shell startup scripts so persisted variables/PATH take effect in new shells; the `machine` scope writes `/etc/environment` (root required).
-- On both platforms, `path add` and `env set` also **update the current process environment** (export snippet for the parent shell on Linux, registry broadcast on Windows) — both persistence and immediate effect are satisfied.
-- All write operations persist by default; adding `--temporary` prints a paste-ready shell snippet (`export` / `$env:`) instead of writing anything.
+- On both platforms, `path add --save` and `env set` also **update the current process environment** (paste-ready export snippet for the current shell, registry broadcast on Windows) — persistence and immediate effect are both satisfied.
+- `path add` is current-session only by default: it updates the current process and prints a paste-ready shell snippet (`export` / `$env:`) without writing anything; add `--save` to persist. Other write operations (`path remove`, `env set/unset`, `link`, `short`) persist by default; `--temporary` makes them current-session only.
 
 ---
 
@@ -88,21 +88,21 @@ cargo build --release
 ### Features
 
 - `list`: show the full effective PATH (current process + persisted scopes merged)
-- `add`: append to the end; `-p/--prepend` inserts at the front; normalizes to absolute paths, deduplicates case-insensitively, skips empty entries
+- `add`: append to the end; `-p/--prepend` inserts at the front; **current-session only by default** (paste-ready snippet, nothing persisted), `--save` persists for new processes; normalizes to absolute paths, deduplicates case-insensitively, skips empty entries
 - `remove`: remove a directory from any scope by absolute path
 - `has`: check both the current process and persisted scopes, report whether the directory is on PATH
 - `export / import`: bidirectional conversion between Registry (`.reg`), JSON (`.json`) and plain text (`.txt`)
-- `--scope user|machine`: choose the write scope
-- `--temporary`: no persistence, only print a paste-ready PATH snippet
+- `--scope user|machine`: choose the write scope of **`--save`**
+- `--save`: persist for new processes (default `user` scope; `--scope machine` needs admin/root); without it, current session only
 
 ### Examples
 
 ```
 sys path list                      # list the effective PATH
-sys path add D:\tools              # append (normalized, deduped)
-sys path add D:\tools -p           # prepend
-sys path add /opt/bin --scope machine   # machine scope (admin/root)
-sys path add D:\tools --temporary # current session only (print snippet)
+sys path add D:\tools              # current session only (print snippet, not persisted)
+sys path add D:\tools -p           # prepend (still current session only)
+sys path add D:\tools --save       # persist (user scope); new processes inherit it
+sys path add D:\tools --save --scope machine   # machine scope (admin/root)
 sys path remove D:\tools
 sys path has D:\tools              # checks process + persisted scopes
 ```
