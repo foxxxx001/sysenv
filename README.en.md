@@ -17,7 +17,7 @@ sys 0.4.13 (Made by Gary-china)
 Usage: sys <COMMAND>
 
 Commands:
-  path   Manage PATH entries: list / add / remove / has / export / import
+  path   Manage PATH entries: list / add / remove / has / export / import / unlock
   env    Read / set / unset / list environment variables
   link   Link a file into a PATH directory so it runs from anywhere
   http   httpie-compatible HTTP client: http [flags] [METHOD] URL [ITEM...]
@@ -33,7 +33,7 @@ Commands:
 
 | Feature | Subcommand | Highlights |
 | --- | --- | --- |
-| PATH CRUD | `path` | `add` is current-session only by default (`--save` persists); `remove` supports `--temporary`; absolute-path normalization and case-insensitive dedup; prepend; `user`/`machine` scopes |
+| PATH CRUD | `path` | `add` is current-session only by default (`--save` persists); `remove` supports `--temporary`; absolute-path normalization and case-insensitive dedup; prepend; `user`/`machine` scopes; `path unlock` (Windows) detects and releases files/directories held open by other processes |
 | Registry import/export | `path export/import` | `.reg` / JSON / TXT formats; merge or `--replace` full replace; machine migration & backup |
 | Link into PATH | `link` | hard link → symlink → copy fallback chain; Windows `.cmd` shim; custom command name; system or managed directory |
 | Environment variables | `env` | get / set / unset / list; persisted by default; `--temporary` for the current shell only; `machine` scope |
@@ -105,6 +105,7 @@ sys path add D:\tools --save       # persist (user scope); new processes inherit
 sys path add D:\tools --save --scope machine   # machine scope (admin/root)
 sys path remove D:\tools
 sys path has D:\tools              # checks process + persisted scopes
+sys path unlock D:\work\a.txt      # Windows: check whether a file/directory is held open by processes, list the lockers (PID/name/path) and release them
 ```
 
 ## 2. PATH import / export (`path export/import`)

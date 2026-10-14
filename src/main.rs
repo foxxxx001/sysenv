@@ -6,6 +6,7 @@ mod file;
 mod httpie;
 mod image;
 mod link;
+mod lock;
 mod net;
 mod path;
 mod short;
@@ -60,7 +61,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Manage PATH entries: list / add / remove / has / export / import
+    /// Manage PATH entries: list / add / remove / has / export / import / unlock
     Path(PathArgs),
     /// Read / set / unset / list environment variables
     Env(EnvArgs),
@@ -163,6 +164,12 @@ enum PathCmd {
         /// Scope of the change: user (default) or machine (admin)
         #[arg(long, value_enum, default_value_t = store::Scope::User)]
         scope: store::Scope,
+    },
+    /// Check whether a file/directory is locked by other processes; list the
+    /// lockers (PID / name / path) and unlock it by shutting them down (Windows)
+    Unlock {
+        /// File or directory to check / unlock (relative paths resolve against the current directory)
+        path: String,
     },
 }
 
@@ -861,6 +868,7 @@ fn run_path(p: PathArgs) -> anyhow::Result<()> {
         PathCmd::Has { dir } => path::cmd_has(&dir),
         PathCmd::Export { file } => path::cmd_export(&file),
         PathCmd::Import { file, replace, scope } => path::cmd_import(&file, scope, replace),
+        PathCmd::Unlock { path } => lock::cmd_path_unlock(&path),
     }
 }
 

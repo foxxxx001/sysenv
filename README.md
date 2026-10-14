@@ -28,7 +28,7 @@ sys 0.4.13 (Made by Gary-china)
 Usage: sys <COMMAND>
 
 Commands:
-  path   Manage PATH entries: list / add / remove / has / export / import
+  path   Manage PATH entries: list / add / remove / has / export / import / unlock
   env    Read / set / unset / list environment variables
   link   Link a file into a PATH directory so it runs from anywhere
   http   httpie-compatible HTTP client: http [flags] [METHOD] URL [ITEM...]
@@ -48,7 +48,7 @@ Commands:
 
 | 功能        | 子命令                  | 核心特性                                                                                   |
 | --------- | -------------------- | -------------------------------------------------------------------------------------- |
-| PATH 增删查改 | `path`               | add 默认仅当前会话（`--save` 才持久化）；remove 可 `--temporary`；自动转绝对路径与去重；前置插入；user/machine 双作用域                    |
+| PATH 增删查改 | `path`               | add 默认仅当前会话（`--save` 才持久化）；remove 可 `--temporary`；自动转绝对路径与去重；前置插入；user/machine 双作用域；`path unlock`（Windows）检测并解锁被其他进程占用的文件/目录                    |
 | 注册表导入导出   | `path export/import` | `.reg` / JSON / TXT 三种格式；合并或 `--replace` 整体替换；跨机迁移备份                                   |
 | 链接到 PATH  | `link`               | 硬链接 → 符号链接 → 拷贝三级自动回退；Windows `.cmd` 垫片；自定义命令名；系统目录或托管目录                               |
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
@@ -157,6 +157,7 @@ sys path add D:\tools --save       # 持久化（user 作用域），新进程�
 sys path add D:\tools --save --scope machine   # 机器级持久化（需管理员/root）
 sys path remove D:\tools
 sys path has D:\tools              # 同时检查当前进程与已持久化作用域
+sys path unlock D:\work\a.txt      # Windows：检查文件/目录是否被进程占用，列出占用进程（PID/名称/路径）并关闭其句柄解锁
 ```
 
 ## 2. PATH 导入 / 导出（`path export/import`）

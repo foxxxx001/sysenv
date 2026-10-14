@@ -2,6 +2,20 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.5.2（2026-10-14）
+
+### 新增
+- **`sys path unlock TARGET`（Windows）**：检查文件/目录是否被其他进程占用/锁定，列出占用进程（PID / 进程名 / 可执行文件完整路径），并强制关闭占用进程释放句柄解锁。基于 Windows Restart Manager（Rstrtmgr.dll）：`RmRegisterResources` 注册目标 → `RmGetList` 枚举占用方 → `RmShutdown(RmForceShutdown)` 关闭 → 重查验证（每次开**全新会话**查真实状态，最多 20 次 × 300ms ≈ 6s，进程终止为异步、成功即提前退出）。未占用输出 `not locked: <路径>`；解锁成功输出 `unlocked: <路径>`；仍有残留打印剩余占用方并以错误退出。非 Windows 报 `path unlock is Windows-only`（Linux 文件锁为 advisory 无需解锁）
+- windows-sys 新增启用 feature：`Win32_System_RestartManager`、`Win32_Storage_FileSystem`、`Win32_Security`
+- README.md / README.en.md 同步（命令列表、特性表、PATH 示例）；版本 0.5.1 -> 0.5.2；`cargo test` 257 -> 259 项全绿（新增 `lock::tests::no_handle_is_not_locked`、`lock::tests::open_handle_is_reported`，仅覆盖检测路径；解锁动作由真实冒烟验证，不做会自杀的单测）
+
+### 冒烟验证（真实二进制，Windows）
+- `sys path unlock <未被占用的文件>` → `not locked: ... (no process has it open)`
+- 记事本打开文件后 `sys path unlock <该文件>` → 列出 `notepad.exe`（PID/路径）→ 关闭后输出 `unlocked: ...`，随后再查报 `not locked`（句柄确已释放）
+- `sys path unlock <不存在的路径>` → 报 `does not exist or is not accessible`
+
+---
+
 ## v0.5.1（2026-10-13）
 
 ### 变更
