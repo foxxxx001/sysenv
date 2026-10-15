@@ -386,6 +386,8 @@ Options:
 * `-t` — only plain-text files (txt/md/log/csv/json/...), excluding source code
 * `-w` — match whole words only (not preceded/followed by a letter, digit or `_`)
 * `-c NUM` — show NUM lines of context around every match (`--` separates groups)
+* `-n` — prepend the line number to every printed line (stdin search; directory search output is already `path:line:content`)
+* `-l` — count lines instead of printing them: `-l FILE` counts the file's total lines, no argument counts stdin; with a PATTERN it counts the **matching** lines (stdin prints `N`; a tree prints `path: N` per file, files with no match are omitted)
 
 File attribute filters (fd-style, combine with search / replace / listing):
 
@@ -399,6 +401,7 @@ Traversal: hidden entries (`.` prefix) and common noise directories (`.git` / `n
 
 ```
 sys file hello                              # search stdin (type a.txt | sys file hello)
+sys file -n hello                           # search stdin, print line numbers
 sys file me.txt                             # display the file me.txt
 sys file "me.txt"                           # quoted: still a string search (find me.txt in stdin)
 sys file hello D:\projects                  # search the D:\projects tree
@@ -406,6 +409,10 @@ sys file hello D:\projects -e py -e md      # only .py and .md
 sys file HELLO D:\projects -i               # case-insensitive
 sys file hello D:\projects -t               # plain text only (no source code)
 sys file hello D:\projects -w -c 2          # whole words + 2 lines of context
+sys file -l me.txt                          # count the total lines of me.txt
+type a.txt | sys file -l                    # count the total lines of stdin
+type a.txt | sys file -l hello              # count the stdin lines matching hello
+sys file -l hello D:\projects               # per-file matching line counts (path: N)
 sys file hello hi D:\projects               # replace hello -> hi in place
 sys file HELLO hi D:\projects -i            # case-insensitive replacement
 sys file -S 2m                              # list files >= 2 MiB in the current dir

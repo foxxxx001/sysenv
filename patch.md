@@ -2,6 +2,20 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.5.3（2026-10-15）
+
+### 新增
+- **`sys file -l`（统计行数）**：`-l FILE` 统计文件的总行数（存在即可，不要求带扩展名）；无参数时统计 stdin 的总行数（`type a.txt | sys file -l`）；带 PATTERN 时统计**匹配行数**——stdin 输出 `N`，目录树输出每个文件的 `路径: N`（无匹配的文件不显示，`rg -c` 风格）。引号包裹的参数（`"me.txt"`）仍强制按字符串搜索；3 参数替换模式与 `-l` 组合明确报错。行数按内容行计（末尾换行不产生幻影空行，`\r\n` 同样按行）
+- **`sys file -n`（输出行号）**：stdin 搜索时在每行输出前加 `行号:内容`（上下文行也带行号）；目录搜索输出本身已是 `路径:行号:内容`，无需额外参数
+- 文档同步：README.md / README.en.md（选项与示例）、src/file.rs 头部 Usage/Options；版本 0.5.2 -> 0.5.3；`cargo test` 259 -> 263 项全绿（新增 `build_output_line_numbers_stdin`、`count_lines_text_edges`、`count_matching_lines_flags`、`count_file_lines_counts_existing_file`）
+
+### 冒烟验证（真实二进制，Windows）
+- `sys file -l README.md` -> 总行数；`Get-Content x | sys file -l` -> stdin 总行数
+- `type a.txt | sys file -n hello` -> `行号:内容`；`sys file -l hello <树>` -> 每文件 `路径: N`
+- `sys file -l a b c`（3 参数）-> 明确报错 `-l (count lines) does not apply to replace mode`
+
+---
+
 ## v0.5.2（2026-10-14）
 
 ### 新增

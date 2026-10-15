@@ -672,6 +672,14 @@ struct FileArgs {
     /// Only descend NUM levels of subdirectories (0 = current dir only)
     #[arg(short = 'd', long, value_name = "NUM")]
     max_depth: Option<usize>,
+    /// Count lines instead of printing them: -l FILE counts the file's lines,
+    /// -l with no argument counts stdin, -l PATTERN [PATH] counts matching lines
+    #[arg(short = 'l', long)]
+    line_count: bool,
+    /// Prepend the line number to every printed line (stdin search; directory
+    /// search output already contains the line number)
+    #[arg(short = 'n', long)]
+    line_numbers: bool,
 }
 
 #[derive(Args)]
@@ -843,6 +851,8 @@ fn main() -> ExitCode {
             f.newer,
             f.older,
             f.max_depth,
+            f.line_count,
+            f.line_numbers,
         )
         .map(|_| 0),
         Cmd::Con(c) => convert::cmd_con(&c.raw).map(|_| 0),

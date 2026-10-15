@@ -8,9 +8,13 @@
 //!   sys file -S 2m [PATH]            list files >= 2 MiB under PATH (default .)
 //!   sys file --newer TIME [PATH]     list files modified at/after TIME
 //!   sys file --older TIME [PATH]     list files modified before TIME
+//!   sys file -l FILE                 count the lines of FILE
+//!   sys file -l                      count the lines of stdin (piped input)
+//!   sys file -l PATTERN [PATH]       count the matching lines (stdin or tree)
 //!
 //! A single argument is a stdin search unless it is quoted ("me.txt" -> search
-//! the string) or carries an extension (me.txt -> display that file).
+//! the string) or carries an extension (me.txt -> display that file); with `-l`
+//! a single argument that names an existing file counts that file's lines.
 //!
 //! Options:
 //!   -e EXT       filter by file extension (repeatable, dot optional)
@@ -19,6 +23,11 @@
 //!                source-code files are searched too
 //!   -w           match whole words only
 //!   -c NUM       show NUM lines of context around every match
+//!   -n           prepend the line number to every printed line (stdin search;
+//!                directory search already prints `path:line:content`)
+//!   -l           count lines instead of printing them: with a file argument
+//!                (or stdin) the total line count; with a PATTERN the number of
+//!                matching lines (stdin: `N`; tree: `path: N` per file)
 //!   -S SIZE      only files at least SIZE bytes (plain number = bytes;
 //!                2k/2m/2g/2t = 1024-based KiB/MiB/GiB/TiB)
 //!   --newer TIME only files modified at/after TIME (YYYY-MM-DD [HH:MM[:SS]])
@@ -80,6 +89,12 @@ pub struct FileOpts {
     pub older: Option<i64>,
     /// `-d NUM` maximum subdirectory depth (0 = current directory only).
     pub max_depth: Option<usize>,
+    /// `-l` count lines instead of printing them (file/stdin total count, or
+    /// matching-line count when a PATTERN is given).
+    pub line_count: bool,
+    /// `-n` prepend the line number to every printed line (stdin search; the
+    /// directory search output already contains the line number).
+    pub line_numbers: bool,
 }
 
 impl FileOpts {
@@ -352,7 +367,8 @@ fn line_matches(line: &str, needle: &[char], ignore_case: bool, word: bool) -> b
 
 /// Build the grep-style output lines for `lines` (0-based indexes).
 /// `prefix` is the file path shown as `prefix:line:content`; None prints the
-/// bare line (stdin mode). Context groups are separated by `--`.
+/// bare line (stdin mode), prefixed with `line:content` when `line_numbers`
+/// is set. Context groups are separated by `--`.
 fn build_match_output(
     lines: &[String],
     prefix: Option<&Path>,
@@ -360,6 +376,7 @@ fn build_match_output(
     ignore_case: bool,
     word: bool,
     context: usize,
+    line_numbers: bool,
 ) -> Vec<String> {
     let matches: Vec<usize> = lines
         .iter()
@@ -391,11 +408,30 @@ fn build_match_output(
             let line = &lines[ln];
             match prefix {
                 Some(p) => out.push(format!("{}:{}:{}", p.display(), ln + 1, line)),
+                None if line_numbers => out.push(format!("{}:{}", ln + 1, line)),
                 None => out.push(line.clone()),
             }
         }
     }
     out
+}
+
+/// Number of content lines in `text` (empty text = 0; a trailing newline does
+/// not add a phantom empty line).
+fn count_lines_text(text: &str) -> usize {
+    if text.is_empty() {
+        0
+    } else {
+        text.lines().count()
+    }
+}
+
+/// Number of lines that contain at least one match.
+fn count_matching_lines(lines: &[String], needle: &[char], ignore_case: bool, word: bool) -> usize {
+    lines
+        .iter()
+        .filter(|l| line_matches(l, needle, ignore_case, word))
+        .count()
 }
 
 // ---------------------------------------------------------------------------
@@ -555,7 +591,15 @@ fn search_stdin(needle: &str, opts: &FileOpts) -> Result<()> {
         lines.push(line.context("stdin read error")?);
     }
     let n: Vec<char> = needle.chars().collect();
-    let out = build_match_output(&lines, None, &n, opts.ignore_case, opts.word, opts.context);
+    let out = build_match_output(
+        &lines,
+        None,
+        &n,
+        opts.ignore_case,
+        opts.word,
+        opts.context,
+        opts.line_numbers,
+    );
     for l in &out {
         println!("{l}");
     }
@@ -573,12 +617,71 @@ fn search_path(needle: &str, path: &str, opts: &FileOpts) -> Result<()> {
         }
         let Some(content) = read_text_file(f)? else { continue };
         let lines: Vec<String> = content.lines().map(str::to_string).collect();
-        let out = build_match_output(&lines, Some(f), &n, opts.ignore_case, opts.word, opts.context);
+        let out = build_match_output(
+            &lines,
+            Some(f),
+            &n,
+            opts.ignore_case,
+            opts.word,
+            opts.context,
+            opts.line_numbers,
+        );
         if !out.is_empty() {
             matched_files += 1;
             for l in &out {
                 println!("{l}");
             }
+        }
+    }
+    if matched_files == 0 {
+        println!("(no matches in {} files)", files.len());
+    }
+    Ok(())
+}
+
+/// `sys file -l` — count the lines of a file (single file argument) or of
+/// stdin (no argument); with a PATTERN, count the matching lines instead.
+fn count_stdin(needle: Option<&str>, opts: &FileOpts) -> Result<()> {
+    let stdin = io::stdin();
+    let mut lines: Vec<String> = Vec::new();
+    for line in stdin.lock().lines() {
+        lines.push(line.context("stdin read error")?);
+    }
+    match needle {
+        Some(n) => {
+            let n: Vec<char> = n.chars().collect();
+            println!(
+                "{}",
+                count_matching_lines(&lines, &n, opts.ignore_case, opts.word)
+            );
+        }
+        None => println!("{}", lines.len()),
+    }
+    Ok(())
+}
+
+/// `sys file -l FILE` — the total line count of an existing file.
+fn count_file_lines(name: &str) -> Result<usize> {
+    let text = read_showable(name)?;
+    Ok(count_lines_text(&text))
+}
+
+/// `sys file -l PATTERN PATH` — per-file matching-line counts (files with no
+/// matches are omitted, like `rg -c`).
+fn count_path(needle: &str, path: &str, opts: &FileOpts) -> Result<()> {
+    let files = collect_files(path, opts)?;
+    let n: Vec<char> = needle.chars().collect();
+    let mut matched_files = 0usize;
+    for f in &files {
+        if !passes_attrs(f, opts) {
+            continue;
+        }
+        let Some(content) = read_text_file(f)? else { continue };
+        let lines: Vec<String> = content.lines().map(str::to_string).collect();
+        let c = count_matching_lines(&lines, &n, opts.ignore_case, opts.word);
+        if c > 0 {
+            matched_files += 1;
+            println!("{}: {}", f.display(), c);
         }
     }
     if matched_files == 0 {
@@ -630,6 +733,8 @@ pub fn cmd_file(
     newer: Option<String>,
     older: Option<String>,
     max_depth: Option<usize>,
+    line_count: bool,
+    line_numbers: bool,
 ) -> Result<()> {
     let opts = FileOpts {
         exts: exts.to_vec(),
@@ -650,16 +755,41 @@ pub fn cmd_file(
             None => None,
         },
         max_depth,
+        line_count,
+        line_numbers,
     };
     let has_filter = opts.min_size.is_some()
         || opts.newer.is_some()
         || opts.older.is_some()
         || opts.max_depth.is_some();
+    // `-l` is an output mode (not a filter): it takes precedence over the
+    // attribute-filter list mode and over the plain search/replace modes.
+    if opts.line_count {
+        return match args.len() {
+            0 => count_stdin(None, &opts),
+            1 => {
+                if let Some(inner) = strip_quotes(&args[0]) {
+                    // Quoted string: force the search meaning ("me.txt" -> search).
+                    count_stdin(Some(inner), &opts)
+                } else if Path::new(&args[0]).is_file() {
+                    // An existing file (extension or not) -> count its lines.
+                    let c = count_file_lines(&args[0])?;
+                    println!("{c}");
+                    Ok(())
+                } else {
+                    count_stdin(Some(&args[0]), &opts)
+                }
+            }
+            2 => count_path(&args[0], &args[1], &opts),
+            3 => bail!("-l (count lines) does not apply to replace mode (OLD NEW PATH)"),
+            _ => bail!("too many arguments (expected PATTERN [PATH])"),
+        };
+    }
     match args.len() {
         0 if has_filter => list_files(".", &opts),
         1 if has_filter => list_files(&args[0], &opts),
         0 => bail!(
-            "usage:\n  sys file PATTERN             search PATTERN in stdin (piped)\n  sys file PATTERN PATH        search PATTERN in PATH\n  sys file OLD NEW PATH        replace OLD with NEW in PATH\n  sys file NAME.EXT            display a file (e.g. file me.txt)\n  sys file -S SIZE [PATH]      list files by size (e.g. -S 2m)\n  sys file --newer TIME [PATH] list files by mtime\noptions: -e EXT (repeatable) -i -t -w -c NUM -S SIZE --newer TIME --older TIME -d NUM"
+            "usage:\n  sys file PATTERN             search PATTERN in stdin (piped)\n  sys file PATTERN PATH        search PATTERN in PATH\n  sys file OLD NEW PATH        replace OLD with NEW in PATH\n  sys file NAME.EXT            display a file (e.g. file me.txt)\n  sys file -l FILE             count the lines of FILE\n  sys file -l PATTERN [PATH]   count the matching lines\n  sys file -S SIZE [PATH]      list files by size (e.g. -S 2m)\n  sys file --newer TIME [PATH] list files by mtime\noptions: -e EXT (repeatable) -i -t -w -c NUM -n -l -S SIZE --newer TIME --older TIME -d NUM"
         ),
         1 => {
             if let Some(inner) = strip_quotes(&args[0]) {
@@ -740,7 +870,7 @@ mod tests {
     fn build_output_groups_context() {
         let lines: Vec<String> = (0..10).map(|i| format!("line{i}")).collect();
         let needle = chars("line2");
-        let out = build_match_output(&lines, None, &needle, false, false, 1);
+        let out = build_match_output(&lines, None, &needle, false, false, 1, false);
         assert_eq!(out, vec!["line1".to_string(), "line2".to_string(), "line3".to_string()]);
     }
 
@@ -751,7 +881,7 @@ mod tests {
         // 需要两处匹配：构造匹配 line2 和 line8
         let mut lines2 = lines.clone();
         lines2[8] = "line2".to_string();
-        let out = build_match_output(&lines2, None, &needle, false, false, 1);
+        let out = build_match_output(&lines2, None, &needle, false, false, 1, false);
         assert_eq!(
             out,
             vec![
@@ -769,8 +899,70 @@ mod tests {
     #[test]
     fn build_output_with_prefix() {
         let lines = vec!["hello world".to_string(), "world".to_string()];
-        let out = build_match_output(&lines, Some(Path::new("a/b.txt")), &chars("world"), false, false, 0);
+        let out = build_match_output(&lines, Some(Path::new("a/b.txt")), &chars("world"), false, false, 0, false);
         assert_eq!(out, vec!["a/b.txt:1:hello world".to_string(), "a/b.txt:2:world".to_string()]);
+    }
+
+    #[test]
+    fn build_output_line_numbers_stdin() {
+        let lines = vec![
+            "hello world".to_string(),
+            "nothing".to_string(),
+            "world".to_string(),
+        ];
+        // 非相邻匹配为两个组，组间以 -- 分隔（与既有上下文分组行为一致）
+        let out = build_match_output(&lines, None, &chars("world"), false, false, 0, true);
+        assert_eq!(out, vec!["1:hello world".to_string(), "--".to_string(), "3:world".to_string()]);
+        // 上下文行也带行号
+        let out = build_match_output(&lines, None, &chars("nothing"), false, false, 1, true);
+        assert_eq!(out, vec!["1:hello world".to_string(), "2:nothing".to_string(), "3:world".to_string()]);
+        // 不设 -n 时保持裸行
+        let out = build_match_output(&lines, None, &chars("world"), false, false, 0, false);
+        assert_eq!(out, vec!["hello world".to_string(), "--".to_string(), "world".to_string()]);
+    }
+
+    #[test]
+    fn count_lines_text_edges() {
+        assert_eq!(count_lines_text(""), 0);
+        assert_eq!(count_lines_text("a"), 1);
+        assert_eq!(count_lines_text("a\nb"), 2);
+        assert_eq!(count_lines_text("a\nb\n"), 2); // 末尾换行不产生幻影空行
+        assert_eq!(count_lines_text("\n"), 1);
+        assert_eq!(count_lines_text("a\n\nb"), 3); // 中间空行算一行
+        assert_eq!(count_lines_text("line1\r\nline2\r\n"), 2); // CRLF 同样按行
+    }
+
+    #[test]
+    fn count_matching_lines_flags() {
+        let lines: Vec<String> = vec![
+            "foo bar".to_string(),
+            "FOO baz".to_string(),
+            "foobar".to_string(),
+            "nothing".to_string(),
+        ];
+        let needle = chars("foo");
+        assert_eq!(count_matching_lines(&lines, &needle, false, false), 2); // "foo bar" + "foobar"
+        assert_eq!(count_matching_lines(&lines, &needle, true, false), 3); // 大小写不敏感：+ "FOO baz"
+        assert_eq!(count_matching_lines(&lines, &needle, false, true), 1); // 整词：仅 "foo bar"
+        assert_eq!(count_matching_lines(&lines, &needle, true, true), 2); // 大小写不敏感整词：+ "FOO baz"
+        let none = chars("zzz");
+        assert_eq!(count_matching_lines(&lines, &none, false, false), 0);
+    }
+
+    #[test]
+    fn count_file_lines_counts_existing_file() {
+        let base = std::env::temp_dir().join(format!("sys_lcount_{}", std::process::id()));
+        fs::create_dir_all(&base).unwrap();
+        let f = base.join("t.txt");
+        fs::write(&f, "l1\nl2\nl3").unwrap();
+        assert_eq!(count_file_lines(f.to_str().unwrap()).unwrap(), 3); // 无末尾换行也计 3 行
+        fs::write(&f, "l1\nl2\nl3\n").unwrap();
+        assert_eq!(count_file_lines(f.to_str().unwrap()).unwrap(), 3); // 末尾换行不产生幻影空行
+        fs::write(&f, "").unwrap();
+        assert_eq!(count_file_lines(f.to_str().unwrap()).unwrap(), 0);
+        // 不存在的文件报错（与显示模式一致）
+        assert!(count_file_lines(base.join("nope.txt").to_str().unwrap()).is_err());
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
@@ -908,6 +1100,8 @@ mod tests {
             newer: None,
             older: None,
             max_depth: None,
+            line_count: false,
+            line_numbers: false,
         }
     }
 }

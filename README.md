@@ -628,6 +628,8 @@ fd/sd 风格：搜索 stdin 或目录树中的文本/源码文件，或就地替
 * `-t`：只搜索纯文本文件（txt/md/log/csv/json/...），排除源码文件
 * `-w`：整词匹配（前后字符非字母/数字/下划线）
 * `-c NUM`：显示匹配行的前后 NUM 行（多组间以 `--` 分隔）
+* `-n`：在输出行前加上行号（stdin 搜索；目录搜索输出本身已是 `路径:行号:内容`）
+* `-l`：统计行数而非输出内容——`-l FILE` 统计文件总行数、无参数时统计 stdin 总行数；带 PATTERN 时统计**匹配行数**（stdin 输出 `N`；目录树输出每个文件的 `路径: N`，无匹配的文件不显示）
 
 文件属性筛选（fd 风格，可与搜索/替换/列文件叠加）：
 
@@ -641,6 +643,7 @@ fd/sd 风格：搜索 stdin 或目录树中的文本/源码文件，或就地替
 
 ```
 sys file hello                              # stdin 管道搜索（type a.txt | sys file hello）
+sys file -n hello                           # stdin 搜索，输出行前加行号
 sys file me.txt                             # 显示 me.txt 文件内容
 sys file "me.txt"                           # 引号包裹：仍按字符串搜索（stdin 中找 me.txt）
 sys file hello D:\projects                  # 在 D:\projects 树中搜索
@@ -648,6 +651,10 @@ sys file hello D:\projects -e py -e md      # 只搜 .py 和 .md
 sys file HELLO D:\projects -i               # 忽略大小写
 sys file hello D:\projects -t               # 只搜纯文本（不含源码）
 sys file hello D:\projects -w -c 2          # 整词 + 前后 2 行上下文
+sys file -l me.txt                          # 统计 me.txt 的总行数
+type a.txt | sys file -l                    # 统计 stdin 输入的总行数
+type a.txt | sys file -l hello              # 统计 stdin 中匹配 hello 的行数
+sys file -l hello D:\projects               # 统计每个文件的匹配行数（路径: N）
 sys file hello hi D:\projects               # 就地替换 hello -> hi
 sys file HELLO hi D:\projects -i            # 忽略大小写替换
 sys file -S 2m                              # 列出当前目录下 >= 2 MiB 的文件
