@@ -54,7 +54,7 @@ Commands:
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
 | AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1039 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度、模态与**参数规模（参数量）**）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key/docs/console/sample（sample 为该 provider models 接口的示例请求，如 `https://openrouter.ai/api/v1/models  Authorization:"Bearer sk-sample"`）、`info model` 列出 `{provider}:{name}` 模型清单、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页、`info list-model` 用 provider 的 models 接口查可用模型）；`ai price`（models.dev 价格，`--src openrouter` 换 openrouter.ai 目录，见命令参考）；`ai config`（导出配置为 codex / opencode / litellm / freellmapi / codebuddy / workbuddy / trae 格式，支持 `-m` 多模型选择（与 chat 同格式）、`--show` 预览目标配置文件地址与内容、`-f` 写文件且写入前自动备份、`--update` 就地合并更新默认配置文件且先备份）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前按配置的 max_input_tokens 截断超长消息，能力字段默认只读本地配置、不查询 models.dev，`--update` 显式补齐缺失的 max_input_tokens / type 并写回配置，OpenAI / Anthropic 兼容）；`ai server`（`sys ai server [ADDR]` 以 OpenAI 兼容 API 对外提供 `/v1/chat/completions` 与 `/v1/models` 服务（默认 127.0.0.1:10000，可只给端口/IP；`--help` 查询服务状态并打印配置的 provider/model））；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
-| 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin（带扩展名如 `me.txt` 则显示文件，引号包裹强制搜索）；2 参目录树文本/源码搜索（`-e` / `-i` / `-t` / `-w` / `-c`）；3 参 OLD NEW PATH 就地替换；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件 |
+| 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin（带扩展名如 `me.txt` 则显示文件，引号包裹强制搜索）；2 参目录树文本/源码搜索（`-e` / `-i` / `-t` / `-w` / `-c` / `-n` 行号）；3 参 OLD NEW PATH 就地替换；`-l` 统计行数（文件 / stdin / 匹配行）；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件；`-md5 FILE [MD5]` / `-sha FILE [SHA1]` 哈希与比对 |
 | 格式转换      | `con`                | json / csv / md / yaml 互转：默认读 stdin（`cat a.json | sys con`），`-file` 读文件，`-i` 输入格式，`-o` 输出格式，`-out` 写文件；表格类转对象数组（类型推断 + 转义） |
 | 联网搜索      | `search`             | 博查 AI 网页搜索 API（`POST api.bochaai.com/v1/web-search`）：`--freshness`（时间过滤）/ `--summary`（AI 摘要）/ `--count`（1-50）/ `--page` / `--include-domains` / `--exclude-domains`（域名白黑名单），参数与官网接口一致；key 取自配置 `search` 段；`--json` 原始响应 / `--debug` 请求与响应。`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡（`--no-answer` 关闭 AI 答案） |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
@@ -630,6 +630,7 @@ fd/sd 风格：搜索 stdin 或目录树中的文本/源码文件，或就地替
 * `-c NUM`：显示匹配行的前后 NUM 行（多组间以 `--` 分隔）
 * `-n`：在输出行前加上行号（stdin 搜索；目录搜索输出本身已是 `路径:行号:内容`）
 * `-l`：统计行数而非输出内容——`-l FILE` 统计文件总行数、无参数时统计 stdin 总行数；带 PATTERN 时统计**匹配行数**（stdin 输出 `N`；目录树输出每个文件的 `路径: N`，无匹配的文件不显示）
+* `-md5 FILE [MD5]` / `-sha FILE [SHA1]`：**哈希模式**（优先级最高）。对 FILE 做 MD5 / SHA-1 运算并输出小写十六进制摘要；再给一个参数则与期望值比对——相等输出 `match: <摘要>`，不等输出 `mismatch: computed <摘要> != expected <期望>`；期望值大小写不敏感，但长度/字符不合法时报 `expected md5/sha1 must be N hex characters`。大文件流式哈希（64 KiB 分块，内存有界）；`-md5` 与 `-sha` 同时给出报错；单字符 `-m` 等其它参数不受影响（标记需完整匹配 `-md5`/`-sha`/`--md5`/`--sha`）
 
 文件属性筛选（fd 风格，可与搜索/替换/列文件叠加）：
 
@@ -663,6 +664,9 @@ sys file -S 2m -e bin -d 1 D:\data          # >= 2MiB 的 .bin 文件，只递�
 sys file --newer "2026-10-01" D:\data       # 修改时间 >= 2026-10-01 的文件
 sys file --older "2026-10-01 12:00" D:\data # 修改时间早于该时刻的文件
 sys file hello D:\data -S 1m                # 只在 >= 1 MiB 的文件中搜 hello
+sys file -md5 me.txt                        # 输出 me.txt 的 MD5 摘要
+sys file -md5 me.txt 900150983cd24fb0d6963f7d28e17f72   # 比对：相等输出 match，否则 mismatch
+sys file -sha me.txt da39a3ee5e6b4b0d3255bfef95601890afd80709  # SHA-1 同理
 ```
 
 #### 5.9 格式转换（`con`）

@@ -388,6 +388,7 @@ Options:
 * `-c NUM` — show NUM lines of context around every match (`--` separates groups)
 * `-n` — prepend the line number to every printed line (stdin search; directory search output is already `path:line:content`)
 * `-l` — count lines instead of printing them: `-l FILE` counts the file's total lines, no argument counts stdin; with a PATTERN it counts the **matching** lines (stdin prints `N`; a tree prints `path: N` per file, files with no match are omitted)
+* `-md5 FILE [MD5]` / `-sha FILE [SHA1]` — **hash mode** (highest priority). Hashes FILE with MD5 / SHA-1 and prints the lowercase hex digest; a second argument compares against the expected value — equal prints `match: <digest>`, unequal prints `mismatch: computed <digest> != expected <expected>`; the expected value is case-insensitive, but an invalid length/character set errors with `expected md5/sha1 must be N hex characters`. Large files are hashed streaming (64 KiB chunks, bounded memory); giving both `-md5` and `-sha` is an error; other single-dash args (e.g. `-m`) are untouched (the markers must match `-md5`/`-sha`/`--md5`/`--sha` exactly)
 
 File attribute filters (fd-style, combine with search / replace / listing):
 
@@ -421,6 +422,9 @@ sys file -S 2m -e bin -d 1 D:\data          # >= 2MiB .bin files, 1 level deep
 sys file --newer "2026-10-01" D:\data       # files modified at/after 2026-10-01
 sys file --older "2026-10-01 12:00" D:\data # files modified before that time
 sys file hello D:\data -S 1m                # search hello only in files >= 1 MiB
+sys file -md5 me.txt                        # print the MD5 digest of me.txt
+sys file -md5 me.txt 900150983cd24fb0d6963f7d28e17f72   # compare: match / mismatch
+sys file -sha me.txt da39a3ee5e6b4b0d3255bfef95601890afd80709  # SHA-1 likewise
 ```
 
 #### 5.8 Format conversion (`con`)

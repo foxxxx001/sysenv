@@ -3,6 +3,7 @@ mod chat;
 mod convert;
 mod env;
 mod file;
+mod hash;
 mod httpie;
 mod image;
 mod link;
@@ -642,8 +643,10 @@ struct NetArgs {
 
 #[derive(Args)]
 struct FileArgs {
-    /// PATTERN, or PATTERN PATH, or OLD NEW PATH (path = file or directory)
-    #[arg(value_name = "ARGS")]
+    /// PATTERN, or PATTERN PATH, or OLD NEW PATH (path = file or directory);
+    /// or -md5/-sha FILE [EXPECTED] to hash a file (single-dash forms are
+    /// absorbed into ARGS, like `con`'s -file/-out)
+    #[arg(value_name = "ARGS", allow_hyphen_values = true)]
     args: Vec<String>,
     /// Only search files with this extension (repeatable; leading dot optional, e.g. -e py -e md)
     #[arg(short = 'e', long, value_name = "EXT")]

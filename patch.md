@@ -2,6 +2,24 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.5.4（2026-10-15）
+
+### 新增
+- **`sys file -md5` / `-sha`（哈希模式，优先级最高）**：`-md5 FILE` 对 FILE 做 MD5 运算并输出小写 hex 摘要；`-md5 FILE MD5` 再与期望值比对——相等输出 `match: <摘要>`，不等输出 `mismatch: computed <摘要> != expected <期望>`；`-sha` 同理（SHA-1）。期望值 trim + 小写后校验，长度或字符不合法报 `expected md5/sha1 must be N hex characters`。0 参数 / 超过 2 参数 / 文件不存在各有明确报错；`-md5` 与 `-sha` 同现报 `cannot combine -md5 and -sha`
+- **自包含哈希实现（零新依赖）**：新增 `src/hash.rs`——`Md5` / `Sha1` 流式结构体（`update()` 任意分块安全、`finalize()` 填充）、`hash_file`（64 KiB 分块流式读大文件，内存有界）。clap 不支持多字符短参数，故 `-md5`/`-sha` 在 `FileArgs.args`（`allow_hyphen_values = true`）内由 `split_hash_args` 自行识别（`-md5`/`--md5` 均接受，`-md5x` 之类不误认），标记可出现在任意位置
+- 文档同步：README.md / README.en.md（选项与示例）、src/file.rs 头部 Usage/Options；版本 0.5.3 -> 0.5.4；`cargo test` 263 -> 272 项全绿（新增 hash.rs 7 项 + file.rs 2 项）
+
+### 修复
+- **MD5 全量测试向量错误根因：K 表第 28 项拼写错位**（`0xa3e905fa` -> 正确值 `0xa9e3e905` = floor(sin(29)×2³²)）。MD5 每个消息都经过第 28 轮，故空串/abc/fox/百万 a 全部错算；修正后全部命中 RFC 1321 向量。SHA-1 实现本身正确（FIPS 180-1），此前 "fox 失败" 实为测试期望值笔误——该字符串真实 SHA-1 为 `2fd4e1c67a2d28fced849ee1bb76e7391b93eb12`（Windows CNG certutil / OpenSSL hashlib / .NET Get-FileHash 三方交叉确认），已按实际值修正断言
+
+### 冒烟验证（真实二进制，Windows）
+- `sys file -md5 <文件>` 输出与 `certutil -hashfile <文件> MD5` 一致
+- `sys file -sha <文件>` 输出与 `Get-FileHash <文件> -Algorithm SHA1` 一致
+- `sys file -md5 <文件> <正确摘要>` -> `match: ...`；`sys file -md5 <文件> <错误摘要>` -> `mismatch: ...`；非法期望（长度/非 hex）-> `expected md5 must be 32 hex characters`
+- `sys file -md5 -sha <文件>` -> `cannot combine -md5 and -sha`；`sys file -md5`（无参）-> 用法报错
+
+---
+
 ## v0.5.3（2026-10-15）
 
 ### 新增

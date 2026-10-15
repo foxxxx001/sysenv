@@ -11,6 +11,8 @@
 //!   sys file -l FILE                 count the lines of FILE
 //!   sys file -l                      count the lines of stdin (piped input)
 //!   sys file -l PATTERN [PATH]       count the matching lines (stdin or tree)
+//!   sys file -md5 FILE [MD5]         hash FILE with MD5; compare when MD5 given
+//!   sys file -sha FILE [SHA1]        hash FILE with SHA-1; compare when SHA1 given
 //!
 //! A single argument is a stdin search unless it is quoted ("me.txt" -> search
 //! the string) or carries an extension (me.txt -> display that file); with `-l`
@@ -28,6 +30,11 @@
 //!   -l           count lines instead of printing them: with a file argument
 //!                (or stdin) the total line count; with a PATTERN the number of
 //!                matching lines (stdin: `N`; tree: `path: N` per file)
+//!   -md5/-sha    hash mode: `-md5 FILE [EXPECTED]` prints the MD5 hex digest
+//!                (or `match:` / `mismatch` when EXPECTED is given); `-sha` is
+//!                the same for SHA-1. Single-dash multi-letter, parsed from the
+//!                ARGS list (like `con`'s -file/-out), so they may appear at
+//!                any position
 //!   -S SIZE      only files at least SIZE bytes (plain number = bytes;
 //!                2k/2m/2g/2t = 1024-based KiB/MiB/GiB/TiB)
 //!   --newer TIME only files modified at/after TIME (YYYY-MM-DD [HH:MM[:SS]])
@@ -45,6 +52,8 @@ use std::fs;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
+
+use crate::hash::{self, HashAlgo};
 
 /// Plain-text extensions (searched when `-t` is set, and always).
 const TEXT_EXTS: &[&str] = &[
@@ -720,6 +729,81 @@ fn replace_path(old: &str, new: &str, path: &str, opts: &FileOpts) -> Result<()>
     Ok(())
 }
 
+/// Scan `args` for the hash-mode markers `-md5` / `-sha` (both single- and
+/// double-dash accepted). Returns the chosen algorithm and the remaining
+/// arguments (`FILE [EXPECTED]`) with the markers removed. Giving both markers
+/// at once is an error; markers elsewhere in the list are still picked up.
+fn split_hash_args(args: &[String]) -> Result<Option<(HashAlgo, Vec<&str>)>> {
+    let mut algo: Option<HashAlgo> = None;
+    let mut rest: Vec<&str> = Vec::new();
+    for a in args {
+        let t = a.trim_start_matches('-');
+        let cur = match t {
+            "md5" => Some(HashAlgo::Md5),
+            "sha" => Some(HashAlgo::Sha1),
+            _ => None,
+        };
+        if let Some(cur) = cur {
+            if algo.is_some() {
+                bail!("cannot combine -md5 and -sha");
+            }
+            algo = Some(cur);
+        } else {
+            rest.push(a.as_str());
+        }
+    }
+    Ok(algo.map(|a| (a, rest)))
+}
+
+/// Validate `expected` against `computed`: format must be `hex_len()` lowercase
+/// hex chars; equal values return Ok, otherwise a mismatch error.
+fn verify_hash(algo: HashAlgo, computed: &str, expected: &str) -> Result<()> {
+    let exp = expected.trim().to_ascii_lowercase();
+    let want = algo.hex_len();
+    if exp.len() != want || !exp.chars().all(|c| c.is_ascii_hexdigit()) {
+        bail!(
+            "expected {} must be {} hex characters (got `{}`)",
+            algo.name(),
+            want,
+            expected
+        );
+    }
+    if exp == computed {
+        Ok(())
+    } else {
+        bail!("mismatch: computed {computed} != expected {exp}");
+    }
+}
+
+/// `sys file -md5/-sha FILE [EXPECTED]` — hash a file, optionally compare.
+fn run_hash(algo: HashAlgo, rest: &[&str]) -> Result<()> {
+    let (file, expected) = match rest.len() {
+        1 => (rest[0], None),
+        2 => (rest[0], Some(rest[1])),
+        0 => bail!(
+            "{} requires a file name (usage: sys file {} FILE [EXPECTED])",
+            algo.flag(),
+            algo.flag()
+        ),
+        _ => bail!(
+            "too many arguments for {} (expected FILE [EXPECTED])",
+            algo.flag()
+        ),
+    };
+    let p = Path::new(file);
+    if !p.is_file() {
+        bail!("`{file}` is not a file (no such file?)");
+    }
+    let computed = hash::hash_file(algo, p)?;
+    match expected {
+        None => {
+            println!("{computed}");
+            Ok(())
+        }
+        Some(exp) => verify_hash(algo, &computed, exp).map(|()| println!("match: {computed}")),
+    }
+}
+
 /// Entry point: `sys file ...`
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_file(
@@ -762,6 +846,11 @@ pub fn cmd_file(
         || opts.newer.is_some()
         || opts.older.is_some()
         || opts.max_depth.is_some();
+    // Hash mode (`-md5` / `-sha` markers) takes precedence over every other
+    // mode: `sys file -md5 FILE [EXPECTED]`, `sys file -sha FILE [EXPECTED]`.
+    if let Some((algo, rest)) = split_hash_args(args)? {
+        return run_hash(algo, &rest);
+    }
     // `-l` is an output mode (not a filter): it takes precedence over the
     // attribute-filter list mode and over the plain search/replace modes.
     if opts.line_count {
@@ -789,7 +878,7 @@ pub fn cmd_file(
         0 if has_filter => list_files(".", &opts),
         1 if has_filter => list_files(&args[0], &opts),
         0 => bail!(
-            "usage:\n  sys file PATTERN             search PATTERN in stdin (piped)\n  sys file PATTERN PATH        search PATTERN in PATH\n  sys file OLD NEW PATH        replace OLD with NEW in PATH\n  sys file NAME.EXT            display a file (e.g. file me.txt)\n  sys file -l FILE             count the lines of FILE\n  sys file -l PATTERN [PATH]   count the matching lines\n  sys file -S SIZE [PATH]      list files by size (e.g. -S 2m)\n  sys file --newer TIME [PATH] list files by mtime\noptions: -e EXT (repeatable) -i -t -w -c NUM -n -l -S SIZE --newer TIME --older TIME -d NUM"
+            "usage:\n  sys file PATTERN             search PATTERN in stdin (piped)\n  sys file PATTERN PATH        search PATTERN in PATH\n  sys file OLD NEW PATH        replace OLD with NEW in PATH\n  sys file NAME.EXT            display a file (e.g. file me.txt)\n  sys file -l FILE             count the lines of FILE\n  sys file -l PATTERN [PATH]   count the matching lines\n  sys file -md5 FILE [MD5]     print MD5 of FILE (compare when MD5 given)\n  sys file -sha FILE [SHA1]    print SHA1 of FILE (compare when SHA1 given)\n  sys file -S SIZE [PATH]      list files by size (e.g. -S 2m)\n  sys file --newer TIME [PATH] list files by mtime\noptions: -e EXT (repeatable) -i -t -w -c NUM -n -l -md5 -sha -S SIZE --newer TIME --older TIME -d NUM"
         ),
         1 => {
             if let Some(inner) = strip_quotes(&args[0]) {
@@ -963,6 +1052,50 @@ mod tests {
         // 不存在的文件报错（与显示模式一致）
         assert!(count_file_lines(base.join("nope.txt").to_str().unwrap()).is_err());
         fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn split_hash_args_detects_markers() {
+        // -md5/-sha 与 --md5/--sha 均识别；标记位置任意；其余参数按原序保留
+        let v = vec!["-md5".to_string(), "me.txt".to_string()];
+        let (a, rest) = split_hash_args(&v).unwrap().unwrap();
+        assert_eq!(a, HashAlgo::Md5);
+        assert_eq!(rest, vec!["me.txt"]);
+
+        let v = vec!["me.txt".to_string(), "-sha".to_string(), "abc123".to_string()];
+        let (a, rest) = split_hash_args(&v).unwrap().unwrap();
+        assert_eq!(a, HashAlgo::Sha1);
+        assert_eq!(rest, vec!["me.txt", "abc123"]);
+
+        let v = vec!["--md5".to_string(), "a.b".to_string()];
+        let (a, rest) = split_hash_args(&v).unwrap().unwrap();
+        assert_eq!(a, HashAlgo::Md5);
+        assert_eq!(rest, vec!["a.b"]);
+
+        // 两个标记同时出现报错
+        let v = vec!["-md5".to_string(), "-sha".to_string(), "f".to_string()];
+        assert!(split_hash_args(&v).is_err());
+        // 无标记返回 None；普通参数不受影响
+        let v = vec!["hello".to_string(), "D:\\x".to_string()];
+        assert!(split_hash_args(&v).unwrap().is_none());
+        let v = vec!["-md5x".to_string()]; // 相似但不是标记
+        assert!(split_hash_args(&v).unwrap().is_none());
+    }
+
+    #[test]
+    fn verify_hash_compare_rules() {
+        // 大小写不敏感的相等
+        assert!(verify_hash(HashAlgo::Md5, "900150983cd24fb0d6963f7d28e17f72", "900150983CD24FB0D6963F7D28E17F72").is_ok());
+        // 不相等报 mismatch
+        let e = verify_hash(HashAlgo::Md5, "900150983cd24fb0d6963f7d28e17f72", "00000000000000000000000000000000").unwrap_err();
+        assert!(e.to_string().contains("mismatch"));
+        // 格式校验：长度与十六进制
+        assert!(verify_hash(HashAlgo::Md5, "x", "abc").is_err());
+        assert!(verify_hash(HashAlgo::Sha1, "x", "abc").is_err());
+        assert!(verify_hash(HashAlgo::Sha1, "da39a3ee5e6b4b0d3255bfef95601890afd80709", "zz39a3ee5e6b4b0d3255bfef95601890afd80709").is_err());
+        // 期望值格式合法但值不相等 → mismatch（而非格式错误）
+        let e = verify_hash(HashAlgo::Md5, "x", "900150983cd24fb0d6963f7d28e17f72").unwrap_err();
+        assert!(e.to_string().contains("mismatch"));
     }
 
     #[test]
