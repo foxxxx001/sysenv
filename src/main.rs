@@ -682,7 +682,8 @@ struct FileArgs {
     #[arg(short = 'l', long)]
     line_count: bool,
     /// Prepend the line number to every printed line (stdin search; directory
-    /// search output already contains the line number)
+    /// search output already contains the line number). May appear in any
+    /// position (a trailing -n is re-scanned from ARGS, like -l / -md5 / -sha)
     #[arg(short = 'n', long)]
     line_numbers: bool,
 }

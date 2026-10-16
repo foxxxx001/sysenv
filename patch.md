@@ -2,6 +2,19 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.5.6（2026-10-16）
+
+### 修复
+- **`sys file -n`（位置无关的行号输出）**：`-n` 放在模式后面时不再报 `path `-n` does not exist`（1 参 stdin 搜索），`sys file PATTERN PATH -n`（2 参目录搜索）不再被误判为替换模式。根因与 v0.5.5 的 `-l` 相同：`FileArgs.args` 的 `allow_hyphen_values` 会把第一个位置参数之后的旗标状 token 吞进 ARGS。修复：把 `split_line_count_args` 泛化为 `split_output_flag_args`，从 ARGS 一次扫描并剥离 `-l`/`--line-count` 与 `-n`/`--line-numbers`（标记任意位置均可，`-lfoo` / `--l` / `-nfoo` / `--n` 不误认），扫描结果写回 `FileOpts`，所有模式统一生效；1 参 stdin 搜索输出 `行号:内容`，2 参目录搜索输出 `路径:行号:内容`（本就带行号，`-n` 不再被吞导致报错/误入替换）
+- 文档同步：src/file.rs 头部 Usage/Options、src/main.rs FileArgs 注释；版本 0.5.5 -> 0.5.6；`cargo test` 273 项全绿（`split_line_count_args_any_position` 扩展为 `split_output_flag_args_any_position`，新增 `-n`/`--line-numbers`/组合/不误认用例）
+
+### 冒烟验证（真实二进制，Windows）
+- `("动漫A","普通","动漫B") | sys file "动漫" -n` -> `1:"动漫A"` / `--` / `3:"动漫B"`，与 `sys file -n "动漫"` 前部写法完全一致
+- `sys file 动漫 <含3行txt> -n` -> `路径:1:...` / `--` / `路径:3:...`，与无 `-n` 对照一致，且**文件内容未改动**（修复前 2 参尾部 `-n` 会进入替换模式）
+- `-l`（匹配行数 2）、`-md5`、替换模式 `sys file hello hi <文件>` 回归正常
+
+---
+
 ## v0.5.5（2026-10-16）
 
 ### 修复

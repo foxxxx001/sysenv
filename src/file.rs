@@ -26,7 +26,9 @@
 //!   -w           match whole words only
 //!   -c NUM       show NUM lines of context around every match
 //!   -n           prepend the line number to every printed line (stdin search;
-//!                directory search already prints `path:line:content`)
+//!                directory search already prints `path:line:content`). May
+//!                appear at any position (`sys file PATTERN -n` works too;
+//!                re-scanned from the ARGS list like `-l`/`-md5`/`-sha`)
 //!   -l           count lines instead of printing them: with a file argument
 //!                (or stdin) the total line count; with a PATTERN the number of
 //!                matching lines (stdin: `N`; tree: `path: N` per file). May
@@ -757,22 +759,26 @@ fn split_hash_args(args: &[String]) -> Result<Option<(HashAlgo, Vec<&str>)>> {
     Ok(algo.map(|a| (a, rest)))
 }
 
-/// Pull `-l` / `--line-count` out of `args` so the count flag also works when
-/// it follows the first positional token (clap's `allow_hyphen_values` swallows
-/// trailing flag-like tokens into ARGS, so `sys file PATTERN -l` never set
-/// `line_count` and `-l` was misread as a path or replacement string). Returns
-/// the effective flag state and the remaining arguments.
-fn split_line_count_args(args: &[String], line_count: bool) -> (bool, Vec<&str>) {
-    let mut found = line_count;
+/// Pull output-mode flags (`-l`/`--line-count`, `-n`/`--line-numbers`) out of
+/// `args` so they also work when they follow the first positional token (clap's
+/// `allow_hyphen_values` swallows trailing flag-like tokens into ARGS, so
+/// `sys file PATTERN -l` / `PATTERN -n` never set their flags and the tokens
+/// were misread as a path or replacement string). Returns the effective flags
+/// and the remaining arguments.
+fn split_output_flag_args(args: &[String], line_count: bool, line_numbers: bool) -> (bool, bool, Vec<&str>) {
+    let mut count = line_count;
+    let mut numbers = line_numbers;
     let mut rest: Vec<&str> = Vec::new();
     for a in args {
         if a == "-l" || a == "--line-count" {
-            found = true;
+            count = true;
+        } else if a == "-n" || a == "--line-numbers" {
+            numbers = true;
         } else {
             rest.push(a.as_str());
         }
     }
-    (found, rest)
+    (count, numbers, rest)
 }
 
 /// Validate `expected` against `computed`: format must be `hex_len()` lowercase
@@ -871,29 +877,33 @@ pub fn cmd_file(
     if let Some((algo, rest)) = split_hash_args(args)? {
         return run_hash(algo, &rest);
     }
-    // `-l` is an output mode (not a filter): it takes precedence over the
+    // `-l` / `-n` are output modes (not filters): they take precedence over the
     // attribute-filter list mode and over the plain search/replace modes.
-    // Re-scan ARGS for it (like `-md5`/`-sha`) so it works in any position:
-    // clap's `allow_hyphen_values` swallows a trailing `-l` into ARGS, which
-    // would otherwise be misread as a path or replacement string.
-    let (line_count, count_args) = split_line_count_args(args, opts.line_count);
+    // Re-scan ARGS for them (like `-md5`/`-sha`) so they work in any position:
+    // clap's `allow_hyphen_values` swallows a trailing `-l`/`-n` into ARGS,
+    // which would otherwise be misread as a path or replacement string.
+    let (line_count, line_numbers, args) =
+        split_output_flag_args(args, opts.line_count, opts.line_numbers);
+    let mut opts = opts;
+    opts.line_count = line_count;
+    opts.line_numbers = line_numbers;
     if line_count {
-        return match count_args.len() {
+        return match args.len() {
             0 => count_stdin(None, &opts),
             1 => {
-                if let Some(inner) = strip_quotes(&count_args[0]) {
+                if let Some(inner) = strip_quotes(&args[0]) {
                     // Quoted string: force the search meaning ("me.txt" -> search).
                     count_stdin(Some(inner), &opts)
-                } else if Path::new(&count_args[0]).is_file() {
+                } else if Path::new(&args[0]).is_file() {
                     // An existing file (extension or not) -> count its lines.
-                    let c = count_file_lines(&count_args[0])?;
+                    let c = count_file_lines(&args[0])?;
                     println!("{c}");
                     Ok(())
                 } else {
-                    count_stdin(Some(&count_args[0]), &opts)
+                    count_stdin(Some(&args[0]), &opts)
                 }
             }
-            2 => count_path(&count_args[0], &count_args[1], &opts),
+            2 => count_path(&args[0], &args[1], &opts),
             3 => bail!("-l (count lines) does not apply to replace mode (OLD NEW PATH)"),
             _ => bail!("too many arguments (expected PATTERN [PATH])"),
         };
@@ -1107,40 +1117,59 @@ mod tests {
     }
 
     #[test]
-    fn split_line_count_args_any_position() {
-        // 尾部 -l（clap allow_hyphen_values 吞进 ARGS 的形态）→ 识别并剥离
+    fn split_output_flag_args_any_position() {
+        // 尾部 -l / -n（clap allow_hyphen_values 吞进 ARGS 的形态）→ 识别并剥离
         let v = vec!["动漫".to_string(), "-l".to_string()];
-        let (found, rest) = split_line_count_args(&v, false);
-        assert!(found);
+        let (lc, ln, rest) = split_output_flag_args(&v, false, false);
+        assert!(lc);
+        assert!(!ln);
         assert_eq!(rest, vec!["动漫"]);
 
-        // 前部 -l（clap 已解析为 flag，不在 ARGS 中）→ 保持原状
+        let v = vec!["动漫".to_string(), "-n".to_string()];
+        let (lc, ln, rest) = split_output_flag_args(&v, false, false);
+        assert!(!lc);
+        assert!(ln);
+        assert_eq!(rest, vec!["动漫"]);
+
+        // 前部 -l / -n（clap 已解析为 flag，不在 ARGS 中）→ 保持原状
         let v = vec!["动漫".to_string()];
-        let (found, rest) = split_line_count_args(&v, true);
-        assert!(found);
+        let (lc, ln, rest) = split_output_flag_args(&v, true, true);
+        assert!(lc);
+        assert!(ln);
         assert_eq!(rest, vec!["动漫"]);
 
-        // 中间位置 + 长旗标 --line-count 同样识别
-        let v = vec!["a".to_string(), "--line-count".to_string(), "b".to_string()];
-        let (found, rest) = split_line_count_args(&v, false);
-        assert!(found);
+        // 中间位置 + 长旗标 --line-count / --line-numbers 同样识别
+        let v = vec!["a".to_string(), "--line-numbers".to_string(), "b".to_string()];
+        let (lc, ln, rest) = split_output_flag_args(&v, false, false);
+        assert!(!lc);
+        assert!(ln);
         assert_eq!(rest, vec!["a", "b"]);
 
-        // 无 -l：原样保留；已有 line_count 标志不因扫描丢失
+        // 两个旗标同现（-l 优先分支外的组合也正确）
+        let v = vec!["-l".to_string(), "a".to_string(), "-n".to_string()];
+        let (lc, ln, rest) = split_output_flag_args(&v, false, false);
+        assert!(lc);
+        assert!(ln);
+        assert_eq!(rest, vec!["a"]);
+
+        // 无旗标：原样保留；已有标志不因扫描丢失
         let v = vec!["动漫".to_string(), "D:\\x".to_string()];
-        let (found, rest) = split_line_count_args(&v, false);
-        assert!(!found);
+        let (lc, ln, rest) = split_output_flag_args(&v, false, false);
+        assert!(!lc);
+        assert!(!ln);
         assert_eq!(rest, vec!["动漫", "D:\\x"]);
 
-        // 相似但不相同的 token 不误认（-lfoo / --l）
-        let v = vec!["-lfoo".to_string(), "--l".to_string()];
-        let (found, rest) = split_line_count_args(&v, false);
-        assert!(!found);
-        assert_eq!(rest, vec!["-lfoo", "--l"]);
+        // 相似但不相同的 token 不误认（-lfoo / --l / -nfoo / --n）
+        let v = vec!["-lfoo".to_string(), "--l".to_string(), "-nfoo".to_string(), "--n".to_string()];
+        let (lc, ln, rest) = split_output_flag_args(&v, false, false);
+        assert!(!lc);
+        assert!(!ln);
+        assert_eq!(rest, vec!["-lfoo", "--l", "-nfoo", "--n"]);
 
         // 空输入：仅保留已置位的标志
-        let (found, rest) = split_line_count_args(&[], true);
-        assert!(found);
+        let (lc, ln, rest) = split_output_flag_args(&[], true, true);
+        assert!(lc);
+        assert!(ln);
         assert!(rest.is_empty());
     }
 
