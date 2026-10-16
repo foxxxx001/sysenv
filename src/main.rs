@@ -676,7 +676,9 @@ struct FileArgs {
     #[arg(short = 'd', long, value_name = "NUM")]
     max_depth: Option<usize>,
     /// Count lines instead of printing them: -l FILE counts the file's lines,
-    /// -l with no argument counts stdin, -l PATTERN [PATH] counts matching lines
+    /// -l with no argument counts stdin, -l PATTERN [PATH] counts matching lines.
+    /// May appear in any position (a trailing -l is re-scanned from ARGS, like
+    /// the -md5/-sha markers), so `sys file PATTERN -l` also works
     #[arg(short = 'l', long)]
     line_count: bool,
     /// Prepend the line number to every printed line (stdin search; directory

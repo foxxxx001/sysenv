@@ -2,6 +2,19 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.5.5（2026-10-16）
+
+### 修复
+- **`sys file PATTERN -l`（位置无关的匹配行统计）**：`-l` 跟在模式后面时不再报 `path `-l` does not exist`。根因：`FileArgs.args` 位置参数开了 `allow_hyphen_values`，clap 会把第一个位置参数之后的旗标状 token 吞进 ARGS，`-l` 因此未置位 `line_count` 而被当作路径/替换串处理；更严重的是 `sys file PATTERN -l PATH` 会被误判为替换模式，把文件中的 PATTERN 真的替换成字面量 `-l`（数据损坏风险）。修复：在 `cmd_file` 中仿照 `-md5`/`-sha` 的 `split_hash_args` 模式，新增 `split_line_count_args` 从 ARGS 重新扫描并剥离 `-l` / `--line-count`（标记可出现在任意位置，`-lfoo` / `--l` 之类不误认），`line_count` 以扫描结果为准；同时消除了 `FileOpts.line_count` 字段的 dead_code warning（以 `opts.line_count` 作为扫描基准）
+- 文档同步：src/file.rs 头部 Usage/Options、src/main.rs FileArgs 注释；版本 0.5.4 -> 0.5.5；`cargo test` 272 -> 273 项全绿（新增 `split_line_count_args_any_position` 1 项）
+
+### 冒烟验证（真实二进制，Windows）
+- `Get-Content 单仓聚合.json | jq '.sites[].name' | sys file "动漫" -l` -> `33`，与独立统计（`Select-String '动漫'` 计数 33）一致；`-l` 前置写法 `sys file -l "动漫"` 同为 `33`
+- `sys file 动漫 -l <含 2 行动漫的 json>` -> `path: 2` 且文件内容校验未改动（修复前会把 "动漫" 替换为 "-l"）；`sys file -md5 <文件>`、替换模式 `sys file hello hi <文件>` 回归正常
+- `... | sys file -l`（stdin 总行数）-> `816`；`sys file -l <文件>` -> `12813`
+
+---
+
 ## v0.5.4（2026-10-15）
 
 ### 新增
