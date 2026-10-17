@@ -36,6 +36,7 @@ Commands:
   search Web search via the configured Bocha AI API (web-search; --ai uses ai-search)
   task   Query and kill processes (list PID/name/path; kill by PID or name)
   short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon)
+  data   Query / modify / convert structured data (JSON/YAML/TOML/CSV/MD), dasel-compatible
 ```
 
 
@@ -52,9 +53,10 @@ Commands:
 | 注册表导入导出   | `path export/import` | `.reg` / JSON / TXT 三种格式；合并或 `--replace` 整体替换；跨机迁移备份                                   |
 | 链接到 PATH  | `link`               | 硬链接 → 符号链接 → 拷贝三级自动回退；Windows `.cmd` 垫片；自定义命令名；系统目录或托管目录                               |
 | 环境变量      | `env`                | get /set/unset/list；默认持久化；`--temporary` 仅当前 shell；machine 作用域                          |
-| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1039 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度、模态与**参数规模（参数量）**）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key/docs/console/sample（sample 为该 provider models 接口的示例请求，如 `https://openrouter.ai/api/v1/models  Authorization:"Bearer sk-sample"`）、`info model` 列出 `{provider}:{name}` 模型清单、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页、`info list-model` 用 provider 的 models 接口查可用模型）；`ai price`（models.dev 价格，`--src openrouter` 换 openrouter.ai 目录，见命令参考）；`ai config`（导出配置为 codex / opencode / litellm / freellmapi / codebuddy / workbuddy / trae 格式，支持 `-m` 多模型选择（与 chat 同格式）、`--show` 预览目标配置文件地址与内容、`-f` 写文件且写入前自动备份、`--update` 就地合并更新默认配置文件且先备份）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前按配置的 max_input_tokens 截断超长消息，能力字段默认只读本地配置、不查询 models.dev，`--update` 显式补齐缺失的 max_input_tokens / type 并写回配置，OpenAI / Anthropic 兼容）；`ai server`（`sys ai server [ADDR]` 以 OpenAI 兼容 API 对外提供 `/v1/chat/completions` 与 `/v1/models` 服务（默认 127.0.0.1:10000，可只给端口/IP；`--help` 查询服务状态并打印配置的 provider/model））；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat）；`ai task`（**无 -t 带输入时 function_call 自动路由**：任务 name 作函数名、desc 作函数描述，模型选任务后自动执行；`-t NAME` 模板聊天；`-t *` 全任务 0-10 分打分匹配） |
+| AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1039 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度、模态与**参数规模（参数量）**）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key/docs/console/sample（sample 为该 provider models 接口的示例请求，如 `https://openrouter.ai/api/v1/models  Authorization:"Bearer sk-sample"`）、`info model` 列出 `{provider}:{name}` 模型清单、`info balance` 用 api_key 查官方余额、`info sale-price` 抓官网定价页、`info list-model` 用 provider 的 models 接口查可用模型）；`ai price`（models.dev 价格，`--src openrouter` 换 openrouter.ai 目录，见命令参考）；`ai config`（导出配置为 codex / opencode / litellm / freellmapi / codebuddy / workbuddy / trae 格式，支持 `-m` 多模型选择（与 chat 同格式）、`--show` 预览目标配置文件地址与内容、`-f` 写文件且写入前自动备份、`--update` 就地合并更新默认配置文件且先备份）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前按配置的 max_input_tokens 截断超长消息，能力字段默认只读本地配置、不查询 models.dev，`--update` 显式补齐缺失的 max_input_tokens / type 并写回配置，OpenAI / Anthropic 兼容）；`ai server`（`sys ai server [ADDR]` 以 OpenAI 兼容 API 对外提供 `/v1/chat/completions` 与 `/v1/models` 服务（默认 127.0.0.1:10000，可只给端口/IP；`--help` 查询服务状态并打印配置的 provider/model））；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
 | 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin（带扩展名如 `me.txt` 则显示文件，引号包裹强制搜索）；2 参目录树文本/源码搜索（`-e` / `-i` / `-t` / `-w` / `-c` / `-n` 行号）；3 参 OLD NEW PATH 就地替换；`-l` 统计行数（文件 / stdin / 匹配行）；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件；`-md5 FILE [MD5]` / `-sha FILE [SHA1]` 哈希与比对 |
+| 数据查询转换  | `data` / `dasel`     | dasel 兼容：选择器查询 `a.b[0]` / `list[*]` / `m["中文键"]`；`PATH = VALUE` 修改（`= null` 删除，`+=/-=/*=/=` 运算）；**函数表达式** `list.filter(谓词)` / `list.remove(谓词)` / `search(谓词)` / `name.endsWith("x")`（谓词语法：`$this` / `$key`、字段路径、`== != > >= < <= && || !`、`contains / startsWith / endsWith / indexOf / has`，示例 `sys data 'sites.filter(type==1)'`）；**`--depth N`**（默认 1）删除层级大于 N 的节点；JSON/YAML/TOML/CSV/MD 五格式互转；`-f` 读文件（后缀定格式，`-i` 覆盖）、`-u URL` GET 拉取（默认 json）、`-w` 写回、`--root` / `--compact`；**tab 缩进 YAML 自动归一、中文 round-trip 不乱码** |
 | 格式转换      | `con`                | json / csv / md / yaml 互转：默认读 stdin（`cat a.json | sys con`），`-file` 读文件，`-i` 输入格式，`-o` 输出格式，`-out` 写文件；表格类转对象数组（类型推断 + 转义） |
 | 联网搜索      | `search`             | 博查 AI 网页搜索 API（`POST api.bochaai.com/v1/web-search`）：`--freshness`（时间过滤）/ `--summary`（AI 摘要）/ `--count`（1-50）/ `--page` / `--include-domains` / `--exclude-domains`（域名白黑名单），参数与官网接口一致；key 取自配置 `search` 段；`--json` 原始响应 / `--debug` 请求与响应。`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡（`--no-answer` 关闭 AI 答案） |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
@@ -394,102 +396,7 @@ sys ai server --help                   # 查询服务是否已启动：地址/�
 * `sys ai server [ADDR]`：**把配置中的 Provider 以 OpenAI 兼容格式对外提供**（本地 HTTP 服务，默认 `127.0.0.1:10000`；`-c/--config` 指定配置文件）。提供 `POST /v1/chat/completions`（非流式与 SSE 流式透传到上游 Provider）与 `GET /v1/models`（列出全部已配置模型，ID 为 `{provider}:{model}`）。请求中的 `model` 使用与聊天相同的选择规则（`provider:model` / `provider:*` / 裸模型名 / `auto` = 配置默认）。仅支持 `type: openai` 的 Provider，anthropic 目标返回明确错误。地址可只给端口（如 `8080`，host 用默认）或只给 IP（如 `0.0.0.0`，端口用默认）。
 * `sys ai server --help`：**查询服务状态**——先探测该地址（GET /v1/models，2 秒超时）是否已有服务在运行：已启动则打印当前地址/端口，未启动则提示 `server is NOT running`；两种情况都会继续打印配置信息（按 provider 分组：每个 provider 一行 name/api_base，其后缩进列出该 provider 的全部模型 `{provider}:{name}`）。
 
-#### 5.3 任务模板聊天（`ai task`）
-
-把 `tasks` 里预定义的模板组装成聊天消息后走 `ai chat` 通道。
-
-* **无参数**：列出 `tasks` 中每个任务的 `name / desc`（最多 10 个）
-
-* **带用户请求（无 `-t`）**：**function_call 自动路由** —— 每个任务的 `name` 作为函数名、`desc` 作为函数描述注册为 tools，大模型用 function_call 选择最匹配的任务（参数 `input` 携带用户请求），随后**自动执行**：把该任务 `desc` + 用户请求组装成消息发给模型，输出最终回复；模型未选择任何任务时明确报错（可改用 `-t NAME` 手动指定）
-
-* **任务工具执行（function_call 选中后回填真实数据）**：任务可声明以下两种工具之一，选中后由**程序代码**（reqwest HTTP 请求，**禁止本地 shell 命令 / curl**）执行，执行结果作为"工具执行结果"回填给模型，模型再基于真实数据回答：
-  * `api: <URL模板>` —— **固定 HTTP 接口**：`{key}` / `{key:默认值}` 占位符由模型 tool 参数填充（模型未传或传空时用默认值），响应体原样作为工具结果；`params: [k1, k2]` 声明参数名（可选，会加入函数 schema，便于模型填写坐标等参数）
-  * `search: <源名>` —— **AI 模糊联网搜索**：内置搜索源由程序抓取头条列表回填，模型据此筛选总结。
-    * **固定直连源**：`bilibili`（B 站热门视频）、`github`（近 7 天新建星榜，可选 `date` 参数如 `date:2026-01-01`）、`hn`（Hacker News 头条）、`toutiao`（今日头条热榜）、`oschina`（开源中国技术资讯）、`smzdm`（什么值得买今日好价，含价格）
-    * **AI 聚合搜索源**（目标站点数据接口带签名/WAF，程序改用搜索引擎抓取相关结果回填，Sogou 优先、Bing 兜底，模型如实筛选总结）：`enlightent`（电视剧热播榜）、`dongchedi`（懂车帝汽车资讯）、`autohome`（汽车之家汽车新闻）；`sogou` 为通用聚合源，需传 `q` / `query` 参数（如 `q:电视剧 热播 榜单`）
-    * **直连官方接口源**（v0.4.10）：`szhousing` —— 深圳楼盘销售情况。平台 API（`/szfdcscjy/*`）不经过瑞数反爬（瑞数只挂 HTML 首页），程序**纯 HTTP 直查官方接口，无需浏览器、不依赖本机任何软件**（Windows/Ubuntu 一致）。`name` 参数为楼盘名称（可选，如 `name:星悦尊府`），`area` 参数按区域查询（可选，如 `area:龙华` 或 `-area 龙华`），均未提供时返回近期在售项目列表
-    * **博查 API 搜索源**（v0.4.12）：`bochaai` —— 博查 AI 网页搜索（`POST api.bochaai.com/v1/web-search`）。key 取自配置顶层 `search:` 段（如 `- name: bochaai, key: sk-...`）；`q` / `query` 为查询词（必填），可选参数与官网接口一致：`freshness`（`oneDay`/`oneWeek`/`oneMonth`/`oneYear`/`noLimit`/日期/区间）、`summary`（`true`/`false`）、`count`（1-50）、`page`、`include_domains` / `exclude_domains`（逗号分隔多域名）
-    * **搜索源清单**：`sys ai task --list-source` 列出全部内置搜索源的名称、类型（`api` 直连数据接口 / `search` AI 聚合搜索 Sogou 优先 Bing 兜底 / `generic` 通用搜索需 `q`/`query` 参数）、用途与访问地址（v0.4.10）
-    * **结果净化**（v0.4.9）：AI 聚合搜索自动过滤百度百科、搜狗百科、维基百科、互动百科等低价值词条（标题与 URL 双通道识别），避免搜索结果被百科词条占满；Sogou 请求失败时自动降级 Bing，两引擎均无可过滤结果时合并原始结果兜底，保证任务不因过滤而失败
-
-* `-t <name>`：取 `name` 匹配的任务，按 `msg` 组装消息（`desc` 为任务描述）；任务声明了 `api`/`search` 时同样先执行工具并回填真实数据再回答
-
-* `-t *`（**全任务打分匹配**）：把**所有任务**的 `desc` 与用户提供的聊天信息（命令行参数或 stdin）组装，调用配置的大模型按 **10 分制**打分（0=不匹配，10=完全匹配），输出 `TASK / DESC / SCORE` 表格并按分数降序排列；某个任务请求失败时其 SCORE 显示 `-` 并在 stderr 提示
-
-* `msg` 模板占位符 `{key:默认值}`：命令行传 `key:值` 或 `key=值` 则替换为传入值，否则用默认值（如 `{country:深圳}` + `country:北京` → 北京）
-
-* `msg` 前缀：`file://` 读取本地**相对路径**文件内容作为消息；`url:` 抓取网络内容作为消息
-
-```
-sys ai task                          # 列出任务（name / desc，最多 10 个）
-sys ai task 今天深圳的天气如何         # function_call 自动路由：模型选 weather 并自动执行 api 工具（真实天气）后回答
-sys ai task 今天有什么热门新闻        # function_call 自动路由：模型选 hotnews 并自动执行 toutiao 搜索源后回答
-sys ai task -t weather               # 用默认值（深圳）组装消息并聊天
-sys ai task -t weather country:北京   # 替换 country 为北京
-sys ai task -t weather country=北京   # = 号写法等价
-sys ai task -t "*" "帮我查今天深圳的天气"  # 对全部任务打分（TASK/DESC/SCORE，按分数排序）
-```
-
-**工具执行示例**（`~/.sysenv/config.yaml` 中 `tasks` 配置）：
-
-```yaml
-tasks:
-  # 固定 HTTP 接口：占位符 {lat}/{lon} 由模型参数填充，未传时用默认值（深圳坐标）
-  - name: weather
-    desc: 用来获取天气信息
-    msg: 我在{country:深圳},今天的天气如何，我要询问温度、湿度、下雨概率等信息
-    api: https://api.open-meteo.com/v1/forecast?latitude={lat:22.54}&longitude={lon:114.06}&current_weather=true
-    params: [lat, lon]
-  # —— v0.4.5 新增搜索源 ——
-  # 固定直连源：toutiao（今日头条热榜 JSON）、oschina（开源中国资讯 SSR）、smzdm（什么值得买好价 SSR）
-  - name: hotnews
-    desc: 获取今天的热门新闻（今日头条热榜）
-    msg: 请基于工具执行结果列出今天的头条热门新闻，注明来源链接
-    search: toutiao
-  - name: oschina
-    desc: 获取开源中国技术新闻资讯（oschina.net）
-    msg: 请基于工具执行结果列出今天的技术新闻，注明来源链接
-    search: oschina
-  - name: deals
-    desc: 获取今天什么值得买的特价商品（好价榜单）
-    msg: 请基于工具执行结果列出今天值得买的特价商品与价格
-    search: smzdm
-  # AI 聚合搜索源（Sogou 优先、Bing 兜底）：目标站点的数据接口带签名/WAF，程序改用搜索引擎抓取相关结果回填，模型如实筛选总结
-  - name: cloudrank
-    desc: 获取热播电视剧榜单（云合数据霸屏榜/热播榜，AI 聚合搜索）
-    msg: 请基于工具执行结果列出云合数据的霸屏榜/热播剧排名
-    search: enlightent
-  - name: auto
-    desc: 获取汽车新闻资讯（汽车之家，AI 聚合搜索）
-    msg: 请基于工具执行结果列出今天的汽车新闻资讯
-    search: autohome
-  - name: cartech
-    desc: 获取汽车新闻资讯（懂车帝，AI 聚合搜索）
-    msg: 请基于工具执行结果列出今天的汽车行业新闻与新车资讯
-    search: dongchedi
-  # —— v0.4.6 新增 ——
-  - name: szhousing
-    desc: 查询深圳楼盘销售情况（深圳房地产信息平台公开数据；提供楼盘名称 name 参数可查具体项目各楼栋销售状态统计，area 参数按区域查询如 area:龙华，未提供则返回在售项目列表）
-    msg: 请基于工具执行结果说明深圳楼盘的房源销售/成交情况，注明来源链接
-    search: szhousing
-    params: [name, area]
-```
-
-实际输出示例（`sys ai task 今天深圳的天气如何`，模型选 weather → 程序请求 open-meteo → 回填后回答）：
-
-```
-[0] task: weather
-    desc: 用来获取天气信息
-    args: {"input":"今天深圳天气如何"}
-→ 执行任务 weather
-（工具执行结果：{"latitude":22.530754,"longitude":114.08714,"current_weather":{"temperature":27.2,...}}）
-根据实时天气数据，今天深圳（坐标：22.53°N, 114.09°E）的天气情况如下：
-- 温度：当前气温约为 27.2°C
-- 天气状况：大致晴朗或多云（WMO code 1）
-...
-```
-
-#### 5.4 AI 图片生成（`ai image`）
+#### 5.3 AI 图片生成（`ai image`）
 
 通过 Provider 的 OpenAI 兼容 **Images API**（`POST {api_base}/images/generations`，Bearer 鉴权）生成图片并保存到本地。
 
@@ -514,7 +421,7 @@ sys ai image "风景" --url -o pics                     # 请求 URL 版并下�
 sys ai image --list-provider --list-model             # 列出配置中的 Provider / 模型
 ```
 
-#### 5.5 本地配置查询（`ai info`）
+#### 5.4 本地配置查询（`ai info`）
 
 检查本地配置文件（默认 `~/.sysenv/config.yaml`，`-c/--config` 覆盖）与 models.dev 模型价格。**不带 FIELD 参数时默认同时打印 provider 表（name/api_base/api_key/DOCS/CONSOLE）与全部模型清单（`{provider}:{name}`）**。
 
@@ -549,7 +456,7 @@ sys ai info list-model agnes             # 用 agnes 的 models 接口查询可�
 sys ai info list-model anthropic -o json # anthropic 类型：/v1/models，JSON 数组输出
 ```
 
-#### 5.6 配置导出 / 应用（`ai config`）
+#### 5.5 配置导出 / 应用（`ai config`）
 
 把本地配置（`~/.sysenv/config.yaml` 的 `clients` 段）导出为其他 AI 工具的配置格式，或直接应用到该软件的配置文件：
 
@@ -576,7 +483,7 @@ sys ai config trae --update              # 备份默认 trae_cli.yaml → 合并
 sys ai config workbuddy --update -f ~/.workbuddy/models.json   # 指定文件更新
 ```
 
-#### 5.7 网络搜索（`search`）
+#### 5.6 网络搜索（`search`）
 
 通过**博查 AI 网页搜索 API**（`POST https://api.bochaai.com/v1/web-search`，Bearer 鉴权）提供联网搜索能力，**请求参数与官网接口完全一致**。
 
@@ -613,7 +520,7 @@ ssearch "五一 放假 安排"                                 # ssearch 垫片�
 
 > 注意：**AI Search 与 Web Search 是博查的独立套餐**，key 需在开放平台分别开通；未开通 AI Search 包时 `--ai` 会返回 403（`You do not have enough money or package quota`）。
 
-#### 5.8 文本搜索与替换（`file`）
+#### 5.7 文本搜索与替换（`file`）
 
 fd/sd 风格：搜索 stdin 或目录树中的文本/源码文件，或就地替换字符串。匹配在 Unicode 字符层进行（`-i` 逐字符大小写折叠，中文等非 ASCII 同样正确）。
 
@@ -669,7 +576,7 @@ sys file -md5 me.txt 900150983cd24fb0d6963f7d28e17f72   # 比对：相等输出 
 sys file -sha me.txt da39a3ee5e6b4b0d3255bfef95601890afd80709  # SHA-1 同理
 ```
 
-#### 5.9 格式转换（`con`）
+#### 5.8 格式转换（`con`）
 
 json / csv / md / yaml 四种格式互转。默认从标准输入读取（管道用法：`cat a.json | sys con`），结果输出到 stdout；`-out` 可改写到文件。
 

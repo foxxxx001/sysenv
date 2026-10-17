@@ -2,6 +2,37 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.5.8（2026-10-17）
+
+### 新增
+- **`sys data` 函数表达式（dasel 兼容）**：`list.filter(谓词)` 过滤数组元素；`list.remove(谓词)` 删除匹配元素（原地修改，命中的数组元素即"包含此内容"的父节点）；`search(谓词)` 递归收集匹配节点；字符串 / 键函数 `name.endsWith("x")`（contains / startsWith / endsWith / indexOf / has）
+- **谓词语言**：`$this` / `$key`（当前节点 / 键或下标）、字段路径（`name`、`a.b[0]`、`m["中文键"]`）、字面量（数字 / 引号字符串 / true / false / null）、比较与逻辑（`== != > >= < <=`、`&&`、`||`、`!`）、函数调用（`contains("x")` / `startsWith("x")` / `endsWith("x")` / `indexOf("x")` / `has("key")` / `has(0)`）；字符串字面量支持单引号（PowerShell 传参兼容）
+- **`sys data --depth N`**：删除层级大于 N 的节点（根为第 0 层，0..=N 层保留，更深子树整棵移除）；裸 `--depth` 即 1；在表达式求值前应用
+- **赋值识别修正**：`split_expression` 跳过 `==` / `!=` / `>=` / `<=` 比较符中的 `=`，函数表达式不再被误拆为赋值
+- 新增 7 项单测（函数表达式解析 / 谓词求值 / filter / remove / search / 字符串函数 / depth 修剪）；`cargo test` 283 项全绿
+
+### 移除
+- **`sys ai task` 模块整体删除**：chat.rs 的 Task 结构、`tasks` 配置解析、全部 task 工具（task_tools / route_tasks / 内置搜索源 / 打分匹配）与相关测试移除；ai.rs / main.rs 的 task 字段、`AiCmd::Task` 变体与分发分支移除；`sys ai --help` 不再显示 task
+
+### 变更
+- README（中 / 英）删除 `ai task` 章节与特性行，补齐 data 函数表达式 / `--depth` 文档；版本 0.5.7 -> 0.5.8
+
+---
+
+## v0.5.7（2026-10-17）
+
+### 新增
+- **`sys data`（别名 `dasel`）**：结构化数据查询 / 修改 / 转换（JSON / YAML / TOML / CSV / MD）。dasel 兼容选择器（`a.b[0]` / `list[-1]` / `list[*]` / `m["中文名"]`）；表达式修改（`PATH = VALUE`、`= null` 删除、`+=/-=/*=/=/` 运算）；`-f FILE`（后缀定格式）/ `-u URL`（GET，默认 json，`-i` 覆盖）/ stdin；`-i/-o` 格式指定、`-w` 写回、`--root`、`--compact`
+- **tab 缩进 YAML 自动归一**：前导 tab 转 4 空格（引号内 tab 保留）后严格解析，失败回退容错块解析器；格式探测 YAML 前置结构启发式，CSV/MD 优先，避免纯文本误判
+- **中文兼容验证**：JSON↔YAML↔TOML↔CSV 往返 CJK 不转义不乱码；多行中文块标量往返一致；新增 16 项单测
+- 新依赖：toml 0.9、libc 0.2
+
+### 修复
+- 方括号内引号键 `m["中文名.字"]` 被误当作数组下标
+- 无结构逗号文本被 detect_format 误判为 YAML
+
+---
+
 ## v0.5.1（2026-10-13）
 
 ### 变更

@@ -25,6 +25,7 @@ Commands:
   search Web search via the configured Bocha AI API (web-search; --ai uses ai-search)
   task   Query and kill processes (list PID/name/path; kill by PID or name)
   short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon)
+  data   Query / modify / convert structured data (JSON/YAML/TOML/CSV/MD), dasel-compatible
 ```
 
 ---
@@ -37,12 +38,13 @@ Commands:
 | Registry import/export | `path export/import` | `.reg` / JSON / TXT formats; merge or `--replace` full replace; machine migration & backup |
 | Link into PATH | `link` | hard link → symlink → copy fallback chain; Windows `.cmd` shim; custom command name; system or managed directory |
 | Environment variables | `env` | get / set / unset / list; persisted by default; `--temporary` for the current shell only; `machine` scope |
-| AI model lookup | `ai` | `ai model` (models.dev: 226 providers, 8000+ models; 24 h cache; canonical preference; no args lists all; `--date` / `--open` / `--search / --list / --json / --refresh`); `ai cn-model` (datalearner: ~1015 models; `--date` filters by published); `ai info` (local config lookup: `info provider` name/api_base/api_key, `info model` `{provider}:{name}` list, `info balance` official balance via api_key, `info sale-price` official pricing page scrape, `info list-model` live model list from the provider's own models API); `ai price` (models.dev prices, `--src openrouter` switches to the openrouter.ai catalogue, see the command reference); `ai chat` (multi-provider weighted round-robin chat; `-m` overrides the model, `--list-model` / `--list-provider`; messages truncated to the configured max_input_tokens; capability fields read-only from the config by default (never queries models.dev), `--update` explicitly fills missing max_input_tokens / type from models.dev and persists them; OpenAI / Anthropic compatible); `ai server` (`sys ai server [ADDR]` serves an OpenAI-compatible API — `/v1/chat/completions` + `/v1/models`, default 127.0.0.1:10000, bare port/IP allowed; `--help` reports the server status and prints the configured providers/models); `ai task` (task-template chat) |
+| AI model lookup | `ai` | `ai model` (models.dev: 226 providers, 8000+ models; 24 h cache; canonical preference; no args lists all; `--date` / `--open` / `--search / --list / --json / --refresh`); `ai cn-model` (datalearner: ~1015 models; `--date` filters by published); `ai info` (local config lookup: `info provider` name/api_base/api_key, `info model` `{provider}:{name}` list, `info balance` official balance via api_key, `info sale-price` official pricing page scrape, `info list-model` live model list from the provider's own models API); `ai price` (models.dev prices, `--src openrouter` switches to the openrouter.ai catalogue, see the command reference); `ai chat` (multi-provider weighted round-robin chat; `-m` overrides the model, `--list-model` / `--list-provider`; messages truncated to the configured max_input_tokens; capability fields read-only from the config by default (never queries models.dev), `--update` explicitly fills missing max_input_tokens / type from models.dev and persists them; OpenAI / Anthropic compatible); `ai server` (`sys ai server [ADDR]` serves an OpenAI-compatible API — `/v1/chat/completions` + `/v1/models`, default 127.0.0.1:10000, bare port/IP allowed; `--help` reports the server status and prints the configured providers/models) |
 | Process management | `task` | no args lists all processes; list (PID / name / path, fuzzy name match); `-o` shows the process using a port; kill by PID or name; `-f` force |
 | Web search | `search` | Bocha AI web search API (`POST api.bochaai.com/v1/web-search`): `--freshness` (time filter) / `--summary` (AI summaries) / `--count` (1-50) / `--page` / `--include-domains` / `--exclude-domains`, official parameters; key from the config `search` section; `--json` raw response / `--debug` request & response. `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards (`--no-answer` disables the AI answer) |
 | Network probing | `net` | batch-probe http(s) addresses from a file: `-i` reads the file (`#` comment lines skipped, several addresses per line, each address runs to the next whitespace with trailing punctuation trimmed); `-t domain` (default — 3 GET probes per address, average response time, printed sorted by average when all are done) / `-t tv` (body must parse as JSON, analyzed with `--sort`; old name `json`) / `-t tvs` (accepts both tv and aggregator JSON: single `.sites` / multi `.urls` groups) / `-t file` (body must be plain text) / `-t test` (probe reachability only — unreachable addresses are reported and removed from the source lines, `-o` writes the cleaned source) / `-t info` (query RDAP registration info for each `-n` domain, falling back to the parent domain when missing); tv/file modes print url / reachability / status / response time / format as each probe finishes and `-o` writes the passed urls (reachable + format matched) to a file, one per line; `--timeout` per-request timeout |
 | Text search & replace | `file` | fd/sd-style: 1 arg searches stdin (an extension like `me.txt` displays that file; quotes force search); 2 args search a directory tree of text/source files (`-e` / `-i` / `-t` / `-w` / `-c`); 3 args OLD NEW PATH replace in place; `-S` size / `--newer` / `--older` time / `-d` depth filters; lists files when no PATTERN is given |
 | Format conversion | `con` | json / csv / md / yaml interconversion: stdin by default (`cat a.json | sys con`), `-file` reads a file, `-i` input format, `-o` output format, `-out` writes a file; tables map to/from object arrays (type inference + escaping) |
+| Data query / modify | `data` / `dasel` | dasel-compatible: selector reads `a.b[0]` / `list[*]` / `m["中文键"]`; `PATH = VALUE` writes (`= null` deletes, `+=` / `-=` / `*=` / `/=` ops); function expressions `list.filter(pred)` / `list.remove(pred)` / `search(pred)` / `name.endsWith("x")` (predicate language: `$this` / `$key`, field paths, `== != > >= < <= && || !`, `contains` / `startsWith` / `endsWith` / `indexOf` / `has`; e.g. `sys data 'sites.filter(type==1)'`); `--depth N` (default 1) removes nodes deeper than N levels; JSON / YAML / TOML / CSV / MD interconversion; `-f` file (extension decides the format, `-i` overrides), `-u URL` GET fetch (default json), `-w` write back, `--root` / `--compact`; tab-indented YAML normalised, CJK round-trips cleanly |
 | HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
 | Shortcut shims | `short` | installs nine short commands at once (spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon); Windows `.cmd` / Linux sh scripts; auto PATH registration |
 
@@ -265,27 +267,7 @@ sys ai server --help                   # server status: address/port + configure
 - `sys ai server [ADDR]`: **serves the configured providers as an OpenAI-compatible API** (default `127.0.0.1:10000`; `-c/--config` selects the config file). Exposes `POST /v1/chat/completions` (non-streaming passthrough and SSE streaming via chunked transfer) and `GET /v1/models` (every configured model, id `{provider}:{model}`). The request `model` follows the same selector rules as chat (`provider:model` / `provider:*` / bare model name / `auto` = config default). Only `type: openai` providers are served; anthropic targets get a clear error. The address may be a bare port (`8080` → host default) or a bare IP (`0.0.0.0` → port default).
 - `sys ai server --help`: **queries the server status** — probes that address (GET /v1/models, 2 s timeout) to see whether a server is already running: if so it prints the current address/port, otherwise it says `server is NOT running`; in both cases it then prints the configured info grouped by provider — one provider line (name/api_base) followed by that provider's indented model lines (`{provider}:{name}`).
 
-#### 5.3 Task templates (`ai task`)
-
-Assembles a chat message from a predefined `tasks` template, then sends it through the `ai chat` pipeline.
-
-- **No arguments**: lists each task's `name / desc` (at most 10)
-- `-t <name>`: picks the task whose `name` matches and builds the message from its `msg` (`desc` is the task description)
-- `msg` placeholders `{key:default}`: pass `key:value` or `key=value` on the command line to substitute, otherwise the default is used (e.g. `{country:深圳}` + `country:北京` → 北京)
-- `msg` prefixes: `file://` reads a local **relative-path** file as the message; `url:` fetches a web page as the message
-- Tasks may declare a tool executed by the program (no local shell commands) and fed back to the model as real data:
-  - `api: <URL template>` — fixed HTTP API: `{key}` / `{key:default}` placeholders are filled from the model tool arguments
-  - `search: <source>` — built-in search source: `bilibili` / `github` / `hn` / `toutiao` / `oschina` / `smzdm` (direct data APIs), `sogou` / `enlightent` / `dongchedi` / `autohome` (aggregate search, Sogou first with Bing fallback), `szhousing` (Shenzhen housing official API), `bochaai` (Bocha AI web search API, key from the config `search` section; args: `q`/`query`, optional `freshness` / `summary` / `count` / `page` / `include_domains` / `exclude_domains`)
-- `sys ai task --list-source` prints the full source catalogue (name / kind / purpose / URL)
-
-```
-sys ai task                          # list the tasks (name / desc, at most 10)
-sys ai task -t weather               # build the message with defaults and chat
-sys ai task -t weather country:北京   # substitute country with 北京
-sys ai task -t weather country=北京   # '=' syntax is equivalent
-```
-
-#### 5.4 Web search (`search`)
+#### 5.3 Web search (`search`)
 
 Web search through the **Bocha AI Web Search API** (`POST https://api.bochaai.com/v1/web-search`, Bearer auth). All request parameters follow the official interface.
 
@@ -311,7 +293,7 @@ ssearch "holiday schedule"                              # ssearch shim == sys se
 
 > Note: **AI Search and Web Search are separate Bocha packages**. The key needs an AI Search package on the open platform; without it `--ai` returns 403 (`You do not have enough money or package quota`).
 
-#### 5.5 Local config lookup (`ai info`)
+#### 5.4 Local config lookup (`ai info`)
 
 Inspects the local config file (default `~/.sysenv/config.yaml`, `-c/--config` overrides) and the models.dev model prices. **With no FIELD argument it prints the provider table (name/api_base/api_key/DOCS/CONSOLE) and the full model list (`{provider}:{name}`) together.**
 
@@ -344,7 +326,7 @@ sys ai info list-model agnes             # live model list from agnes' own model
 sys ai info list-model anthropic -o json # anthropic: /v1/models, JSON array output
 ```
 
-#### 5.6 Config export / apply (`ai config`)
+#### 5.5 Config export / apply (`ai config`)
 
 Exports the local config's `clients` section into another tool's format, or applies it straight to that software's config file:
 
@@ -371,7 +353,7 @@ sys ai config trae --update              # back up default trae_cli.yaml → mer
 sys ai config workbuddy --update -f ~/.workbuddy/models.json   # update a specific file
 ```
 
-#### 5.7 Text search & replacement (`file`)
+#### 5.6 Text search & replacement (`file`)
 
 fd/sd-style: search stdin or a directory tree of text/source files, or replace a string in place. Matching runs on the Unicode char level (`-i` folds case per char, so non-ASCII text works too).
 
@@ -427,7 +409,7 @@ sys file -md5 me.txt 900150983cd24fb0d6963f7d28e17f72   # compare: match / misma
 sys file -sha me.txt da39a3ee5e6b4b0d3255bfef95601890afd80709  # SHA-1 likewise
 ```
 
-#### 5.8 Format conversion (`con`)
+#### 5.7 Format conversion (`con`)
 
 Interconvert json / csv / md / yaml. Reads stdin by default (piping: `cat a.json | sys con`) and prints to stdout; `-out` writes to a file instead.
 

@@ -1,6 +1,7 @@
 mod ai;
 mod chat;
 mod convert;
+mod dasel;
 mod env;
 mod file;
 mod hash;
@@ -37,7 +38,6 @@ Examples:
   sys ai cn-model gpt-6.1-sol
   sys ai chat \"你好\"
   sys ai image \"a red fox in the snow\"
-  sys ai task -t weather country:北京
   sys ai provider openai
   sys ai info provider
   sys ai info model
@@ -106,8 +106,50 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     File(FileArgs),
     /// Convert between json / csv / md / yaml (stdin or -file; -i input; -o output; -out writes a file)
     Con(ConArgs),
+    /// Query / modify / convert structured data (JSON / YAML / TOML / CSV / MD), dasel-compatible
+    /// (alias `dasel`): `sys data [SELECTOR | 'PATH = VALUE'] [-f FILE] [-i FMT] [-o FMT] [-w FILE] [--compact] [--root]`
+    #[command(alias = "dasel")]
+    Data(DataArgs),
     /// Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask/ssearch/sfile/scon)
     Short(ShortArgs),
+}
+
+#[derive(Args)]
+struct DataArgs {
+    /// Selector (`a.b[0]`, `list[*]`, `m["中文键"]`) or assignment expression
+    /// (`PATH = VALUE`, `PATH += N`, `PATH = null` deletes); omitted = pure
+    /// format conversion
+    #[arg(value_name = "EXPR")]
+    expr: Option<String>,
+    /// Read the input from FILE instead of stdin (the format comes from the
+    /// file extension unless -i overrides it)
+    #[arg(short = 'f', long, value_name = "FILE", conflicts_with = "url")]
+    file: Option<PathBuf>,
+    /// GET this URL and use the response body as the input (default format
+    /// json; -i overrides). Example: `sys data -u https://api.dev/config status`
+    #[arg(short = 'u', long, value_name = "URL", conflicts_with = "file")]
+    url: Option<String>,
+    /// Input format: json | yaml | toml | csv | md (default: -f extension, else detection)
+    #[arg(short = 'i', long, value_name = "FMT")]
+    input: Option<String>,
+    /// Output format (default: the input format)
+    #[arg(short = 'o', long, value_name = "FMT")]
+    output: Option<String>,
+    /// Write the result back to FILE instead of stdout (with an expression the
+    /// whole modified document is written; also pass --root to keep stdout quiet)
+    #[arg(short = 'w', long, value_name = "FILE")]
+    write: Option<PathBuf>,
+    /// Compact output (single-line JSON)
+    #[arg(long)]
+    compact: bool,
+    /// Print the whole document after a modification instead of just the value
+    #[arg(long)]
+    root: bool,
+    /// Delete every node deeper than N levels from the whole document (root =
+    /// level 0; levels 0..=N are kept). Bare `--depth` means 1; applied before
+    /// the expression.
+    #[arg(long, value_name = "N", num_args = 0..=1, default_missing_value = "1")]
+    depth: Option<usize>,
 }
 
 #[derive(Args)]
@@ -270,8 +312,6 @@ enum AiCmd {
     Server(ServerArgs),
     /// Generate images via an OpenAI-compatible Images API (/v1/images/generations)
     Image(ImageArgs),
-    /// Run a chat task template from the config (no -t lists the tasks)
-    Task(AiTaskArgs),
     /// Export the local config to another tool's format (codex | opencode | litellm | freellmapi | codebuddy | workbuddy | trae);
     /// --show previews the target config file path and content, -f writes with a backup,
     /// --update merges into the software's default config file (backup first)
@@ -522,28 +562,6 @@ struct ImageArgs {
     /// Request image URLs instead of base64 data (the URLs are downloaded and saved)
     #[arg(long)]
     url: bool,
-}
-
-#[derive(Args)]
-struct AiTaskArgs {
-    /// Task name from the config (e.g. -t weather); omit to list the available tasks
-    #[arg(short = 't', long, value_name = "NAME")]
-    task: Option<String>,
-    /// Template parameters like key:value / key=value / -key value (e.g. area:龙华 or -area 龙华)
-    #[arg(value_name = "PARAM", allow_hyphen_values = true)]
-    params: Vec<String>,
-    /// List the built-in search sources (name / kind / purpose / URL) and exit
-    #[arg(long)]
-    list_source: bool,
-    /// Config file path (default: ~/.sysenv/config.yaml)
-    #[arg(short = 'c', long, value_name = "FILE")]
-    config: Option<PathBuf>,
-    /// Print the actual HTTP request (method/URL/headers/body) and response (status/headers/body)
-    #[arg(long)]
-    debug: bool,
-    /// Disable streaming even if the config sets stream: true
-    #[arg(long)]
-    no_stream: bool,
 }
 
 #[derive(Args)]
@@ -862,6 +880,18 @@ fn main() -> ExitCode {
         )
         .map(|_| 0),
         Cmd::Con(c) => convert::cmd_con(&c.raw).map(|_| 0),
+        Cmd::Data(d) => dasel::cmd_data(
+            d.expr.as_deref(),
+            d.file.as_deref().map(|p| p.to_str().unwrap_or_default()),
+            d.url.as_deref(),
+            d.input.as_deref(),
+            d.output.as_deref(),
+            d.write.as_deref().map(|p| p.to_str().unwrap_or_default()),
+            d.compact,
+            d.root,
+            d.depth,
+        )
+        .map(|_| 0),
         Cmd::Task(t) => run_task(t).map(|_| 0),
         Cmd::Short(s) => run_short(s).map(|_| 0),
     };
@@ -1002,14 +1032,6 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             i.count,
             &i.size,
             i.url,
-        ),
-        AiCmd::Task(t) => chat::cmd_task(
-            t.task.as_deref(),
-            &t.params,
-            t.config.as_deref(),
-            t.debug,
-            t.no_stream,
-            t.list_source,
         ),
         AiCmd::Config(g) => ai::cmd_config(
             &g.format,

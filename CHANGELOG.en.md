@@ -2,6 +2,23 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.5.8 (2026-10-17)
+
+### Added
+- **`sys data` function expressions (dasel-compatible)**: `list.filter(predicate)` keeps matching array elements; `list.remove(predicate)` deletes the matching elements in place (each deleted element is the parent node containing the matched content); `search(predicate)` recursively collects matching nodes; string / key functions `name.endsWith("x")` (contains / startsWith / endsWith / indexOf / has)
+- **Predicate language**: `$this` / `$key` (current node / key or index), field paths (`name`, `a.b[0]`, `m["中文键"]`), literals (numbers, quoted strings, true / false / null), comparisons & logic (`== != > >= < <=`, `&&`, `||`, `!`), function calls (`contains("x")` / `startsWith("x")` / `endsWith("x")` / `indexOf("x")` / `has("key")` / `has(0)`); single-quoted strings are also accepted (PowerShell-friendly)
+- **`sys data --depth N`**: removes every node deeper than N levels (root = level 0; levels 0..=N are kept, deeper subtrees are removed entirely); bare `--depth` means 1; applied before the expression
+- **Assignment detection fix**: `split_expression` now skips the `=` inside `==` / `!=` / `>=` / `<=` comparison operators, so function expressions are no longer mis-split as assignments
+- 7 new unit tests (function-expr parsing / predicate eval / filter / remove / search / string functions / depth pruning); `cargo test` 283 all green
+
+### Removed
+- **`sys ai task` module deleted**: the Task struct, `tasks` config parsing, all task tools (task_tools / route_tasks / built-in search sources / score matching) and their tests removed from chat.rs; the task field, `AiCmd::Task` variant and dispatch branch removed from ai.rs / main.rs; `sys ai --help` no longer lists task
+
+### Changed
+- README (zh / en): the `ai task` section and feature-table row removed, data function-expression / `--depth` docs added; version 0.5.7 -> 0.5.8
+
+---
+
 ## v0.5.0 (2026-10-12)
 
 ### Changed

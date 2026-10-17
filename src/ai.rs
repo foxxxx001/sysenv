@@ -4790,7 +4790,6 @@ mod tests {
                     }],
                 },
             ],
-            tasks: Vec::new(),
             search: Vec::new(),
         }
     }
@@ -5213,7 +5212,6 @@ mod tests {
                     models: vec![model("mm-1")],
                 },
             ],
-            tasks: vec![],
             search: vec![],
         }
     }
