@@ -94,7 +94,7 @@ fn detect_format(text: &str) -> Result<Format> {
 // Parsing (text -> Value)
 // ---------------------------------------------------------------------------
 
-fn parse(text: &str, fmt: Format) -> Result<Value> {
+pub(crate) fn parse(text: &str, fmt: Format) -> Result<Value> {
     match fmt {
         Format::Json => serde_json::from_str(text).context("invalid JSON input"),
         Format::Yaml => parse_yaml_value(text),
@@ -116,7 +116,7 @@ fn parse_yaml_value(text: &str) -> Result<Value> {
 }
 
 /// Convert the project YAML value model to a JSON value.
-fn yval_to_json(v: &crate::chat::YVal) -> Value {
+pub(crate) fn yval_to_json(v: &crate::chat::YVal) -> Value {
     match v {
         crate::chat::YVal::Scalar(s) => cell_to_value(s.clone()),
         crate::chat::YVal::List(l) => Value::Array(l.iter().map(yval_to_json).collect()),
@@ -132,7 +132,7 @@ fn yval_to_json(v: &crate::chat::YVal) -> Value {
 
 /// Parse RFC-4180-ish CSV into rows of fields (quoted fields, "" escapes,
 /// commas and newlines inside quotes, CRLF tolerated).
-fn parse_csv_rows(text: &str) -> Result<Vec<Vec<String>>> {
+pub(crate) fn parse_csv_rows(text: &str) -> Result<Vec<Vec<String>>> {
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut row: Vec<String> = Vec::new();
     let mut field = String::new();
@@ -170,7 +170,7 @@ fn parse_csv_rows(text: &str) -> Result<Vec<Vec<String>>> {
 }
 
 /// Type-infer a CSV / Markdown cell ("", null, bool, int, float, else string).
-fn cell_to_value(s: String) -> Value {
+pub(crate) fn cell_to_value(s: String) -> Value {
     match s.trim() {
         "" => Value::String(s),
         "null" | "~" => Value::Null,
@@ -189,7 +189,7 @@ fn cell_to_value(s: String) -> Value {
 }
 
 /// CSV rows -> array of objects (first row = header).
-fn csv_to_value(text: &str) -> Result<Value> {
+pub(crate) fn csv_to_value(text: &str) -> Result<Value> {
     let rows = parse_csv_rows(text)?;
     if rows.is_empty() {
         return Ok(Value::Array(Vec::new()));
@@ -212,7 +212,7 @@ fn csv_to_value(text: &str) -> Result<Value> {
 }
 
 /// Markdown table -> array of objects (first table wins).
-fn md_to_value(text: &str) -> Result<Value> {
+pub(crate) fn md_to_value(text: &str) -> Result<Value> {
     let lines: Vec<&str> = text.lines().collect();
     let mut idx = 0;
     while idx + 1 < lines.len() {
@@ -250,7 +250,7 @@ fn md_to_value(text: &str) -> Result<Value> {
     bail!("no Markdown table found in the input")
 }
 
-fn parse_md_row(line: &str) -> Result<Vec<String>> {
+pub(crate) fn parse_md_row(line: &str) -> Result<Vec<String>> {
     let t = line.trim();
     let inner = t
         .strip_prefix('|')
@@ -295,7 +295,7 @@ fn serialize(v: &Value, fmt: Format) -> Result<String> {
 }
 
 /// Object keys of an array (union in first-seen order).
-fn collect_keys(v: &Value) -> Result<Vec<String>> {
+pub(crate) fn collect_keys(v: &Value) -> Result<Vec<String>> {
     let arr = match v {
         Value::Array(a) => a,
         Value::Object(o) => {
@@ -324,7 +324,7 @@ fn collect_keys(v: &Value) -> Result<Vec<String>> {
     Ok(keys)
 }
 
-fn cell_from_value(v: Option<&Value>) -> String {
+pub(crate) fn cell_from_value(v: Option<&Value>) -> String {
     match v {
         None | Some(Value::Null) => String::new(),
         Some(Value::String(s)) => s.clone(),
@@ -332,7 +332,7 @@ fn cell_from_value(v: Option<&Value>) -> String {
     }
 }
 
-fn csv_escape(s: &str) -> String {
+pub(crate) fn csv_escape(s: &str) -> String {
     if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
@@ -340,7 +340,7 @@ fn csv_escape(s: &str) -> String {
     }
 }
 
-fn value_to_csv(v: &Value) -> Result<String> {
+pub(crate) fn value_to_csv(v: &Value) -> Result<String> {
     let keys = collect_keys(v)?;
     let mut out = String::new();
     out.push_str(&keys.iter().map(|k| csv_escape(k)).collect::<Vec<_>>().join(","));
@@ -370,11 +370,11 @@ fn value_to_csv(v: &Value) -> Result<String> {
     Ok(out)
 }
 
-fn md_escape(s: &str) -> String {
+pub(crate) fn md_escape(s: &str) -> String {
     s.replace('|', "\\|")
 }
 
-fn value_to_md(v: &Value) -> Result<String> {
+pub(crate) fn value_to_md(v: &Value) -> Result<String> {
     let keys = collect_keys(v)?;
     let mut out = String::new();
     out.push_str(&format!("| {} |\n", keys.iter().map(|k| md_escape(k)).collect::<Vec<_>>().join(" | ")));

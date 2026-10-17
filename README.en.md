@@ -10,6 +10,7 @@ A cross-platform (Windows / Ubuntu) system Http client & AI model lookup & PATH 
 - **Web search**: `sys search` runs web searches through the Bocha AI API (`api.bochaai.com/v1/web-search`) with official request parameters; `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards
 - **httpie-compatible HTTP client**: flags follow httpie conventions
 - **Shortcut shims**: install `spath / senv / slink / shttp / sai / ssearch / stask / sfile / scon` short commands with one command
+- **Log viewer**: `sys log` — a colored less-style log viewer that parses Nginx / Linux / Windows / Log4j-style logs: timestamps in orange, level gradient (green for info and below, red from warning up), app markers in dark yellow; `--level` filter, `--search` (n/u jump), `--line` / `--newer` positioning, `-f` follow
 
 ```
 sys 0.4.13 (Made by Gary-china)
@@ -26,6 +27,7 @@ Commands:
   task   Query and kill processes (list PID/name/path; kill by PID or name)
   short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon)
   data   Query / modify / convert structured data (JSON/YAML/TOML/CSV/MD), dasel-compatible
+  log    Colored less-style log viewer: parse timestamps/levels/app markers, filters, search, -f follow
 ```
 
 ---
@@ -45,6 +47,7 @@ Commands:
 | Text search & replace | `file` | fd/sd-style: 1 arg searches stdin (an extension like `me.txt` displays that file; quotes force search); 2 args search a directory tree of text/source files (`-e` / `-i` / `-t` / `-w` / `-c`); 3 args OLD NEW PATH replace in place; `-S` size / `--newer` / `--older` time / `-d` depth filters; lists files when no PATTERN is given |
 | Format conversion | `con` | json / csv / md / yaml interconversion: stdin by default (`cat a.json | sys con`), `-file` reads a file, `-i` input format, `-o` output format, `-out` writes a file; tables map to/from object arrays (type inference + escaping) |
 | Data query / modify | `data` / `dasel` | dasel-compatible: selector reads `a.b[0]` / `list[*]` / `m["中文键"]`; `PATH = VALUE` writes (`= null` deletes, `+=` / `-=` / `*=` / `/=` ops); function expressions `list.filter(pred)` / `list.remove(pred)` / `search(pred)` / `name.endsWith("x")` (predicate language: `$this` / `$key`, field paths, `== != > >= < <= && || !`, `contains` / `startsWith` / `endsWith` / `indexOf` / `has`; e.g. `sys data 'sites.filter(type==1)'`); `--depth N` (default 1) removes nodes deeper than N levels; JSON / YAML / TOML / CSV / MD interconversion; `-f` file (extension decides the format, `-i` overrides), `-u URL` GET fetch (default json), `-w` write back, `--root` / `--compact`; tab-indented YAML normalised, CJK round-trips cleanly |
+| Log viewer | `log` | colored less-style log viewer: parses Nginx / Linux / Windows / Log4j-style logs — **timestamps** (ISO / slash / nginx access / syslog / US formats, start-of-line or mid-line) in orange; **levels** (trace→info light-to-strong green, warning→error→fatal escalating red) as a gradient; **app markers** in dark yellow; `--level` filters by level (warn==warning, err==error); `--search` keyword search (line numbers + reverse highlight, n/u wrap-jump in interactive mode); `--line N` parses from line N onward (original numbers kept); `--newer TIME` shows entries at/after the given time; `-f` follows file growth with scrolling (150 ms polling, auto re-read on truncation/rotation); TTY gets a less-style interactive view (PageUp/PageDown/↑/↓/Home/End/g/G/q), pipes get plain text without ANSI |
 | HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
 | Shortcut shims | `short` | installs nine short commands at once (spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon); Windows `.cmd` / Linux sh scripts; auto PATH registration |
 
@@ -541,9 +544,12 @@ sys http --verify no https://self-signed.example  # skip certificate verificatio
 | `slink` | `sys link` |
 | `shttp` | `sys http` |
 | `sai` | `sys ai` |
+| `ssearch` | `sys search` |
 | `stask` | `sys task` |
 | `sfile` | `sys file` |
 | `scon` | `sys con` |
+
+> Note: the `data` / `dasel` and `log` subcommands have **no shims** (no `sdata` / `slog`); use them by their full names.
 
 ### Examples
 
@@ -610,6 +616,51 @@ sys net -i urls.txt -t tv --timeout 5      # 5 s per-request timeout
 sys net -i urls.txt -t tv --thread 8        # tv/tvs parallel probing with 8 concurrent addresses (default: CPU cores)
 sys net -t info -n www.example.com         # query registration info; falls back to the parent domain when missing
 sys net -t info -n a.com -n b.com          # query several domains at once
+```
+
+---
+
+## 10. Log viewer (`log`)
+
+A colored less-style log viewer: `sys log --file app.log [--level LEVEL] [--search KW] [--line N] [--newer TIME] [-f]`. It parses each entry's **timestamp** (many common formats), **log level** and **app marker** and colors them semantically; on a TTY it enters a full-screen interactive view (like less), while pipes / redirects get plain text (no ANSI).
+
+### Features
+
+* **Timestamp parsing (rendered orange RGB(255,165,0))** — the following formats are all recognized as the start of a log entry:
+  * ISO: `2024-01-15 10:23:45`, `2024-01-15T10:23:45.123Z` (milliseconds optional); Log4j comma-milliseconds: `2024-01-15 10:23:45,123`
+  * Slash: `2024/01/15 10:23:46`
+  * **nginx access log**: `15/Jan/2024:10:23:49 +0800` — a timestamp **mid-line** is recognized too (first 80 bytes scanned), and the prefix (e.g. `127.0.0.1 - - [`) is kept intact
+  * syslog: `Jan 15 10:23:48` (no year → current year; falls back to the previous year when the time is >1 day in the future); US: `01/15/2024`
+  * Timestamps with a timezone are interpreted wall-clock style (`10:23:45 +0800` displays as `10:23:45+08:00`, no UTC conversion)
+
+* **Level gradient**: `trace` light green(178,230,178) → `debug` green(102,204,102) → `info` green(0,180,0) — **green for info and below, lighter = lower level**; `warning` red(255,90,90) → `error` dark red(204,0,0) → `fatal` deepest red(140,0,0) bold. Aliases: `warn`==`warning`, `err`==`error`, `critical/crit/alert/emerg`==`fatal`
+
+* **App markers (dark yellow RGB(184,134,11))**: tokens right after the timestamp such as `[http-nio-8080-exec-1]`, `app[1234]`, `[01-node-5]`
+
+* **`--file FILE`**: log file to parse (default: stdin; `-` also means stdin)
+
+* **`--level LEVEL`**: exact level filter (`trace | debug | info | warn | warning | error | fatal`); lines without a level are dropped
+
+* **`--search KEYWORD`**: case-insensitive keyword search — line numbers shown (dim gray RGB(130,130,130)), matches reverse-highlighted; **n jumps to the next match / u to the previous** in interactive mode (wraps around, match centered)
+
+* **`--line N`**: parse only from line N onward (original line numbers kept)
+
+* **`--newer TIME`**: show only entries at/after the given time (continuation lines without timestamps are kept)
+
+* **`-f`**: follow the file with scrolling display — 150 ms polling incremental reads, auto re-read on truncation / rotation; files only (stdin piped with `-f` errors, exit code 1)
+
+* **Interactive keys** (TTY): `PageUp` / `PageDown` page, `↑` / `↓` line, `Home` / `End` / `g` / `G` jump, `q` / `Esc` / `Ctrl-C` quit, `n` / `u` search jump; status bar: `  filename  Lfirst-last/total  level=..  "kw" i/N  following...  q=quit PgUp/PgDn=page ↑↓=line n/u=search`
+
+### Examples
+
+```
+sys log --file access.log                       # view an nginx access log (mid-line timestamps recognized)
+sys log --file app.log --level error            # ERROR only (warn/error/fatal all work)
+sys log --file app.log --search "timeout"       # search + line numbers, n/u jump between matches
+sys log --file app.log --level warn --line 100  # start after line 100
+sys log --file app.log --newer "2024-01-15 10:23:47"   # only entries at/after this time
+sys log --file app.log -f                       # follow the file, scrolling
+type app.log | sys log --level error            # piped input (plain text, no ANSI)
 ```
 
 ---

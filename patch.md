@@ -2,6 +2,46 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.5.9（2026-10-17）
+
+### 新增
+- **`sys log`（彩色 less 式日志查看器）**：`sys log --file app.log [--level LEVEL] [--search KW] [--line N] [--newer TIME] [-f]`。解析常见日志并按语义着色，交互同 less——PageUp / PageDown 翻页、↑/↓ 逐行、Home / End / g / G 跳转、q / Esc / Ctrl-C 退出、n / u 在搜索命中间跳转（循环、居中）；底部状态栏：` 文件名  L首-末/总数  level=..  "kw" i/N  following...  q=quit PgUp/PgDn=page ↑↓=line n/u=search`
+- **时间解析（行首多种常见格式，解析后橙色 RGB(255,165,0) 显示）**：ISO 短横线 `2024-01-15 10:23:45`、ISO-T/Z `2024-01-15T10:23:45.123Z`（毫秒可选）、Log4j 逗号毫秒 `2024-01-15 10:23:45,123`；斜杠 `2024/01/15 10:23:46`；nginx access log `15/Jan/2024:10:23:49 +0800`——时间在行中间也识别（行内前 80 字节扫描），前缀 `127.0.0.1 - - [` 完整保留（entry() 对 `tm.start > 0` 增加前缀 span，断言 joined == line）；syslog `Jan 15 10:23:48`（无年份取当年，落在未来 1 天以上自动回退上年）；US `01/15/2024`；带时区时间按墙钟解释（`off.from_local_datetime`，`10:23:45 +0800` 显示为 `10:23:45+08:00` 而非错误换算成 UTC 的 `18:23:45`）
+- **级别渐变色**：trace 浅绿(178,230,178) → debug 绿(102,204,102) → info 绿(0,180,0)——info 及以下绿色、越低越浅；warning 红(255,90,90) → error 深红(204,0,0) → fatal 最深红(140,0,0) 加粗。别名：warn==warning、err==error、critical/crit/alert/emerg==fatal；`--level` 精确过滤（无级别行剔除）
+- **app 标志（深黄色 RGB(184,134,11)）**：时间后形如 `[http-nio-8080-exec-1]`、`app[1234]`、`[01-node-5]` 的标记
+- **`--file FILE`**：指定日志文件（缺省读 stdin，`-` 亦为 stdin）；**`--search KW`**：大小写不敏感，显示行号（灰色 RGB(130,130,130)）、命中反显；**`--line N`** 从第 N 行后开始（保留原始行号）；**`--newer TIME`** 只显示 ≥ 该时间的日志（无时间戳延续行保留）；**`-f`** 追踪文件（150ms 轮询增量 + 截断/轮转重读，仅文件可用，stdin 报错）
+- 非 TTY（管道 / 重定向）输出纯文本无 ANSI（安全）；TTY 进 crossterm 全屏交互；新依赖 crossterm 0.28
+
+### 修复
+- `DateTime::from_utc` 弃用告警 → 改用 `from_local_datetime` / `from_utc_datetime`；`Span.reverse` 字段从未被读，删除消告警
+- nginx 行内时间解析曾丢弃时间之前的前缀文本，已修复并加断言（见上）
+
+### 测试
+- 新增 29 项 `log::tests` 单测（时间格式 / 时区语义 / 级别别名 / app 提取 / 过滤器 / 搜索命中列表与行号 / 分页滚动 clamp / -f 增量与截断重读 / 错误路径）；`cargo test --bin sys` 312 项全绿
+
+### 冒烟验证（真实二进制，Windows）
+- `sys log --file dev/sample.log` 纯文本 8 行完全复原（nginx 前缀修复后）；`--level warn` 只留 WARN；`--search app` 8 行带行号；`--newer "2024-01-15 10:23:47"`、`--line 6 --search GET` 正确；`--level bogus` / `--newer garbage` / stdin `-f` 报友好错误退出码 1
+- 真实控制台启动 TTY 查看器：raw mode + 全屏渲染不崩溃（进程存活等待按键）；交互按键路径由单测覆盖
+
+---
+
+## v0.5.7（2026-10-17）
+
+### 新增
+- **`sys data`（别名 `dasel`）**：结构化数据查询 / 修改 / 转换模块（dasel v3 核心工作流的 Rust 实现）。支持 JSON / YAML / TOML / CSV / Markdown 五种格式互转与统一选择器：`a.b[0]` 点路径、`list[-1]` 负索引、`list[*]` 通配、`m["中文名"]` 引号键（含点号 / 空格 / CJK）；表达式 `PATH = VALUE`（JSON 字面量或纯文本，`= null` 删除）、`+= / -= / *= / /=` 数值与字符串追加；裸选择器输出原始标量（dasel 风格），容器按输出格式序列化；`--root` 输出修改后整文档、`--compact` 单行 JSON、`-w FILE` 修改写回原文件（stdout 仍打印所改值，配 `--root` 则静默）；`-f FILE` 读文件（后缀决定格式）、**`-u URL`** GET 拉取远端内容作输入（默认 json，`-i` 可覆盖，30s 超时，非 2xx 报错含状态码与响应片段）；`-i` 显式传入时优先于文件后缀 / URL 默认格式；无 `-f/-u` 时读 stdin（管道）。参数：`sys data [EXPR] [-f FILE | -u URL] [-i FMT] [-o FMT] [-w FILE] [--compact] [--root]`
+- **tab 缩进 YAML 兼容**：`parse_yaml_tolerant` 先把每行前导 tab 归一化为 4 空格（引号标量内的 tab 保留），再走 serde_yaml 严格解析，失败回退项目自带容错块解析器（chat::parse_yaml，同样 tab 归一 + BOM 剥离）；检测器 `detect_format` 在 YAML 前置 `looks_like_yaml` 结构启发式（须存在 `key:` / `- item` 行），避免把 `a,b` 之类逗号文本误判为 YAML，CSV / MD 探测顺序前移
+- **中文 round-trip 验证**：JSON↔YAML↔TOML↔CSV 全链路 CJK 不转义不乱码（serde_json 默认保留非 ASCII；serde_yaml 对含换行的中文自动用块标量）；新增 16 项 `dasel::tests` 单测（选择器解析 / 表达式切分含引号内 `=` 不误切 / tab YAML / 中文多行块标量 / TOML 往返 / 通配读取 / 运算符 / 格式优先级 -i 覆盖后缀与 URL 默认 json / 增删改查）
+- 新依赖：toml 0.9、libc 0.2（stdin tty 检测，Windows 走 GetConsoleMode）
+
+### 修复
+- 选择器方括号内引号键 `m["中文名.字"]` 初版被当作数组下标解析而报错，已支持 `["…"]` / `['…']` 形式
+- `detect_format` 对无结构纯文本（如两行 CSV 头）误判 YAML 导致类型全变字符串，改为先 CSV/MD、YAML 需通过结构启发式
+
+### 测试
+- `cargo test --bin sys dasel::` 16/16 全绿；分批回归：convert/file/hash 39、httpie/net 75、chat/ai 128、path/env/link/lock 1（合计 243 + dasel 16 = 259 项通过）——全量一次性跑超时会话超时限制，按模块过滤分批执行（dev/test-progress.md 记录进度）
+
+---
+
 ## v0.5.6（2026-10-16）
 
 ### 修复

@@ -2,6 +2,32 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.5.9 (2026-10-17)
+
+### Added
+- **`sys log` — colored less-style log viewer**: parses common log formats and renders them with colors; keys behave like less (PageUp / PageDown page, ↑ / ↓ line, Home / End / g / G jump, q / Esc / Ctrl-C quit)
+  - **Timestamp parsing (common formats, recognized as the start of each entry and rendered orange RGB(255,165,0))**: ISO `2024-01-15 10:23:45`, `2024-01-15T10:23:45.123Z`, Log4j comma-ms `2024-01-15 10:23:45,123`; slash `2024/01/15 10:23:46`; nginx access log `15/Jan/2024:10:23:49 +0800` (timestamp in the middle of the line is recognized too — first 80 bytes scanned, prefix `127.0.0.1 - - [` kept intact); syslog `Jan 15 10:23:48` (no year → current year, falling back to the previous year when >1 day in the future); US `01/15/2024`
+  - **Level gradient colors**: trace (178,230,178) / debug (102,204,102) / info (0,180,0) are green (info and below, lighter = lower), warning (255,90,90) / error (204,0,0) / fatal (140,0,0, bold) are red
+  - **App markers**: tokens right after the timestamp such as `[http-nio-8080-exec-1]`, `app[1234]`, `[01-node-5]` render dark yellow RGB(184,134,11)
+  - **`--file FILE`**: log file to parse (default: stdin; `-` also means stdin)
+  - **`--level LEVEL`**: filter by level (trace | debug | info | warn | warning | error | fatal; warn == warning, err == error, critical/crit/alert/emerg == fatal; lines without a level are dropped)
+  - **`--search KEYWORD`**: case-insensitive keyword search — line numbers shown (dim gray), matches reverse-highlighted; in the interactive view **n jumps to the next match / u to the previous** (wraps around, match centered)
+  - **`--line N`**: parse only from line N onward (original line numbers kept)
+  - **`--newer TIME`**: show only entries at/after the given time (continuation lines without timestamps are kept)
+  - **`-f`**: follow the file — 150ms polling incremental reads, truncation / rotation auto-re-read, scrolling display; files only (stdin errors with exit code 1)
+  - Non-TTY (pipe / redirect) output is plain text without ANSI; on a TTY it enters a crossterm full-screen interactive view with a status bar (file name / line range / level filter / search term & match count / follow state / key hints)
+  - New dependency crossterm 0.28; 29 new `log::tests` unit tests; `cargo test --bin sys` 312 all green
+
+### Changed
+- version 0.5.8 -> 0.5.9; README (zh / en) adds a `sys log` section with examples
+- `src/convert.rs`: `parse` / `yval_to_json` / `parse_csv_rows` / `cell_to_value` / `parse_md_row` promoted to `pub(crate)` (required by v0.5.8's dasel.rs; committed with this release)
+
+### Smoke-tested (real binary, Windows)
+- `sys log --file dev/sample.log`: 8 plain-text lines fully reconstructed (nginx in-line prefix included); `--level warn` keeps only the WARN line; `--search app` shows all 8 lines with line numbers; `--newer "2024-01-15 10:23:47"` filters correctly; `--line 6 --search GET` correct; invalid `--level bogus` / `--newer garbage` print a friendly error with exit code 1; stdin piped with `-f` errors with exit code 1
+- Real-console TTY smoke: the viewer enters raw mode / full-screen rendering without crashing (process stays alive waiting for keys)
+
+---
+
 ## v0.5.8 (2026-10-17)
 
 ### Added

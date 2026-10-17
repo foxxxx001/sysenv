@@ -20,6 +20,8 @@
 
 * **快捷命令垫片**：一键生成 `spath / senv / slink / shttp / sai / ssearch / stask / sfile / scon` 短命令
 
+* **日志查看**：`sys log` 彩色 less 式日志查看器——解析 Nginx / Linux / Windows / Log4j 等常见日志，时间橙色、级别渐变（info 及以下绿、warning 起红）、app 深黄；`--level` 过滤、`--search` 搜索（n/u 跳转）、`--line` / `--newer` 定点、`-f` 追踪文件
+
 
 
 ```
@@ -37,6 +39,7 @@ Commands:
   task   Query and kill processes (list PID/name/path; kill by PID or name)
   short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon)
   data   Query / modify / convert structured data (JSON/YAML/TOML/CSV/MD), dasel-compatible
+  log    Colored less-style log viewer: parse timestamps/levels/app markers, filters, search, -f follow
 ```
 
 
@@ -61,6 +64,7 @@ Commands:
 | 联网搜索      | `search`             | 博查 AI 网页搜索 API（`POST api.bochaai.com/v1/web-search`）：`--freshness`（时间过滤）/ `--summary`（AI 摘要）/ `--count`（1-50）/ `--page` / `--include-domains` / `--exclude-domains`（域名白黑名单），参数与官网接口一致；key 取自配置 `search` 段；`--json` 原始响应 / `--debug` 请求与响应。`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡（`--no-answer` 关闭 AI 答案） |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
 | 网络探测      | `net`                | 从文件批量读取 http(s) 地址并探测：`-i` 读文件（`#` 注释行跳过、每行多个地址、地址截取到空格/标点）；`-t domain`（默认，连续 3 次 GET 取平均响应时间，全部测完按平均时间升序打印）/ `-t tv`（响应体须为 JSON，支持 `--sort` 统计排序；旧名 `json`）/ `-t tvs`（兼容 tv 与聚合两种 JSON：单仓 `.sites` / 多仓 `.urls` 分组输出）/ `-t file`（响应体须为普通文本）/ `-t test`（只探测可访问性，不可访问的屏幕打印错误并从源文件删除，`-o` 输出清理后的源文件行）/ `-t info`（用 `-n` 域名查 RDAP 注册信息，查不到逐层回退上层域名）；tv/file 模式每测完一个即打印 url/可用性/状态码/响应时间/格式，`-o` 把检测成功的 url 写入文件（一行一个）；`--timeout` 单次请求超时 |
+| 日志查看      | `log`                | 彩色 less 式日志查看器：解析 Nginx / Linux / Windows / Log4j 等常见日志——**时间**（ISO/斜杠/nginx access/syslog/US 多种格式，行首或行中）橙色显示；**级别**（trace→info 渐浅绿、warning→error→fatal 渐深红）渐变着色；**app 标志**深黄；`--level` 按级别过滤（warn==warning、err==error）；`--search` 关键字搜索（行号 + 反显，交互下 n/u 循环跳转）；`--line N` 从第 N 行后解析（保留原始行号）；`--newer TIME` 只显示该时间之后的日志；`-f` 追踪文件变化滚动展示（150ms 轮询，截断/轮转自动重读）；TTY 下 less 式交互（PageUp/PageDown/↑/↓/Home/End/g/G/q），管道输出纯文本无 ANSI |
 | 快捷垫片      | `short`              | 一键安装九种短命令（spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon）；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
 
 
@@ -746,9 +750,12 @@ sys http --verify no https://self-signed.example  # 跳过证书校验
 | `slink` | `sys link` |
 | `shttp` | `sys http` |
 | `sai`   | `sys ai`   |
+| `ssearch` | `sys search` |
 | `stask` | `sys task` |
 | `sfile` | `sys file` |
 | `scon`  | `sys con`  |
+
+> 注：`data` / `dasel` 与 `log` 子命令**不生成垫片**（无 `sdata` / `slog`），按全名使用。
 
 ### 示例
 
@@ -832,6 +839,51 @@ sys net -i urls.txt -t tv --thread 8        # tv/tvs 模式并行探测 8 个地
 sys net -i urls.txt -t tv -o ok.json.txt    # 输入行地址后的 "# 备注" 会随该地址输出（note=...）
 sys net -t info -n www.example.com         # 查域名注册信息；查不到自动回退上层域名
 sys net -t info -n a.com -n b.com          # 一次查多个域名
+```
+
+***
+
+## 10. 日志查看（`log`）
+
+彩色 less 式日志查看器：`sys log --file app.log [--level LEVEL] [--search KW] [--line N] [--newer TIME] [-f]`。解析每条日志的**时间**（多种常见格式）、**日志级别**与 **app 标志**并按语义着色；TTY 下进入全屏交互（同 less），管道 / 重定向输出纯文本（无 ANSI）。
+
+### 特性
+
+* **时间解析（橙色 RGB(255,165,0) 显示）**——以下格式均识别为日志开头：
+  * ISO：`2024-01-15 10:23:45`、`2024-01-15T10:23:45.123Z`（毫秒可选）；Log4j 逗号毫秒：`2024-01-15 10:23:45,123`
+  * 斜杠：`2024/01/15 10:23:46`
+  * **nginx access log**：`15/Jan/2024:10:23:49 +0800`——时间在行**中间**也识别（行内前 80 字节扫描），前缀（如 `127.0.0.1 - - [`）完整保留
+  * syslog：`Jan 15 10:23:48`（无年份取当年，落在未来 1 天以上自动回退上年）；US：`01/15/2024`
+  * 带时区的时间按墙钟解释（`10:23:45 +0800` 显示为 `10:23:45+08:00`，不做 UTC 换算）
+
+* **级别渐变着色**：`trace` 浅绿(178,230,178) → `debug` 绿(102,204,102) → `info` 绿(0,180,0)——**info 及以下为绿色，级别越低越浅**；`warning` 红(255,90,90) → `error` 深红(204,0,0) → `fatal` 最深红(140,0,0) 加粗。别名：`warn`==`warning`、`err`==`error`、`critical/crit/alert/emerg`==`fatal`
+
+* **app 标志（深黄色 RGB(184,134,11)）**：时间后形如 `[http-nio-8080-exec-1]`、`app[1234]`、`[01-node-5]` 的标记
+
+* **`--file FILE`**：指定日志文件（缺省读 stdin，`-` 亦为 stdin）
+
+* **`--level LEVEL`**：按级别精确过滤（`trace | debug | info | warn | warning | error | fatal`）；无级别的行剔除
+
+* **`--search KEYWORD`**：搜索关键字（大小写不敏感）——显示行号（灰色 RGB(130,130,130)），命中反显高亮；交互下 **n 跳下一条匹配 / u 跳上一条匹配**（循环，命中行居中）
+
+* **`--line N`**：从第 N 行之后开始解析（保留原始行号）
+
+* **`--newer TIME`**：只显示时间在指定时间之后的日志（无时间戳的延续行保留）
+
+* **`-f`**：追踪文件变化，不断滚动展示——150ms 轮询增量读取，文件截断 / 轮转自动重读；仅文件可跟随（stdin 管道 + `-f` 报错退出码 1）
+
+* **交互按键**（TTY 下）：`PageUp` / `PageDown` 翻页、`↑` / `↓` 逐行、`Home` / `End` / `g` / `G` 跳转、`q` / `Esc` / `Ctrl-C` 退出、`n` / `u` 搜索跳转；底部状态栏：` 文件名  L首-末/总数  level=..  "kw" i/N  following...  q=quit PgUp/PgDn=page ↑↓=line n/u=search`
+
+### 示例
+
+```
+sys log --file access.log                       # 查看 nginx access log（时间在行中间也识别）
+sys log --file app.log --level error            # 只看 ERROR（warn/error/fatal 均可）
+sys log --file app.log --search "timeout"       # 搜索 + 行号，n/u 在命中间跳转
+sys log --file app.log --level warn --line 100  # 从第 100 行之后开始
+sys log --file app.log --newer "2024-01-15 10:23:47"   # 只显示该时间之后的日志
+sys log --file app.log -f                       # 追踪文件变化滚动展示
+type app.log | sys log --level error            # 管道输入（纯文本输出，无 ANSI）
 ```
 
 ***

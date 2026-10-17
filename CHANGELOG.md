@@ -2,6 +2,32 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.5.9（2026-10-17）
+
+### 新增
+- **`sys log`（彩色 less 式日志查看器）**：解析常见日志并高亮着色展示，交互同 less（PageUp / PageDown 翻页、↑/↓ 逐行、Home / End / g / G 跳转、q / Esc / Ctrl-C 退出）
+  - **时间解析（多种常见格式，均识别为日志开头并以橙色 RGB(255,165,0) 显示）**：ISO `2024-01-15 10:23:45`、`2024-01-15T10:23:45.123Z`、Log4j 逗号毫秒 `2024-01-15 10:23:45,123`；斜杠 `2024/01/15 10:23:46`；nginx access log `15/Jan/2024:10:23:49 +0800`（时间位于行中间也能识别，行内前 80 字节扫描，前缀 `127.0.0.1 - - [` 完整保留）；syslog `Jan 15 10:23:48`（无年份取当年，落在未来 1 天以上自动回退上年）；US `01/15/2024`
+  - **级别渐变色**：debug / info / warning / error 等识别后按级别着色——trace 浅绿(178,230,178)、debug 绿(102,204,102)、info 绿(0,180,0)（info 及以下为绿色、级别越低越浅），warning 红(255,90,90)、error 深红(204,0,0)、fatal 最深红(140,0,0) 加粗
+  - **app 标志**：时间后形如 `[http-nio-8080-exec-1]`、`app[1234]`、`[01-node-5]` 的应用标记以深黄色 RGB(184,134,11) 显示
+  - **`--file FILE`**：指定日志文件（缺省读 stdin，`-` 亦为 stdin）
+  - **`--level LEVEL`**：按级别过滤（trace | debug | info | warn | warning | error | fatal；warn==warning、err==error、critical/crit/alert/emerg==fatal；无级别行剔除）
+  - **`--search KEYWORD`**：搜索关键字（大小写不敏感）——显示行号（灰色），命中反显高亮；交互下 **n 跳下一条匹配 / u 跳上一条匹配**（循环，命中行居中）
+  - **`--line N`**：从第 N 行之后开始解析（保留原始行号）
+  - **`--newer TIME`**：只显示时间在指定时间之后的日志（无时间戳的延续行保留）
+  - **`-f`**：跟踪文件变化——150ms 轮询增量读取、文件截断 / 轮转自动重读、滚动展示；仅文件可跟随（stdin 报错退出码 1）
+  - 非 TTY（管道 / 重定向）输出纯文本无 ANSI；TTY 进 crossterm 全屏交互，底部状态栏显示文件名 / 行范围 / 级别过滤 / 搜索词与命中计数 / 跟随状态与按键提示
+  - 新依赖 crossterm 0.28；新增 29 项 `log::tests` 单测；`cargo test --bin sys` 312 项全绿
+
+### 变更
+- 版本 0.5.8 -> 0.5.9；README（中 / 英）新增 `sys log` 章节与示例
+- `src/convert.rs`：`parse` / `yval_to_json` / `parse_csv_rows` / `cell_to_value` / `parse_md_row` 提升为 `pub(crate)`（v0.5.8 dasel.rs 编译所需，随本次提交补齐）
+
+### 冒烟验证（真实二进制，Windows）
+- `sys log --file dev/sample.log`：纯文本 8 行完全复原（含 nginx 行内时间前缀）；`--level warn` 只留 WARN 行；`--search app` 8 行带行号；`--newer "2024-01-15 10:23:47"` 过滤正确；`--line 6 --search GET` 正确；非法 `--level bogus` / `--newer garbage` 报友好错误退出码 1；stdin 管道 `-f` 报错退出码 1
+- 真实控制台 TTY 交互冒烟：查看器启动进入 raw mode / 全屏渲染不崩溃（进程存活等待按键）
+
+---
+
 ## v0.5.8（2026-10-17）
 
 ### 新增

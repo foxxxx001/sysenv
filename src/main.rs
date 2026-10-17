@@ -9,6 +9,7 @@ mod httpie;
 mod image;
 mod link;
 mod lock;
+mod log;
 mod net;
 mod path;
 mod short;
@@ -52,6 +53,8 @@ Examples:
   sys net -i urls.txt -t test -o ok.txt
   sys task list
   sys task kill 1234
+  sys log --file app.log -f
+  sys log --file app.log --level error --search timeout
   sys short
   sys http pie.dev/get name=John"
 )]
@@ -102,6 +105,10 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     Net(NetArgs),
     /// Query and kill processes (list PID/name/path; kill by PID or name; no args lists all)
     Task(TaskArgs),
+    /// Colored, less-like log viewer: parse timestamps/levels/app markers with
+    /// filters and search; -f tails the file (`sys log --file app.log [--level
+    /// LEVEL] [--search KW] [--line N] [--newer TIME] [-f]`)
+    Log(LogArgs),
     /// fd/sd-style text search and replacement: search stdin or a directory tree, or replace a string in place
     File(FileArgs),
     /// Convert between json / csv / md / yaml (stdin or -file; -i input; -o output; -out writes a file)
@@ -714,6 +721,31 @@ struct ConArgs {
 }
 
 #[derive(Args)]
+struct LogArgs {
+    /// Log file to parse (default: stdin when piped; `-` also means stdin)
+    #[arg(long, value_name = "FILE")]
+    file: Option<PathBuf>,
+    /// Filter by log level: trace | debug | info | warn | warning | error | fatal
+    /// (warn == warning, err == error, critical/crit/alert/emerg == fatal)
+    #[arg(long, value_name = "LEVEL")]
+    level: Option<String>,
+    /// Search keyword (case-insensitive); line numbers are shown and n/u jump to
+    /// the next/previous match
+    #[arg(long, value_name = "KEYWORD")]
+    search: Option<String>,
+    /// Parse from this original line number onwards (1-based)
+    #[arg(long, value_name = "N")]
+    line: Option<usize>,
+    /// Parse only lines whose timestamp is at or after TIME (any supported log
+    /// time format, or YYYY-MM-DD [HH:MM[:SS]], default midnight)
+    #[arg(long, value_name = "TIME")]
+    newer: Option<String>,
+    /// Follow the file: keep scrolling as new lines are appended (tail -f style)
+    #[arg(short = 'f', long)]
+    follow: bool,
+}
+
+#[derive(Args)]
 struct ShortArgs {
     /// Install the shims into this directory instead of the managed bin directory
     #[arg(long, value_name = "DIR")]
@@ -894,6 +926,15 @@ fn main() -> ExitCode {
         .map(|_| 0),
         Cmd::Task(t) => run_task(t).map(|_| 0),
         Cmd::Short(s) => run_short(s).map(|_| 0),
+        Cmd::Log(l) => log::cmd_log(
+            l.file.as_deref(),
+            l.level.as_deref(),
+            l.search.as_deref(),
+            l.line,
+            l.newer.as_deref(),
+            l.follow,
+        )
+        .map(|_| 0),
     };
     match result {
         Ok(code) => ExitCode::from(code as u8),
