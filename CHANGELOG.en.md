@@ -2,6 +2,18 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.5.11 (2026-10-17)
+
+### Removed
+- **`sys search` subcommand deleted** (web search via the Bocha AI Web/AI Search API). Removed `Cmd::Search` / `SearchArgs` / dispatch and help text; chat.rs dropped `Config.search` and `SearchKey`, the config `search:` section parsing, all Bocha code (10 `bocha_*` functions + 2 endpoint consts), `cmd_search` and 8 tests; short.rs removed the `ssearch` shim (8 → 7)
+- Installed `ssearch.cmd` shims are not actively cleaned up (release convention does not touch `sys short`); they disappear after re-running `sys short`
+
+### Changed
+- version 0.5.10 -> 0.5.11; README (zh / en): search feature row, the `5.6/5.3 Web search` section and the `ssearch` shim-table row removed (following sections renumbered; shim docs updated to seven commands, example count 6 → 7)
+- `cargo test --bin sys` 308 -> 300 all green
+
+---
+
 ## v0.5.10 (2026-10-17)
 
 ### Removed

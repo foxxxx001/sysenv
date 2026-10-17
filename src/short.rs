@@ -1,11 +1,11 @@
 //! `sys short` — install shell shims for every subcommand so it can be
 //! invoked from anywhere with a short name:
 //!   spath = sys path, senv = sys env, slink = sys link,
-//!   shttp = sys http, sai = sys ai, ssearch = sys search,
+//!   shttp = sys http, sai = sys ai,
 //!   stask = sys task, sfile = sys file
 //!
 //! `data` / `dasel` and `log` have no shims (use their full names); `con`
-//! was removed in v0.5.10.
+//! was removed in v0.5.10, `search` in v0.5.11.
 
 use crate::link;
 use crate::store::common;
@@ -20,7 +20,6 @@ pub const SHIMS: &[(&str, &str)] = &[
     ("slink", "link"),
     ("shttp", "http"),
     ("sai", "ai"),
-    ("ssearch", "search"),
     ("stask", "task"),
     ("sfile", "file"),
 ];
@@ -120,11 +119,11 @@ mod tests {
 
     #[test]
     fn shim_names_and_targets() {
-        assert_eq!(SHIMS.len(), 8);
+        assert_eq!(SHIMS.len(), 7);
         let subs: Vec<&str> = SHIMS.iter().map(|(_, s)| *s).collect();
-        assert_eq!(subs, vec!["path", "env", "link", "http", "ai", "search", "task", "file"]);
+        assert_eq!(subs, vec!["path", "env", "link", "http", "ai", "task", "file"]);
         let names: Vec<&str> = SHIMS.iter().map(|(n, _)| *n).collect();
-        assert_eq!(names, vec!["spath", "senv", "slink", "shttp", "sai", "ssearch", "stask", "sfile"]);
+        assert_eq!(names, vec!["spath", "senv", "slink", "shttp", "sai", "stask", "sfile"]);
     }
 
     #[cfg(windows)]

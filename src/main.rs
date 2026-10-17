@@ -27,7 +27,7 @@ use std::process::ExitCode;
     name = "sys",
     version = concat!(env!("CARGO_PKG_VERSION"), " (Made by Gary-china)"),
     about = "System PATH & environment manager + httpie-compatible HTTP client (Windows / Ubuntu)",
-    long_about = "sys manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, runs web searches through the Bocha AI API (config `search` section), probes domains / URLs read from a file (`sys net`, response-time / JSON / plain-text checks), installs command shims (spath/senv/slink/shttp/sai/stask/ssearch/sfile), and ships an httpie-compatible HTTP client.
+    long_about = "sys manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, probes domains / URLs read from a file (`sys net`, response-time / JSON / plain-text checks), installs command shims (spath/senv/slink/shttp/sai/stask/sfile), and ships an httpie-compatible HTTP client.
 
 Examples:
   sys path list
@@ -48,7 +48,6 @@ Examples:
   sys ai info balance minimax
   sys ai info sale-price agnes
   sys ai info list-model agnes
-  sys search \"今天的头条新闻\"
   sys net -i urls.txt -t domain
   sys net -i urls.txt -t test -o ok.txt
   sys task list
@@ -99,8 +98,6 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     Http(HttpArgs),
     /// Query AI model info (DataLearner), provider info (models.dev), inspect the config (info), chat with configured providers
     Ai(AiArgs),
-    /// Web search via the configured Bocha AI API (web-search; --ai uses ai-search)
-    Search(SearchArgs),
     /// Probe domains / URLs read from a file: -i FILE [-t domain|tv|file|test] [-o FILE] [--timeout SECONDS]
     Net(NetArgs),
     /// Query and kill processes (list PID/name/path; kill by PID or name; no args lists all)
@@ -115,7 +112,7 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     /// (alias `dasel`): `sys data [SELECTOR | 'PATH = VALUE'] [-f FILE] [-i FMT] [-o FMT] [-w FILE] [--compact] [--root]`
     #[command(alias = "dasel")]
     Data(DataArgs),
-    /// Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask/ssearch/sfile)
+    /// Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask/sfile)
     Short(ShortArgs),
 }
 
@@ -750,46 +747,6 @@ struct ShortArgs {
 }
 
 #[derive(Args)]
-struct SearchArgs {
-    /// The search query (multiple words are joined with spaces; when omitted, stdin is read when piped)
-    #[arg(value_name = "QUERY")]
-    query: Vec<String>,
-    /// Time filter: noLimit (default) | oneDay | oneWeek | oneMonth | oneYear | YYYY-MM-DD | YYYY-MM-DD..YYYY-MM-DD (official `freshness` param)
-    #[arg(long, value_name = "VALUE")]
-    freshness: Option<String>,
-    /// Include AI-generated summaries in each result (official `summary` param)
-    #[arg(long)]
-    summary: bool,
-    /// Number of results to return (official `count` param, 1-50, default 10)
-    #[arg(long, value_name = "N", default_value_t = 10)]
-    count: u32,
-    /// Page number of the results (official `page` param, default 1)
-    #[arg(long, value_name = "N", default_value_t = 1)]
-    page: u32,
-    /// Only return results from these domains (official `include_domains` param, repeatable)
-    #[arg(long = "include-domains", value_name = "DOMAIN")]
-    include_domains: Vec<String>,
-    /// Exclude results from these domains (official `exclude_domains` param, repeatable)
-    #[arg(long = "exclude-domains", value_name = "DOMAIN")]
-    exclude_domains: Vec<String>,
-    /// Use the advanced AI search endpoint (official `POST /v1/ai-search`): structured modal cards plus an AI-generated answer
-    #[arg(long)]
-    ai: bool,
-    /// Do not request the AI-generated answer (official `answer: false`; only with --ai)
-    #[arg(long, requires = "ai")]
-    no_answer: bool,
-    /// Config file path (default: ~/.sysenv/config.yaml)
-    #[arg(short = 'c', long, value_name = "FILE")]
-    config: Option<PathBuf>,
-    /// Print the raw JSON response instead of the formatted view
-    #[arg(long)]
-    json: bool,
-    /// Print the actual HTTP request (method/URL/headers/body) and response (status/headers/body)
-    #[arg(long)]
-    debug: bool,
-}
-
-#[derive(Args)]
 struct HttpArgs {
     /// Print parameter descriptions and examples, then exit (use `sys help http` for clap help)
     #[arg(long)]
@@ -885,7 +842,6 @@ fn main() -> ExitCode {
         Cmd::Link(l) => run_link(l).map(|_| 0),
         Cmd::Http(h) => run_http(h),
         Cmd::Ai(a) => run_ai(a).map(|_| 0),
-        Cmd::Search(s) => run_search(s).map(|_| 0),
         Cmd::Net(n) => run_net(n).map(|_| 0),
         Cmd::File(f) => file::cmd_file(
             &f.args,
@@ -1078,23 +1034,6 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
 
 fn run_short(s: ShortArgs) -> anyhow::Result<()> {
     short::cmd_short(s.dir, s.force, s.temporary)
-}
-
-fn run_search(s: SearchArgs) -> anyhow::Result<()> {
-    chat::cmd_search(
-        &s.query,
-        s.freshness.as_deref(),
-        s.summary,
-        s.count,
-        s.page,
-        &s.include_domains,
-        &s.exclude_domains,
-        s.config.as_deref(),
-        s.json,
-        s.debug,
-        s.ai,
-        s.no_answer,
-    )
 }
 
 fn run_net(n: NetArgs) -> anyhow::Result<()> {

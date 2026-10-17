@@ -2,6 +2,18 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.5.11（2026-10-17）
+
+### 移除
+- **`sys search` 子命令整体删除**（联网搜索，博查 Bocha AI Web/AI Search API）。删除 `Cmd::Search` / `SearchArgs` / 分发与帮助文本；chat.rs 移除 `Config.search` 与 `SearchKey`、配置 `search:` 段解析、Bocha 全部代码（10 个 bocha_* 函数 + 2 个端点常量）、`cmd_search` 与 8 项测试；short.rs 移除 `ssearch` 垫片（8 → 7）
+- 本机已安装的 `ssearch.cmd` 不主动清理（发布约定不更新 short），重跑 `sys short` 后消失
+
+### 变更
+- 版本 0.5.10 -> 0.5.11；README（中 / 英）删除 search 特性行、`5.6/5.3 网络搜索` 章节与垫片表格 ssearch 行（后续章节重编号；垫片说明更新为七种 + 示例数字 6 → 7）
+- `cargo test --bin sys` 308 -> 300 项全绿
+
+---
+
 ## v0.5.10（2026-10-17）
 
 ### 移除

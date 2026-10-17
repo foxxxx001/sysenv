@@ -14,11 +14,9 @@
 
 * **AI 模型查询**：从 models.dev 按名称爬取模型 / Provider 信息
 
-* **联网搜索**：`sys search` 接入博查 AI 网页搜索 API（`api.bochaai.com/v1/web-search`），参数与官网接口一致；`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡
-
 * **httpie 兼容 HTTP 客户端**：参数与 httpie 保持一致
 
-* **快捷命令垫片**：一键生成 `spath / senv / slink / shttp / sai / ssearch / stask / sfile` 短命令
+* **快捷命令垫片**：一键生成 `spath / senv / slink / shttp / sai / stask / sfile` 短命令
 
 * **日志查看**：`sys log` 彩色 less 式日志查看器——解析 Nginx / Linux / Windows / Log4j 等常见日志，时间橙色、级别渐变（info 及以下绿、warning 起红）、app 深黄；`--level` 过滤、`--search` 搜索（n/u 跳转）、`--line` / `--newer` 定点、`-f` 追踪文件
 
@@ -35,9 +33,8 @@ Commands:
   link   Link a file into a PATH directory so it runs from anywhere
   http   httpie-compatible HTTP client: http [flags] [METHOD] URL [ITEM...]
   ai     Query the models.dev database of AI models & providers
-  search Web search via the configured Bocha AI API (web-search; --ai uses ai-search)
   task   Query and kill processes (list PID/name/path; kill by PID or name)
-  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask/sfile)
+  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask/sfile)
   data   Query / modify / convert structured data (JSON/YAML/TOML/CSV/MD), dasel-compatible
   log    Colored less-style log viewer: parse timestamps/levels/app markers, filters, search, -f follow
 ```
@@ -60,11 +57,10 @@ Commands:
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
 | 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin（带扩展名如 `me.txt` 则显示文件，引号包裹强制搜索）；2 参目录树文本/源码搜索（`-e` / `-i` / `-t` / `-w` / `-c` / `-n` 行号）；3 参 OLD NEW PATH 就地替换；`-l` 统计行数（文件 / stdin / 匹配行）；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件；`-md5 FILE [MD5]` / `-sha FILE [SHA1]` 哈希与比对 |
 | 数据查询转换  | `data` / `dasel`     | dasel 兼容：选择器查询 `a.b[0]` / `list[*]` / `m["中文键"]`；`PATH = VALUE` 修改（`= null` 删除，`+=/-=/*=/=` 运算）；**函数表达式** `list.filter(谓词)` / `list.remove(谓词)` / `search(谓词)` / `name.endsWith("x")`（谓词语法：`$this` / `$key`、字段路径、`== != > >= < <= && || !`、`contains / startsWith / endsWith / indexOf / has`，示例 `sys data 'sites.filter(type==1)'`）；**`--depth N`**（默认 1）删除层级大于 N 的节点；JSON/YAML/TOML/CSV/MD 五格式互转；`-f` 读文件（后缀定格式，`-i` 覆盖）、`-u URL` GET 拉取（默认 json）、`-w` 写回、`--root` / `--compact`；**tab 缩进 YAML 自动归一、中文 round-trip 不乱码** |
-| 联网搜索      | `search`             | 博查 AI 网页搜索 API（`POST api.bochaai.com/v1/web-search`）：`--freshness`（时间过滤）/ `--summary`（AI 摘要）/ `--count`（1-50）/ `--page` / `--include-domains` / `--exclude-domains`（域名白黑名单），参数与官网接口一致；key 取自配置 `search` 段；`--json` 原始响应 / `--debug` 请求与响应。`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡（`--no-answer` 关闭 AI 答案） |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
 | 网络探测      | `net`                | 从文件批量读取 http(s) 地址并探测：`-i` 读文件（`#` 注释行跳过、每行多个地址、地址截取到空格/标点）；`-t domain`（默认，连续 3 次 GET 取平均响应时间，全部测完按平均时间升序打印）/ `-t tv`（响应体须为 JSON，支持 `--sort` 统计排序；旧名 `json`）/ `-t tvs`（兼容 tv 与聚合两种 JSON：单仓 `.sites` / 多仓 `.urls` 分组输出）/ `-t file`（响应体须为普通文本）/ `-t test`（只探测可访问性，不可访问的屏幕打印错误并从源文件删除，`-o` 输出清理后的源文件行）/ `-t info`（用 `-n` 域名查 RDAP 注册信息，查不到逐层回退上层域名）；tv/file 模式每测完一个即打印 url/可用性/状态码/响应时间/格式，`-o` 把检测成功的 url 写入文件（一行一个）；`--timeout` 单次请求超时 |
 | 日志查看      | `log`                | 彩色 less 式日志查看器：解析 Nginx / Linux / Windows / Log4j 等常见日志——**时间**（ISO/斜杠/nginx access/syslog/US 多种格式，行首或行中）橙色显示；**级别**（trace→info 渐浅绿、warning→error→fatal 渐深红）渐变着色；**app 标志**深黄；`--level` 按级别过滤（warn==warning、err==error）；`--search` 关键字搜索（行号 + 反显，交互下 n/u 循环跳转）；`--line N` 从第 N 行后解析（保留原始行号）；`--newer TIME` 只显示该时间之后的日志；`-f` 追踪文件变化滚动展示（150ms 轮询，截断/轮转自动重读）；TTY 下 less 式交互（PageUp/PageDown/↑/↓/Home/End/g/G/q），管道输出纯文本无 ANSI |
-| 快捷垫片      | `short`              | 一键安装八种短命令（spath/senv/slink/shttp/sai/ssearch/stask/sfile）；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
+| 快捷垫片      | `short`              | 一键安装七种短命令（spath/senv/slink/shttp/sai/stask/sfile）；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
 
 
 
@@ -486,44 +482,7 @@ sys ai config trae --update              # 备份默认 trae_cli.yaml → 合并
 sys ai config workbuddy --update -f ~/.workbuddy/models.json   # 指定文件更新
 ```
 
-#### 5.6 网络搜索（`search`）
-
-通过**博查 AI 网页搜索 API**（`POST https://api.bochaai.com/v1/web-search`，Bearer 鉴权）提供联网搜索能力，**请求参数与官网接口完全一致**。
-
-* **API key**：读取配置顶层 `search:` 段（默认 `~/.sysenv/config.yaml`，`-c/--config` 覆盖），首个 `name: bochaai` 条目生效，未配置时明确报错。示例：
-
-  ```yaml
-  search:
-    - name: bochaai
-      key: sk-xxxxx
-  ```
-
-* **参数（与官网一致）**：
-  * `query`：搜索词（位置参数，多词自动空格连接；无参数且 stdin 为管道时读取 stdin）
-  * `--ai`：切换到 **AI Search API**（`POST /v1/ai-search`）——在网页搜索基础上额外返回垂域结构化模态卡（天气/百科/日历/股票等）与 **AI 实时生成的答案**（`answer` 默认开启；`--no-answer` 关闭，仅可与 `--ai` 同用；`stream` 固定关闭）
-  * `--freshness <VALUE>`：时间过滤 —— `noLimit`（默认）/ `oneDay` / `oneWeek` / `oneMonth` / `oneYear` / `YYYY-MM-DD` / `YYYY-MM-DD..YYYY-MM-DD`
-  * `--summary`：Web Search 模式下返回 AI 摘要并附带每条结果的摘要 / 站点 / 发布时间（AI Search 默认附带）
-  * `--count <N>`：返回条数（1-50，默认 10）
-  * `--page <N>`：页码（默认 1）
-  * `--include-domains <D>`：只返回这些域名的结果（可重复）
-  * `--exclude-domains <D>`：排除这些域名的结果（可重复）
-  * `--json`：打印原始 JSON 响应；`--debug`：打印实际 HTTP 请求与响应
-
-```
-sys search "2026年诺贝尔物理学奖"                     # 默认 10 条，标题 + 链接
-sys search 深圳 今天 天气 --summary --count 5        # 5 条并带 AI 摘要 / 站点 / 时间
-sys search "rust 2026" --freshness oneMonth          # 只搜最近一个月
-sys search "cargo 教程" --include-domains rust-lang.org docs.rs   # 只从指定站点搜
-sys search "期货 行情" --exclude-domains baidu.com --json          # 排除站点 + 原始 JSON
-echo "今天有什么热门新闻" | sys search               # stdin 管道查询
-sys search "杭州天气" --ai                           # AI Search：AI 答案 + 天气卡 + 参考网页
-sys search "深圳 买房 政策" --ai --no-answer --count 5   # AI Search 但不要 AI 答案
-ssearch "五一 放假 安排"                                 # ssearch 垫片等价于 sys search
-```
-
-> 注意：**AI Search 与 Web Search 是博查的独立套餐**，key 需在开放平台分别开通；未开通 AI Search 包时 `--ai` 会返回 403（`You do not have enough money or package quota`）。
-
-#### 5.7 文本搜索与替换（`file`）
+#### 5.6 文本搜索与替换（`file`）
 
 fd/sd 风格：搜索 stdin 或目录树中的文本/源码文件，或就地替换字符串。匹配在 Unicode 字符层进行（`-i` 逐字符大小写折叠，中文等非 ASCII 同样正确）。
 
@@ -729,18 +688,17 @@ sys http --verify no https://self-signed.example  # 跳过证书校验
 | `slink` | `sys link` |
 | `shttp` | `sys http` |
 | `sai`   | `sys ai`   |
-| `ssearch` | `sys search` |
 | `stask` | `sys task` |
 | `sfile` | `sys file` |
 
-> 注：`data` / `dasel` 与 `log` 子命令**不生成垫片**（无 `sdata` / `slog`），按全名使用；`con` 子命令已删除（v0.5.10，由 `data` 取代）。
+> 注：`data` / `dasel` 与 `log` 子命令**不生成垫片**（无 `sdata` / `slog`），按全名使用；`con` 子命令已删除（v0.5.10，由 `data` 取代），`search` 子命令已删除（v0.5.11）。
 
 ### 示例
 
 
 
 ```
-sys short              # 安装全部 6 个垫片到托管目录并自动加入 PATH
+sys short              # 安装全部 7 个垫片到托管目录并自动加入 PATH
 sys short --dir ~/bin  # 指定安装目录
 sys short -f           # 覆盖已存在的垫片
 sys short --temporary  # 不持久化 PATH，只打印可粘贴的片段

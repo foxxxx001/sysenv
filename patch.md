@@ -2,6 +2,20 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.5.11（2026-10-17）
+
+### 移除
+- **`sys search` 子命令整体删除**（联网搜索，博查 Bocha AI Web/AI Search API）。删除范围：
+  - main.rs：`Cmd::Search` 变体、`SearchArgs` 结构（query / freshness / summary / count / page / include-domains / exclude-domains / ai / no-answer / config / json / debug）、分发分支、`run_search`、long_about 与 Examples 中的 search 引用、short 帮助文本中的 ssearch
+  - chat.rs：`Config.search` 字段与 `SearchKey` 结构、配置解析中 `search:` 段读取、Bocha 全部代码（`BOCHA_API` / `BOCHA_AI_API` 常量、`bocha_request` / `bocha_body_common` / `bocha_search_value` / `bocha_ai_search_value` / `bocha_result_items` / `bocha_ai_answer` / `bocha_result_rows` / `bocha_result_text` / `bocha_search` / `bocha_ai_search`）、`cmd_search`；测试移除 8 项（`config_parses_search_section` + 7 项 bocha_*）；2 处测试 Config 构造同步去 `search` 字段
+  - short.rs：`ssearch` 垫片移除（SHIMS 8 → 7：spath/senv/slink/shttp/sai/stask/sfile）
+- 本机已安装的 `ssearch.cmd` 垫片不主动清理（按发布约定不更新 short），再次执行 `sys short` 后自动消失
+
+### 测试
+- `cargo test --bin sys` 308 -> 300 项全绿（移除 8 项 search 测试；short 断言更新为 7 项垫片）
+
+---
+
 ## v0.5.10（2026-10-17）
 
 ### 移除

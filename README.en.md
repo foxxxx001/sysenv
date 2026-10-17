@@ -7,9 +7,8 @@ A cross-platform (Windows / Ubuntu) system Http client & AI model lookup & PATH 
 - **Link into PATH**: put any file into a PATH directory so it can be run from anywhere
 - **Environment variables**: read / set / unset / list system variables, optionally persisted or session-only
 - **AI model lookup**: query model & provider information from models.dev by name
-- **Web search**: `sys search` runs web searches through the Bocha AI API (`api.bochaai.com/v1/web-search`) with official request parameters; `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards
 - **httpie-compatible HTTP client**: flags follow httpie conventions
-- **Shortcut shims**: install `spath / senv / slink / shttp / sai / ssearch / stask / sfile` short commands with one command
+- **Shortcut shims**: install `spath / senv / slink / shttp / sai / stask / sfile` short commands with one command
 - **Log viewer**: `sys log` — a colored less-style log viewer that parses Nginx / Linux / Windows / Log4j-style logs: timestamps in orange, level gradient (green for info and below, red from warning up), app markers in dark yellow; `--level` filter, `--search` (n/u jump), `--line` / `--newer` positioning, `-f` follow
 
 ```
@@ -23,9 +22,8 @@ Commands:
   link   Link a file into a PATH directory so it runs from anywhere
   http   httpie-compatible HTTP client: http [flags] [METHOD] URL [ITEM...]
   ai     Query the models.dev database of AI models & providers
-  search Web search via the configured Bocha AI API (web-search; --ai uses ai-search)
   task   Query and kill processes (list PID/name/path; kill by PID or name)
-  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask/sfile)
+  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask/sfile)
   data   Query / modify / convert structured data (JSON/YAML/TOML/CSV/MD), dasel-compatible
   log    Colored less-style log viewer: parse timestamps/levels/app markers, filters, search, -f follow
 ```
@@ -42,13 +40,12 @@ Commands:
 | Environment variables | `env` | get / set / unset / list; persisted by default; `--temporary` for the current shell only; `machine` scope |
 | AI model lookup | `ai` | `ai model` (models.dev: 226 providers, 8000+ models; 24 h cache; canonical preference; no args lists all; `--date` / `--open` / `--search / --list / --json / --refresh`); `ai cn-model` (datalearner: ~1015 models; `--date` filters by published); `ai info` (local config lookup: `info provider` name/api_base/api_key, `info model` `{provider}:{name}` list, `info balance` official balance via api_key, `info sale-price` official pricing page scrape, `info list-model` live model list from the provider's own models API); `ai price` (models.dev prices, `--src openrouter` switches to the openrouter.ai catalogue, see the command reference); `ai chat` (multi-provider weighted round-robin chat; `-m` overrides the model, `--list-model` / `--list-provider`; messages truncated to the configured max_input_tokens; capability fields read-only from the config by default (never queries models.dev), `--update` explicitly fills missing max_input_tokens / type from models.dev and persists them; OpenAI / Anthropic compatible); `ai server` (`sys ai server [ADDR]` serves an OpenAI-compatible API — `/v1/chat/completions` + `/v1/models`, default 127.0.0.1:10000, bare port/IP allowed; `--help` reports the server status and prints the configured providers/models) |
 | Process management | `task` | no args lists all processes; list (PID / name / path, fuzzy name match); `-o` shows the process using a port; kill by PID or name; `-f` force |
-| Web search | `search` | Bocha AI web search API (`POST api.bochaai.com/v1/web-search`): `--freshness` (time filter) / `--summary` (AI summaries) / `--count` (1-50) / `--page` / `--include-domains` / `--exclude-domains`, official parameters; key from the config `search` section; `--json` raw response / `--debug` request & response. `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards (`--no-answer` disables the AI answer) |
 | Network probing | `net` | batch-probe http(s) addresses from a file: `-i` reads the file (`#` comment lines skipped, several addresses per line, each address runs to the next whitespace with trailing punctuation trimmed); `-t domain` (default — 3 GET probes per address, average response time, printed sorted by average when all are done) / `-t tv` (body must parse as JSON, analyzed with `--sort`; old name `json`) / `-t tvs` (accepts both tv and aggregator JSON: single `.sites` / multi `.urls` groups) / `-t file` (body must be plain text) / `-t test` (probe reachability only — unreachable addresses are reported and removed from the source lines, `-o` writes the cleaned source) / `-t info` (query RDAP registration info for each `-n` domain, falling back to the parent domain when missing); tv/file modes print url / reachability / status / response time / format as each probe finishes and `-o` writes the passed urls (reachable + format matched) to a file, one per line; `--timeout` per-request timeout |
 | Text search & replace | `file` | fd/sd-style: 1 arg searches stdin (an extension like `me.txt` displays that file; quotes force search); 2 args search a directory tree of text/source files (`-e` / `-i` / `-t` / `-w` / `-c`); 3 args OLD NEW PATH replace in place; `-S` size / `--newer` / `--older` time / `-d` depth filters; lists files when no PATTERN is given |
 | Data query / modify | `data` / `dasel` | dasel-compatible: selector reads `a.b[0]` / `list[*]` / `m["中文键"]`; `PATH = VALUE` writes (`= null` deletes, `+=` / `-=` / `*=` / `/=` ops); function expressions `list.filter(pred)` / `list.remove(pred)` / `search(pred)` / `name.endsWith("x")` (predicate language: `$this` / `$key`, field paths, `== != > >= < <= && || !`, `contains` / `startsWith` / `endsWith` / `indexOf` / `has`; e.g. `sys data 'sites.filter(type==1)'`); `--depth N` (default 1) removes nodes deeper than N levels; JSON / YAML / TOML / CSV / MD interconversion; `-f` file (extension decides the format, `-i` overrides), `-u URL` GET fetch (default json), `-w` write back, `--root` / `--compact`; tab-indented YAML normalised, CJK round-trips cleanly; replaces the removed `con` command |
 | Log viewer | `log` | colored less-style log viewer: parses Nginx / Linux / Windows / Log4j-style logs — **timestamps** (ISO / slash / nginx access / syslog / US formats, start-of-line or mid-line) in orange; **levels** (trace→info light-to-strong green, warning→error→fatal escalating red) as a gradient; **app markers** in dark yellow; `--level` filters by level (warn==warning, err==error); `--search` keyword search (line numbers + reverse highlight, n/u wrap-jump in interactive mode); `--line N` parses from line N onward (original numbers kept); `--newer TIME` shows entries at/after the given time; `-f` follows file growth with scrolling (150 ms polling, auto re-read on truncation/rotation); TTY gets a less-style interactive view (PageUp/PageDown/↑/↓/Home/End/g/G/q), pipes get plain text without ANSI |
 | HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
-| Shortcut shims | `short` | installs eight short commands at once (spath/senv/slink/shttp/sai/ssearch/stask/sfile); Windows `.cmd` / Linux sh scripts; auto PATH registration |
+| Shortcut shims | `short` | installs seven short commands at once (spath/senv/slink/shttp/sai/stask/sfile); Windows `.cmd` / Linux sh scripts; auto PATH registration |
 
 ---
 
@@ -269,33 +266,7 @@ sys ai server --help                   # server status: address/port + configure
 - `sys ai server [ADDR]`: **serves the configured providers as an OpenAI-compatible API** (default `127.0.0.1:10000`; `-c/--config` selects the config file). Exposes `POST /v1/chat/completions` (non-streaming passthrough and SSE streaming via chunked transfer) and `GET /v1/models` (every configured model, id `{provider}:{model}`). The request `model` follows the same selector rules as chat (`provider:model` / `provider:*` / bare model name / `auto` = config default). Only `type: openai` providers are served; anthropic targets get a clear error. The address may be a bare port (`8080` → host default) or a bare IP (`0.0.0.0` → port default).
 - `sys ai server --help`: **queries the server status** — probes that address (GET /v1/models, 2 s timeout) to see whether a server is already running: if so it prints the current address/port, otherwise it says `server is NOT running`; in both cases it then prints the configured info grouped by provider — one provider line (name/api_base) followed by that provider's indented model lines (`{provider}:{name}`).
 
-#### 5.3 Web search (`search`)
-
-Web search through the **Bocha AI Web Search API** (`POST https://api.bochaai.com/v1/web-search`, Bearer auth). All request parameters follow the official interface.
-
-- **API key**: read from the top-level `search` section of the config (default `~/.sysenv/config.yaml`, `-c/--config` overrides); the first `name: bochaai` entry wins:
-  ```yaml
-  search:
-    - name: bochaai
-      key: sk-xxxxx
-  ```
-- **Parameters (official)**: `query` (positional, joined with spaces; stdin is read when piped); `--ai` switches to the AI Search API (`POST /v1/ai-search`) — structured modal cards plus an AI-generated answer (official `answer` param, on by default; `--no-answer` turns it off; `stream` stays off); `--freshness` (`noLimit` default / `oneDay` / `oneWeek` / `oneMonth` / `oneYear` / `YYYY-MM-DD` / range); `--summary` (AI summary + per-result snippet / site / publish time on Web Search; AI Search always shows them); `--count` (1-50, default 10); `--page` (default 1); `--include-domains` / `--exclude-domains` (repeatable domain filters); `--json` (raw response); `--debug` (actual request & response)
-
-```
-sys search "2026 Nobel Prize in Physics"            # default 10 results: title + link
-sys search Shenzhen weather today --summary --count 5
-sys search "rust 2026" --freshness oneMonth
-sys search "cargo tutorial" --include-domains rust-lang.org docs.rs
-sys search "futures price" --exclude-domains baidu.com --json
-echo "today's hot news" | sys search                # pipe via stdin
-sys search "Hangzhou weather" --ai                  # AI Search: AI answer + weather card + sources
-sys search "housing policy" --ai --no-answer --count 5
-ssearch "holiday schedule"                              # ssearch shim == sys search
-```
-
-> Note: **AI Search and Web Search are separate Bocha packages**. The key needs an AI Search package on the open platform; without it `--ai` returns 403 (`You do not have enough money or package quota`).
-
-#### 5.4 Local config lookup (`ai info`)
+#### 5.3 Local config lookup (`ai info`)
 
 Inspects the local config file (default `~/.sysenv/config.yaml`, `-c/--config` overrides) and the models.dev model prices. **With no FIELD argument it prints the provider table (name/api_base/api_key/DOCS/CONSOLE) and the full model list (`{provider}:{name}`) together.**
 
@@ -328,7 +299,7 @@ sys ai info list-model agnes             # live model list from agnes' own model
 sys ai info list-model anthropic -o json # anthropic: /v1/models, JSON array output
 ```
 
-#### 5.5 Config export / apply (`ai config`)
+#### 5.4 Config export / apply (`ai config`)
 
 Exports the local config's `clients` section into another tool's format, or applies it straight to that software's config file:
 
@@ -355,7 +326,7 @@ sys ai config trae --update              # back up default trae_cli.yaml → mer
 sys ai config workbuddy --update -f ~/.workbuddy/models.json   # update a specific file
 ```
 
-#### 5.6 Text search & replacement (`file`)
+#### 5.5 Text search & replacement (`file`)
 
 fd/sd-style: search stdin or a directory tree of text/source files, or replace a string in place. Matching runs on the Unicode char level (`-i` folds case per char, so non-ASCII text works too).
 
@@ -523,16 +494,15 @@ sys http --verify no https://self-signed.example  # skip certificate verificatio
 | `slink` | `sys link` |
 | `shttp` | `sys http` |
 | `sai` | `sys ai` |
-| `ssearch` | `sys search` |
 | `stask` | `sys task` |
 | `sfile` | `sys file` |
 
-> Note: the `data` / `dasel` and `log` subcommands have **no shims** (no `sdata` / `slog`); use them by their full names. The `con` subcommand was removed in v0.5.10 (superseded by `data`).
+> Note: the `data` / `dasel` and `log` subcommands have **no shims** (no `sdata` / `slog`); use them by their full names. The `con` subcommand was removed in v0.5.10 (superseded by `data`), the `search` subcommand in v0.5.11.
 
 ### Examples
 
 ```
-sys short              # install all 6 shims into the managed dir and register PATH
+sys short              # install all 7 shims into the managed dir and register PATH
 sys short --dir ~/bin  # custom directory
 sys short -f           # overwrite existing shims
 sys short --temporary  # no PATH persistence, print a paste-ready snippet
