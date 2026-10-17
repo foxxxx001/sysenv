@@ -27,7 +27,7 @@ use std::process::ExitCode;
     name = "sys",
     version = concat!(env!("CARGO_PKG_VERSION"), " (Made by Gary-china)"),
     about = "System PATH & environment manager + httpie-compatible HTTP client (Windows / Ubuntu)",
-    long_about = "sys manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, runs web searches through the Bocha AI API (config `search` section), probes domains / URLs read from a file (`sys net`, response-time / JSON / plain-text checks), installs command shims (spath/senv/slink/shttp/sai/stask/ssearch/sfile/scon), and ships an httpie-compatible HTTP client.
+    long_about = "sys manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, runs web searches through the Bocha AI API (config `search` section), probes domains / URLs read from a file (`sys net`, response-time / JSON / plain-text checks), installs command shims (spath/senv/slink/shttp/sai/stask/ssearch/sfile), and ships an httpie-compatible HTTP client.
 
 Examples:
   sys path list
@@ -111,13 +111,11 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     Log(LogArgs),
     /// fd/sd-style text search and replacement: search stdin or a directory tree, or replace a string in place
     File(FileArgs),
-    /// Convert between json / csv / md / yaml (stdin or -file; -i input; -o output; -out writes a file)
-    Con(ConArgs),
     /// Query / modify / convert structured data (JSON / YAML / TOML / CSV / MD), dasel-compatible
     /// (alias `dasel`): `sys data [SELECTOR | 'PATH = VALUE'] [-f FILE] [-i FMT] [-o FMT] [-w FILE] [--compact] [--root]`
     #[command(alias = "dasel")]
     Data(DataArgs),
-    /// Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask/ssearch/sfile/scon)
+    /// Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask/ssearch/sfile)
     Short(ShortArgs),
 }
 
@@ -670,7 +668,7 @@ struct NetArgs {
 struct FileArgs {
     /// PATTERN, or PATTERN PATH, or OLD NEW PATH (path = file or directory);
     /// or -md5/-sha FILE [EXPECTED] to hash a file (single-dash forms are
-    /// absorbed into ARGS, like `con`'s -file/-out)
+    /// absorbed into ARGS, like `data`'s raw tokens)
     #[arg(value_name = "ARGS", allow_hyphen_values = true)]
     args: Vec<String>,
     /// Only search files with this extension (repeatable; leading dot optional, e.g. -e py -e md)
@@ -711,13 +709,6 @@ struct FileArgs {
     /// position (a trailing -n is re-scanned from ARGS, like -l / -md5 / -sha)
     #[arg(short = 'n', long)]
     line_numbers: bool,
-}
-
-#[derive(Args)]
-struct ConArgs {
-    /// Raw tokens, custom-parsed for single-dash long flags: -file F / -i FMT / -o FMT / -out F
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    raw: Vec<String>,
 }
 
 #[derive(Args)]
@@ -911,7 +902,6 @@ fn main() -> ExitCode {
             f.line_numbers,
         )
         .map(|_| 0),
-        Cmd::Con(c) => convert::cmd_con(&c.raw).map(|_| 0),
         Cmd::Data(d) => dasel::cmd_data(
             d.expr.as_deref(),
             d.file.as_deref().map(|p| p.to_str().unwrap_or_default()),

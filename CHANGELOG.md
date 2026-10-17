@@ -2,6 +2,18 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.5.10（2026-10-17）
+
+### 移除
+- **`sys con` 子命令整体删除**：格式转换由 `sys data`（`dasel`）完全覆盖（JSON / YAML / TOML / CSV / MD，`-i` / `-o` / `-f` / `-w`）。删除 `Cmd::Con` / `ConArgs` / 分发与帮助文本；convert.rs 移除 con 专属代码（`Format` / `detect_format` / `parse` / `parse_yaml_value` / `parse_args` / `CON_HELP` / `cmd_con`）与 4 项测试，**保留** dasel 共享解析 / 序列化函数并改写模块文档；short.rs 移除 `scon` 垫片（9 → 8）
+- 本机已安装的 `scon.cmd` 不主动清理（发布约定不更新 short），重跑 `sys short` 后消失
+
+### 变更
+- 版本 0.5.9 -> 0.5.10；README（中 / 英）删除 con 特性行、`5.7/5.8 格式转换` 章节与垫片表格 scon 行（垫片说明更新为八种 + data/log 无垫片）
+- `cargo test --bin sys` 312 -> 308 项全绿
+
+---
+
 ## v0.5.9（2026-10-17）
 
 ### 新增

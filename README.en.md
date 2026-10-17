@@ -9,7 +9,7 @@ A cross-platform (Windows / Ubuntu) system Http client & AI model lookup & PATH 
 - **AI model lookup**: query model & provider information from models.dev by name
 - **Web search**: `sys search` runs web searches through the Bocha AI API (`api.bochaai.com/v1/web-search`) with official request parameters; `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards
 - **httpie-compatible HTTP client**: flags follow httpie conventions
-- **Shortcut shims**: install `spath / senv / slink / shttp / sai / ssearch / stask / sfile / scon` short commands with one command
+- **Shortcut shims**: install `spath / senv / slink / shttp / sai / ssearch / stask / sfile` short commands with one command
 - **Log viewer**: `sys log` — a colored less-style log viewer that parses Nginx / Linux / Windows / Log4j-style logs: timestamps in orange, level gradient (green for info and below, red from warning up), app markers in dark yellow; `--level` filter, `--search` (n/u jump), `--line` / `--newer` positioning, `-f` follow
 
 ```
@@ -25,7 +25,7 @@ Commands:
   ai     Query the models.dev database of AI models & providers
   search Web search via the configured Bocha AI API (web-search; --ai uses ai-search)
   task   Query and kill processes (list PID/name/path; kill by PID or name)
-  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon)
+  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask/sfile)
   data   Query / modify / convert structured data (JSON/YAML/TOML/CSV/MD), dasel-compatible
   log    Colored less-style log viewer: parse timestamps/levels/app markers, filters, search, -f follow
 ```
@@ -45,11 +45,10 @@ Commands:
 | Web search | `search` | Bocha AI web search API (`POST api.bochaai.com/v1/web-search`): `--freshness` (time filter) / `--summary` (AI summaries) / `--count` (1-50) / `--page` / `--include-domains` / `--exclude-domains`, official parameters; key from the config `search` section; `--json` raw response / `--debug` request & response. `--ai` switches to the AI Search API (`/v1/ai-search`) returning an AI answer and structured modal cards (`--no-answer` disables the AI answer) |
 | Network probing | `net` | batch-probe http(s) addresses from a file: `-i` reads the file (`#` comment lines skipped, several addresses per line, each address runs to the next whitespace with trailing punctuation trimmed); `-t domain` (default — 3 GET probes per address, average response time, printed sorted by average when all are done) / `-t tv` (body must parse as JSON, analyzed with `--sort`; old name `json`) / `-t tvs` (accepts both tv and aggregator JSON: single `.sites` / multi `.urls` groups) / `-t file` (body must be plain text) / `-t test` (probe reachability only — unreachable addresses are reported and removed from the source lines, `-o` writes the cleaned source) / `-t info` (query RDAP registration info for each `-n` domain, falling back to the parent domain when missing); tv/file modes print url / reachability / status / response time / format as each probe finishes and `-o` writes the passed urls (reachable + format matched) to a file, one per line; `--timeout` per-request timeout |
 | Text search & replace | `file` | fd/sd-style: 1 arg searches stdin (an extension like `me.txt` displays that file; quotes force search); 2 args search a directory tree of text/source files (`-e` / `-i` / `-t` / `-w` / `-c`); 3 args OLD NEW PATH replace in place; `-S` size / `--newer` / `--older` time / `-d` depth filters; lists files when no PATTERN is given |
-| Format conversion | `con` | json / csv / md / yaml interconversion: stdin by default (`cat a.json | sys con`), `-file` reads a file, `-i` input format, `-o` output format, `-out` writes a file; tables map to/from object arrays (type inference + escaping) |
-| Data query / modify | `data` / `dasel` | dasel-compatible: selector reads `a.b[0]` / `list[*]` / `m["中文键"]`; `PATH = VALUE` writes (`= null` deletes, `+=` / `-=` / `*=` / `/=` ops); function expressions `list.filter(pred)` / `list.remove(pred)` / `search(pred)` / `name.endsWith("x")` (predicate language: `$this` / `$key`, field paths, `== != > >= < <= && || !`, `contains` / `startsWith` / `endsWith` / `indexOf` / `has`; e.g. `sys data 'sites.filter(type==1)'`); `--depth N` (default 1) removes nodes deeper than N levels; JSON / YAML / TOML / CSV / MD interconversion; `-f` file (extension decides the format, `-i` overrides), `-u URL` GET fetch (default json), `-w` write back, `--root` / `--compact`; tab-indented YAML normalised, CJK round-trips cleanly |
+| Data query / modify | `data` / `dasel` | dasel-compatible: selector reads `a.b[0]` / `list[*]` / `m["中文键"]`; `PATH = VALUE` writes (`= null` deletes, `+=` / `-=` / `*=` / `/=` ops); function expressions `list.filter(pred)` / `list.remove(pred)` / `search(pred)` / `name.endsWith("x")` (predicate language: `$this` / `$key`, field paths, `== != > >= < <= && || !`, `contains` / `startsWith` / `endsWith` / `indexOf` / `has`; e.g. `sys data 'sites.filter(type==1)'`); `--depth N` (default 1) removes nodes deeper than N levels; JSON / YAML / TOML / CSV / MD interconversion; `-f` file (extension decides the format, `-i` overrides), `-u URL` GET fetch (default json), `-w` write back, `--root` / `--compact`; tab-indented YAML normalised, CJK round-trips cleanly; replaces the removed `con` command |
 | Log viewer | `log` | colored less-style log viewer: parses Nginx / Linux / Windows / Log4j-style logs — **timestamps** (ISO / slash / nginx access / syslog / US formats, start-of-line or mid-line) in orange; **levels** (trace→info light-to-strong green, warning→error→fatal escalating red) as a gradient; **app markers** in dark yellow; `--level` filters by level (warn==warning, err==error); `--search` keyword search (line numbers + reverse highlight, n/u wrap-jump in interactive mode); `--line N` parses from line N onward (original numbers kept); `--newer TIME` shows entries at/after the given time; `-f` follows file growth with scrolling (150 ms polling, auto re-read on truncation/rotation); TTY gets a less-style interactive view (PageUp/PageDown/↑/↓/Home/End/g/G/q), pipes get plain text without ANSI |
 | HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
-| Shortcut shims | `short` | installs nine short commands at once (spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon); Windows `.cmd` / Linux sh scripts; auto PATH registration |
+| Shortcut shims | `short` | installs eight short commands at once (spath/senv/slink/shttp/sai/ssearch/stask/sfile); Windows `.cmd` / Linux sh scripts; auto PATH registration |
 
 ---
 
@@ -412,26 +411,6 @@ sys file -md5 me.txt 900150983cd24fb0d6963f7d28e17f72   # compare: match / misma
 sys file -sha me.txt da39a3ee5e6b4b0d3255bfef95601890afd80709  # SHA-1 likewise
 ```
 
-#### 5.7 Format conversion (`con`)
-
-Interconvert json / csv / md / yaml. Reads stdin by default (piping: `cat a.json | sys con`) and prints to stdout; `-out` writes to a file instead.
-
-* `-file F` — read from file F (stdin when omitted; a json/csv/md/yaml extension also infers the input format)
-* `-i FMT` — input format `json | csv | md | yaml` (auto-detected from content when omitted)
-* `-o FMT` — output format `json | csv | md | yaml` (defaults to the input format, i.e. format-only display)
-* `-out F` — write the result to file F (stdout by default)
-
-Table conversions (csv / md) map to/from arrays of objects: the CSV first row is the header; Markdown tables parse header + data rows. Cells are type-inferred (null / bool / int / float / string); commas, quotes, newlines and `|` are escaped on output (`\|`). YAML parsing falls back to a tab-tolerant parser when serde_yaml fails, so real configs with tab indentation work.
-
-```
-cat a.json | sys con                        # stdin, auto-detect, print (defaults to the input format)
-sys con -file a.json -o csv                 # json -> csv (stdout)
-sys con -i csv -o json < a.csv              # csv -> json
-sys con -file a.yaml -o md -out out.md      # yaml -> markdown, write to out.md
-sys con -file config.yaml -o json           # real config (tab indentation) -> json
-type a.csv | sys con -o md                  # csv -> markdown table
-```
-
 ## 6. Process management (`task`)
 
 ### Features
@@ -547,9 +526,8 @@ sys http --verify no https://self-signed.example  # skip certificate verificatio
 | `ssearch` | `sys search` |
 | `stask` | `sys task` |
 | `sfile` | `sys file` |
-| `scon` | `sys con` |
 
-> Note: the `data` / `dasel` and `log` subcommands have **no shims** (no `sdata` / `slog`); use them by their full names.
+> Note: the `data` / `dasel` and `log` subcommands have **no shims** (no `sdata` / `slog`); use them by their full names. The `con` subcommand was removed in v0.5.10 (superseded by `data`).
 
 ### Examples
 

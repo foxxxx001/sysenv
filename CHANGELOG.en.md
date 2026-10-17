@@ -2,6 +2,18 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.5.10 (2026-10-17)
+
+### Removed
+- **`sys con` subcommand deleted**: its format conversion is fully covered by `sys data` (`dasel`) — JSON / YAML / TOML / CSV / MD via `-i` / `-o` / `-f` / `-w`. Removed `Cmd::Con` / `ConArgs` / dispatch and help text; convert.rs dropped the con-only code (`Format` / `detect_format` / `parse` / `parse_yaml_value` / `parse_args` / `CON_HELP` / `cmd_con`) and 4 tests while **keeping** the dasel-shared parse / serialize helpers (module docs rewritten); short.rs removed the `scon` shim (9 → 8)
+- Installed `scon.cmd` shims are not actively cleaned up (release convention does not touch `sys short`); they disappear after re-running `sys short`
+
+### Changed
+- version 0.5.9 -> 0.5.10; README (zh / en): con feature row, the `5.7/5.8 Format conversion` section and the `scon` shim-table row removed (shim docs updated to eight commands + no shims for data/log)
+- `cargo test --bin sys` 312 -> 308 all green
+
+---
+
 ## v0.5.9 (2026-10-17)
 
 ### Added

@@ -1,119 +1,16 @@
-//! `sys con` — JSON / CSV / Markdown / YAML conversion.
+//! Shared structured-data conversion helpers (used by `sys data` / `dasel`).
 //!
-//! Usage:
-//!   cat a.json | sys con                        # detect input format, print parsed (defaults to the input format)
-//!   sys con -file a.json -o csv                 # read file, convert to CSV (stdout)
-//!   sys con -i csv -o json < a.csv              # CSV -> JSON
-//!   sys con -file a.yaml -o md -out out.md      # YAML -> Markdown, write to out.md
-//!
-//! Input is read from stdin unless `-file` is given; the input format is
-//! auto-detected unless `-i` is given; the output format defaults to the
-//! input format unless `-o` is given. The result goes to stdout unless
-//! `-out FILE` is given.
-//!
-//! Tables (CSV / Markdown) map to/from arrays of objects.
+//! Parsing / serialization between text and `serde_json::Value` for JSON /
+//! CSV / Markdown / YAML. The standalone `sys con` command was removed in
+//! v0.5.10 — `sys data` covers the same conversions (plus TOML) with
+//! `-i` / `-o` / `-f` / `-w`.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use serde_json::{Map, Number, Value};
-use std::fs;
-use std::io::{self, Read};
-use std::path::Path;
-
-/// Supported formats.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Format {
-    Json,
-    Csv,
-    Md,
-    Yaml,
-}
-
-impl Format {
-    fn parse(s: &str) -> Result<Format> {
-        match s.to_ascii_lowercase().as_str() {
-            "json" => Ok(Format::Json),
-            "csv" => Ok(Format::Csv),
-            "md" | "markdown" => Ok(Format::Md),
-            "yaml" | "yml" => Ok(Format::Yaml),
-            other => bail!("unknown format `{other}` (expected: json | csv | md | yaml)"),
-        }
-    }
-
-    fn from_ext(path: &Path) -> Option<Format> {
-        let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-        match ext.as_str() {
-            "json" => Some(Format::Json),
-            "csv" => Some(Format::Csv),
-            "md" | "markdown" => Some(Format::Md),
-            "yaml" | "yml" => Some(Format::Yaml),
-            _ => None,
-        }
-    }
-}
-
-/// Best-effort detection of the input format from the content.
-fn detect_format(text: &str) -> Result<Format> {
-    let t = text.trim_start();
-    if t.is_empty() {
-        bail!("empty input; cannot detect the format (use -i json|csv|md|yaml)");
-    }
-    if t.starts_with('{') || t.starts_with('[') {
-        if serde_json::from_str::<Value>(text).is_ok() {
-            return Ok(Format::Json);
-        }
-        // JSON syntax is a YAML subset: a non-JSON `{`/`[` may still be YAML.
-        if serde_yaml::from_str::<Value>(text).is_ok() {
-            return Ok(Format::Yaml);
-        }
-        bail!("input starts like JSON/YAML but cannot be parsed (use -i json|yaml)");
-    }
-    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-    // Markdown table: `| a | b |` followed by a `|---|` separator row.
-    if lines.len() >= 2 && lines[0].starts_with('|') {
-        let sep: String = lines[1].chars().filter(|&c| c != '|' && c != ' ').collect();
-        if !sep.is_empty() && sep.chars().all(|c| c == '-' || c == ':') {
-            return Ok(Format::Md);
-        }
-    }
-    // CSV: a comma appears in the first non-empty line.
-    if lines.first().map(|l| l.contains(',')).unwrap_or(false) {
-        return Ok(Format::Csv);
-    }
-    // YAML: try a real parse (key: value / list items).
-    if serde_yaml::from_str::<Value>(text).is_ok() {
-        return Ok(Format::Yaml);
-    }
-    // Fallback: single-column CSV (no commas).
-    if lines.len() > 1 {
-        return Ok(Format::Csv);
-    }
-    bail!("cannot detect the input format (use -i json|csv|md|yaml)")
-}
 
 // ---------------------------------------------------------------------------
 // Parsing (text -> Value)
 // ---------------------------------------------------------------------------
-
-pub(crate) fn parse(text: &str, fmt: Format) -> Result<Value> {
-    match fmt {
-        Format::Json => serde_json::from_str(text).context("invalid JSON input"),
-        Format::Yaml => parse_yaml_value(text),
-        Format::Csv => csv_to_value(text),
-        Format::Md => md_to_value(text),
-    }
-}
-
-/// Parse YAML: strict serde_yaml first, then fall back to the project's
-/// tab-tolerant block parser (real configs use tab indentation).
-fn parse_yaml_value(text: &str) -> Result<Value> {
-    match serde_yaml::from_str::<Value>(text) {
-        Ok(v) => Ok(v),
-        Err(_) => {
-            let y = crate::chat::parse_yaml(text).context("invalid YAML input")?;
-            Ok(yval_to_json(&y))
-        }
-    }
-}
 
 /// Convert the project YAML value model to a JSON value.
 pub(crate) fn yval_to_json(v: &crate::chat::YVal) -> Value {
@@ -281,19 +178,6 @@ pub(crate) fn parse_md_row(line: &str) -> Result<Vec<String>> {
 // Serialization (Value -> text)
 // ---------------------------------------------------------------------------
 
-fn serialize(v: &Value, fmt: Format) -> Result<String> {
-    match fmt {
-        Format::Json => Ok(format!("{}\n", serde_json::to_string_pretty(v)?)),
-        Format::Yaml => {
-            let s = serde_yaml::to_string(v).context("cannot serialize YAML")?;
-            // Strip the leading "---\n" document marker for a cleaner output.
-            Ok(s.strip_prefix("---\n").unwrap_or(&s).to_string())
-        }
-        Format::Csv => value_to_csv(v),
-        Format::Md => value_to_md(v),
-    }
-}
-
 /// Object keys of an array (union in first-seen order).
 pub(crate) fn collect_keys(v: &Value) -> Result<Vec<String>> {
     let arr = match v {
@@ -403,133 +287,12 @@ pub(crate) fn value_to_md(v: &Value) -> Result<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
-/// Parse the raw token list into options.
-///
-/// Accepts single-dash long flags (`-file`, `-out`) as the user writes them,
-/// plus their double-dash / short forms:
-///   -file F | --file F | -f F
-///   -i FMT | --input FMT
-///   -o FMT | --output FMT
-///   -out F | --out F
-fn parse_args(raw: &[String]) -> Result<(Option<String>, Option<String>, Option<String>, Option<String>)> {
-    let mut file: Option<String> = None;
-    let mut input: Option<String> = None;
-    let mut output: Option<String> = None;
-    let mut out: Option<String> = None;
-    let mut i = 0;
-    let need_value = |i: &mut usize, what: &str, raw: &[String]| -> Result<String> {
-        *i += 1;
-        raw.get(*i)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("{what} requires a value"))
-    };
-    while i < raw.len() {
-        let t = raw[i].as_str();
-        match t {
-            "-file" | "--file" | "-f" => file = Some(need_value(&mut i, "-file", raw)?),
-            "-i" | "--input" => input = Some(need_value(&mut i, "-i", raw)?),
-            "-o" | "--output" => output = Some(need_value(&mut i, "-o", raw)?),
-            "-out" | "--out" => out = Some(need_value(&mut i, "-out", raw)?),
-            "-h" | "--help" => {
-                print!("{}", CON_HELP);
-                return Ok((None, None, None, None));
-            }
-            other => bail!("unknown argument `{other}` (expected -file F | -i FMT | -o FMT | -out F)"),
-        }
-        i += 1;
-    }
-    Ok((file, input, output, out))
-}
-
-const CON_HELP: &str = "Convert between json / csv / md / yaml.
-
-Usage:
-  cat a.json | sys con                    # stdin, auto-detect input, print (defaults to the input format)
-  sys con -file a.json -o csv             # read a file, convert to csv (stdout)
-  sys con -i csv -o json                  # csv from stdin -> json
-  sys con -file a.yaml -o md -out out.md  # yaml -> markdown, write to out.md
-
-Options:
-  -file F     read from F instead of stdin
-  -i FMT      input format: json | csv | md | yaml (auto-detected when omitted)
-  -o FMT      output format: json | csv | md | yaml (defaults to the input format)
-  -out F      write the result to F instead of stdout
-
-Tables (csv / md) map to/from arrays of objects.
-";
-
-pub fn cmd_con(raw: &[String]) -> Result<()> {
-    let (file, input, output, out) = parse_args(raw)?;
-    let file = file.unwrap_or_default();
-    // 1. Read the input.
-    let text = if !file.is_empty() {
-        fs::read_to_string(&file).with_context(|| format!("cannot read {}", file))?
-    } else {
-        let mut buf = String::new();
-        io::stdin().read_to_string(&mut buf).context("cannot read stdin")?;
-        buf
-    };
-
-    // 2. Input format: -i, else file extension, else content detection.
-    let in_fmt = match input {
-        Some(s) => Format::parse(&s)?,
-        None => {
-            let p = Path::new(&file);
-            match Format::from_ext(p) {
-                Some(f) => f,
-                None => detect_format(&text)?,
-            }
-        }
-    };
-
-    // 3. Parse.
-    let v = parse(&text, in_fmt)?;
-
-    // 4. Output format: -o, else the input format.
-    let out_fmt = match output {
-        Some(s) => Format::parse(&s)?,
-        None => in_fmt,
-    };
-
-    // 5. Serialize.
-    let result = serialize(&v, out_fmt)?;
-
-    // 6. Emit: -out file, else stdout.
-    match out {
-        Some(path) => fs::write(&path, result).with_context(|| format!("cannot write {}", path))?,
-        None => {
-            use std::io::Write;
-            let stdout = io::stdout();
-            let mut h = stdout.lock();
-            h.write_all(result.as_bytes())?;
-            h.flush()?;
-        }
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn format_parse_and_ext() {
-        assert_eq!(Format::parse("json").unwrap(), Format::Json);
-        assert_eq!(Format::parse("CSV").unwrap(), Format::Csv);
-        assert_eq!(Format::parse("markdown").unwrap(), Format::Md);
-        assert_eq!(Format::parse("yml").unwrap(), Format::Yaml);
-        assert!(Format::parse("xml").is_err());
-        assert_eq!(Format::from_ext(Path::new("a.json")), Some(Format::Json));
-        assert_eq!(Format::from_ext(Path::new("a.md")), Some(Format::Md));
-        assert_eq!(Format::from_ext(Path::new("a.txt")), None);
-    }
 
     #[test]
     fn csv_rows_quotes_and_commas() {
@@ -582,41 +345,6 @@ mod tests {
         assert_eq!(arr[0]["name"], "k");
         assert_eq!(arr[0]["v"], 1);
         assert_eq!(arr[1]["v"], true);
-    }
-
-    #[test]
-    fn json_yaml_roundtrip() {
-        let j: Value = serde_json::from_str(
-            r#"{"name":"sys","version":"0.4.20","features":["con","file"],"nested":{"ok":true}}"#,
-        )
-        .unwrap();
-        let yaml = serialize(&j, Format::Yaml).unwrap();
-        assert!(yaml.contains("name: sys"));
-        assert!(!yaml.starts_with("---"));
-        let back = serde_yaml::from_str::<Value>(&yaml).unwrap();
-        assert_eq!(back, j);
-    }
-
-    #[test]
-    fn detect_common_formats() {
-        assert_eq!(detect_format("{\"a\":1}").unwrap(), Format::Json);
-        assert_eq!(detect_format("[1,2]").unwrap(), Format::Json);
-        assert_eq!(detect_format("a,b\n1,2").unwrap(), Format::Csv);
-        assert_eq!(detect_format("| a | b |\n| --- | --- |\n| 1 | 2 |").unwrap(), Format::Md);
-        assert_eq!(detect_format("name: sys\nversion: 0.4").unwrap(), Format::Yaml);
-        assert!(detect_format("").is_err());
-    }
-
-    #[test]
-    fn yaml_tab_indentation_fallback() {
-        // Real-world configs use tab indentation; serde_yaml rejects it, the
-        // project parser must handle it (tabs expand to spaces).
-        let yaml = "providers:\n  - name: a\n  \tkey: 1\n  \tenabled: true\n";
-        let v = parse_yaml_value(yaml).unwrap();
-        let prov = &v["providers"][0];
-        assert_eq!(prov["name"], "a");
-        assert_eq!(prov["key"], 1);
-        assert_eq!(prov["enabled"], true);
     }
 
     #[test]

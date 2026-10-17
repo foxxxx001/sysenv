@@ -18,7 +18,7 @@
 
 * **httpie 兼容 HTTP 客户端**：参数与 httpie 保持一致
 
-* **快捷命令垫片**：一键生成 `spath / senv / slink / shttp / sai / ssearch / stask / sfile / scon` 短命令
+* **快捷命令垫片**：一键生成 `spath / senv / slink / shttp / sai / ssearch / stask / sfile` 短命令
 
 * **日志查看**：`sys log` 彩色 less 式日志查看器——解析 Nginx / Linux / Windows / Log4j 等常见日志，时间橙色、级别渐变（info 及以下绿、warning 起红）、app 深黄；`--level` 过滤、`--search` 搜索（n/u 跳转）、`--line` / `--newer` 定点、`-f` 追踪文件
 
@@ -37,7 +37,7 @@ Commands:
   ai     Query the models.dev database of AI models & providers
   search Web search via the configured Bocha AI API (web-search; --ai uses ai-search)
   task   Query and kill processes (list PID/name/path; kill by PID or name)
-  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon)
+  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/ssearch/stask/sfile)
   data   Query / modify / convert structured data (JSON/YAML/TOML/CSV/MD), dasel-compatible
   log    Colored less-style log viewer: parse timestamps/levels/app markers, filters, search, -f follow
 ```
@@ -60,12 +60,11 @@ Commands:
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
 | 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin（带扩展名如 `me.txt` 则显示文件，引号包裹强制搜索）；2 参目录树文本/源码搜索（`-e` / `-i` / `-t` / `-w` / `-c` / `-n` 行号）；3 参 OLD NEW PATH 就地替换；`-l` 统计行数（文件 / stdin / 匹配行）；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件；`-md5 FILE [MD5]` / `-sha FILE [SHA1]` 哈希与比对 |
 | 数据查询转换  | `data` / `dasel`     | dasel 兼容：选择器查询 `a.b[0]` / `list[*]` / `m["中文键"]`；`PATH = VALUE` 修改（`= null` 删除，`+=/-=/*=/=` 运算）；**函数表达式** `list.filter(谓词)` / `list.remove(谓词)` / `search(谓词)` / `name.endsWith("x")`（谓词语法：`$this` / `$key`、字段路径、`== != > >= < <= && || !`、`contains / startsWith / endsWith / indexOf / has`，示例 `sys data 'sites.filter(type==1)'`）；**`--depth N`**（默认 1）删除层级大于 N 的节点；JSON/YAML/TOML/CSV/MD 五格式互转；`-f` 读文件（后缀定格式，`-i` 覆盖）、`-u URL` GET 拉取（默认 json）、`-w` 写回、`--root` / `--compact`；**tab 缩进 YAML 自动归一、中文 round-trip 不乱码** |
-| 格式转换      | `con`                | json / csv / md / yaml 互转：默认读 stdin（`cat a.json | sys con`），`-file` 读文件，`-i` 输入格式，`-o` 输出格式，`-out` 写文件；表格类转对象数组（类型推断 + 转义） |
 | 联网搜索      | `search`             | 博查 AI 网页搜索 API（`POST api.bochaai.com/v1/web-search`）：`--freshness`（时间过滤）/ `--summary`（AI 摘要）/ `--count`（1-50）/ `--page` / `--include-domains` / `--exclude-domains`（域名白黑名单），参数与官网接口一致；key 取自配置 `search` 段；`--json` 原始响应 / `--debug` 请求与响应。`--ai` 切换到 AI Search API（`/v1/ai-search`）返回 AI 答案与垂域模态卡（`--no-answer` 关闭 AI 答案） |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
 | 网络探测      | `net`                | 从文件批量读取 http(s) 地址并探测：`-i` 读文件（`#` 注释行跳过、每行多个地址、地址截取到空格/标点）；`-t domain`（默认，连续 3 次 GET 取平均响应时间，全部测完按平均时间升序打印）/ `-t tv`（响应体须为 JSON，支持 `--sort` 统计排序；旧名 `json`）/ `-t tvs`（兼容 tv 与聚合两种 JSON：单仓 `.sites` / 多仓 `.urls` 分组输出）/ `-t file`（响应体须为普通文本）/ `-t test`（只探测可访问性，不可访问的屏幕打印错误并从源文件删除，`-o` 输出清理后的源文件行）/ `-t info`（用 `-n` 域名查 RDAP 注册信息，查不到逐层回退上层域名）；tv/file 模式每测完一个即打印 url/可用性/状态码/响应时间/格式，`-o` 把检测成功的 url 写入文件（一行一个）；`--timeout` 单次请求超时 |
 | 日志查看      | `log`                | 彩色 less 式日志查看器：解析 Nginx / Linux / Windows / Log4j 等常见日志——**时间**（ISO/斜杠/nginx access/syslog/US 多种格式，行首或行中）橙色显示；**级别**（trace→info 渐浅绿、warning→error→fatal 渐深红）渐变着色；**app 标志**深黄；`--level` 按级别过滤（warn==warning、err==error）；`--search` 关键字搜索（行号 + 反显，交互下 n/u 循环跳转）；`--line N` 从第 N 行后解析（保留原始行号）；`--newer TIME` 只显示该时间之后的日志；`-f` 追踪文件变化滚动展示（150ms 轮询，截断/轮转自动重读）；TTY 下 less 式交互（PageUp/PageDown/↑/↓/Home/End/g/G/q），管道输出纯文本无 ANSI |
-| 快捷垫片      | `short`              | 一键安装九种短命令（spath/senv/slink/shttp/sai/ssearch/stask/sfile/scon）；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
+| 快捷垫片      | `short`              | 一键安装八种短命令（spath/senv/slink/shttp/sai/ssearch/stask/sfile）；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
 
 
 
@@ -580,26 +579,6 @@ sys file -md5 me.txt 900150983cd24fb0d6963f7d28e17f72   # 比对：相等输出 
 sys file -sha me.txt da39a3ee5e6b4b0d3255bfef95601890afd80709  # SHA-1 同理
 ```
 
-#### 5.8 格式转换（`con`）
-
-json / csv / md / yaml 四种格式互转。默认从标准输入读取（管道用法：`cat a.json | sys con`），结果输出到 stdout；`-out` 可改写到文件。
-
-* `-file F`：从文件 F 读取（省略时读 stdin；扩展名为 json/csv/md/yaml 时自动推断输入格式）
-* `-i FMT`：输入格式 `json | csv | md | yaml`（省略时按内容自动检测）
-* `-o FMT`：输出格式 `json | csv | md | yaml`（省略时按输入格式输出，即仅格式化显示）
-* `-out F`：把结果写入文件 F（默认只输出到 stdout）
-
-表格类转换（csv / md）与对象数组互相映射：CSV 首行为表头；Markdown 表格解析表头 + 数据行。单元格自动做 null / bool / int / float / 字符串推断；字段含逗号、引号、换行、`|` 时自动转义。YAML 解析失败时回退到 tab-tolerant 解析器，兼容含 tab 缩进的真实配置。
-
-```
-cat a.json | sys con                        # stdin 自动检测，按原格式格式化输出
-sys con -file a.json -o csv                 # json -> csv（stdout）
-sys con -i csv -o json < a.csv              # csv -> json
-sys con -file a.yaml -o md -out out.md      # yaml -> markdown，写入 out.md
-sys con -file config.yaml -o json           # 真实配置（含 tab 缩进）-> json
-type a.csv | sys con -o md                  # csv -> markdown 表格
-```
-
 ## 6. 进程管理（`task`）
 
 ### 特性
@@ -753,9 +732,8 @@ sys http --verify no https://self-signed.example  # 跳过证书校验
 | `ssearch` | `sys search` |
 | `stask` | `sys task` |
 | `sfile` | `sys file` |
-| `scon`  | `sys con`  |
 
-> 注：`data` / `dasel` 与 `log` 子命令**不生成垫片**（无 `sdata` / `slog`），按全名使用。
+> 注：`data` / `dasel` 与 `log` 子命令**不生成垫片**（无 `sdata` / `slog`），按全名使用；`con` 子命令已删除（v0.5.10，由 `data` 取代）。
 
 ### 示例
 

@@ -43,7 +43,7 @@ use std::path::Path;
 // Formats
 // ---------------------------------------------------------------------------
 
-/// Formats supported by `sys data` (superset of `sys con`: + TOML).
+/// Formats supported by `sys data` (superset of the removed `sys con`: + TOML).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataFormat {
     Json,

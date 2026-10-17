@@ -37,7 +37,7 @@
 //!   -md5/-sha    hash mode: `-md5 FILE [EXPECTED]` prints the MD5 hex digest
 //!                (or `match:` / `mismatch` when EXPECTED is given); `-sha` is
 //!                the same for SHA-1. Single-dash multi-letter, parsed from the
-//!                ARGS list (like `con`'s -file/-out), so they may appear at
+//!                ARGS list (like `data`'s raw tokens), so they may appear at
 //!                any position
 //!   -S SIZE      only files at least SIZE bytes (plain number = bytes;
 //!                2k/2m/2g/2t = 1024-based KiB/MiB/GiB/TiB)

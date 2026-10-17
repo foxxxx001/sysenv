@@ -2,6 +2,21 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.5.10（2026-10-17）
+
+### 移除
+- **`sys con` 子命令整体删除**：格式转换功能由 `sys data`（别名 `dasel`）完全覆盖（`data` 支持 JSON / YAML / TOML / CSV / MD 五格式互转，`-i` / `-o` / `-f` / `-w` / `--root` / `--compact`，比 `con` 的 json / csv / md / yaml 多 TOML）。删除范围：
+  - main.rs：`Cmd::Con` 变体、`ConArgs`、分发分支与帮助文本中的 scon 引用
+  - convert.rs：con 专属代码（`Format` 枚举、`detect_format`、`parse`、`parse_yaml_value`、`parse_args`、`CON_HELP`、`cmd_con`）与 4 项专属测试（`format_parse_and_ext` / `json_yaml_roundtrip` / `detect_common_formats` / `yaml_tab_indentation_fallback`）删除；**保留** dasel 共享的解析 / 序列化函数（`csv_to_value` / `md_to_value` / `yval_to_json` / `value_to_csv` / `value_to_md` 及内部辅助），模块文档改写为「共享结构化数据转换辅助」
+  - short.rs：`scon` 垫片移除（SHIMS 9 → 8：spath/senv/slink/shttp/sai/ssearch/stask/sfile）
+  - 注释同步：main.rs / file.rs 中「like `con`'s -file/-out」→「like `data`'s raw tokens」；dasel.rs 注释标注 con 已删除
+- 本机已安装的 `scon.cmd` 垫片不主动清理（按发布约定不更新 short），再次执行 `sys short` 后自动消失
+
+### 测试
+- `cargo test --bin sys` 312 -> 308 项全绿（移除 4 项 con 测试；short 断言更新为 8 项垫片）
+
+---
+
 ## v0.5.9（2026-10-17）
 
 ### 新增
