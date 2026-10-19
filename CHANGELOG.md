@@ -2,6 +2,19 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.12（2026-10-19）
+
+### 新增
+- **配置约定：同一 provider 的模型必须配置在同一块内**——config.yaml 的 `clients:` 列表不得出现同一 provider（同名，大小写不敏感）拆成多个条目
+- **`ai config --import` 同名 Provider 强制归并**（src/ai.rs `merge_imported_providers`）：来源中同名的 Provider 一律合并进同一个块（首个条目的 api_base / api_key 保留），`models.json` 不再按「同名不同 api_base 加 `-2` 后缀」拆块（原行为移除），opencode / zcoder 多个 `provider.<id>` 配相同 `entry.name` 时也只写一个块；同名但端点不同时保留首个 api_base 并打印 `sys: note: ... merged into one block (kept ...)`；`import_into_config` 入口同样先归并再写入，**config.yaml 绝不写入同一 Provider 的多个条目**
+- **配置加载重复 Provider 名 warning**（src/chat.rs `config_from_yaml`）：解析 `clients:` 时发现同名 Provider 打印 `sys: warning: duplicate provider name ...`（不阻断，两个块都保留）
+
+### 变更
+- 版本 0.6.11 -> 0.6.12；README（中 / 英）`ai config` 段落 + 特性行、CHANGELOG（中 / 英）、requirements.md 同步
+- `cargo test --bin sys` 358 -> 361 项全绿（新增 3 项：models.json 同名不同 api_base 归并为一块、import_into_config 同名导入只写一个块（含不同端点分支）、opencode 同名 `entry.name` 归并；另加 chat.rs 重复 Provider 名可加载测试，改写原 `-2` 后缀测试）
+
+---
+
 ## v0.6.11（2026-10-19）
 
 ### 新增

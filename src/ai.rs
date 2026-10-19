@@ -4127,6 +4127,8 @@ fn cmd_config_update(
 // provider/model entries, which are merged into `~/.sysenv/config.yaml`
 // (backed up first). Providers already present are kept; missing models are
 // appended to the matching provider, brand-new providers get a full block.
+// Same-name providers from the source are merged into one entry before any
+// write: models of the same provider must live in one `clients:` block.
 // ---------------------------------------------------------------------------
 
 /// One model parsed back from a third-party config.
@@ -4202,10 +4204,44 @@ fn provider_name_from_vendor(vendor: Option<&str>, api_base: &str) -> String {
     }
 }
 
+/// Merge providers that share the same provider name (case-insensitive) into
+/// one entry: models of the same provider must be configured together, never
+/// as several `clients:` blocks. The first entry keeps its kind / api_base /
+/// api_key; when a later entry points at a different api_base the merge keeps
+/// the first endpoint and prints a note (one block carries one api_base).
+fn merge_imported_providers(providers: Vec<ImportedProvider>) -> Vec<ImportedProvider> {
+    let mut out: Vec<ImportedProvider> = Vec::new();
+    for p in providers {
+        match out.iter_mut().find(|o| o.name.eq_ignore_ascii_case(&p.name)) {
+            Some(o) => {
+                let same_base = o
+                    .api_base
+                    .trim_end_matches('/')
+                    .eq_ignore_ascii_case(p.api_base.trim_end_matches('/'));
+                if !same_base {
+                    eprintln!(
+                        "sys: note: provider `{}` has entries with different api_base; merged into one block (kept {})",
+                        p.name, o.api_base
+                    );
+                }
+                for m in p.models {
+                    if !o.models.iter().any(|x| x.name.eq_ignore_ascii_case(&m.name)) {
+                        o.models.push(m);
+                    }
+                }
+            }
+            None => out.push(p),
+        }
+    }
+    out
+}
+
 /// Parse a codebuddy / workbuddy `models.json` back into providers. Both the
 /// codebuddy object shape (`{"models":[...]}`) and the workbuddy array shape
-/// (root array) are accepted. Entries are grouped by (provider name, API
-/// base); entries missing `id` / `url` / `apiKey` are skipped and reported.
+/// (root array) are accepted. Entries are merged by provider name
+/// (case-insensitive): the first entry's endpoint wins when the same name
+/// appears with different API bases; entries missing `id` / `url` / `apiKey`
+/// are skipped and reported.
 fn parse_models_json(path: &Path) -> Result<(Vec<ImportedProvider>, Vec<String>)> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("cannot read {}", path.display()))?;
@@ -4255,39 +4291,15 @@ fn parse_models_json(path: &Path) -> Result<(Vec<ImportedProvider>, Vec<String>)
                 _ => None,
             },
         };
-        let slot = providers.iter_mut().find(|p| {
-            p.name.eq_ignore_ascii_case(&name) && p.api_base == api_base
+        providers.push(ImportedProvider {
+            name,
+            kind: "openai".to_string(),
+            api_base,
+            api_key,
+            models: vec![model],
         });
-        match slot {
-            Some(p) => p.models.push(model),
-            None => providers.push(ImportedProvider {
-                name,
-                kind: "openai".to_string(),
-                api_base,
-                api_key,
-                models: vec![model],
-            }),
-        }
     }
-
-    // Two groups with the same provider name but different API bases must not
-    // collapse into one block; keep the first name, suffix the later ones.
-    let mut used: Vec<String> = Vec::new();
-    for p in &mut providers {
-        if used.iter().any(|u| u.eq_ignore_ascii_case(&p.name)) {
-            let mut n = 2;
-            loop {
-                let cand = format!("{}-{}", p.name, n);
-                if !used.iter().any(|u| u.eq_ignore_ascii_case(&cand)) {
-                    p.name = cand;
-                    break;
-                }
-                n += 1;
-            }
-        }
-        used.push(p.name.clone());
-    }
-    Ok((providers, skipped))
+    Ok((merge_imported_providers(providers), skipped))
 }
 
 /// Parse a ZCode `config.json` back into providers. Every `provider.<id>`
@@ -4354,7 +4366,7 @@ fn parse_zcoder_config(path: &Path) -> Result<(Vec<ImportedProvider>, Vec<String
             models,
         });
     }
-    Ok((providers, skipped))
+    Ok((merge_imported_providers(providers), skipped))
 }
 
 /// Parse an opencode `opencode.json` back into providers. Every
@@ -4419,7 +4431,7 @@ fn parse_opencode_config(path: &Path) -> Result<(Vec<ImportedProvider>, Vec<Stri
             models,
         });
     }
-    Ok((providers, skipped))
+    Ok((merge_imported_providers(providers), skipped))
 }
 
 /// `(indent, trimmed content)` of one config line (space indentation; the
@@ -4521,6 +4533,11 @@ fn import_into_config(path: &Path, imports: &[ImportedProvider]) -> Result<Impor
     let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
     let lines: Vec<String> = content.split('\n').map(str::to_string).collect();
     let eof = lines.len();
+
+    // Same-name providers coming from the source are merged into one entry
+    // before anything is written: config.yaml must never get the same provider
+    // as several blocks.
+    let imports = merge_imported_providers(imports.to_vec());
 
     // Locate the `clients:` top-level key and parse every provider block under
     // it (blocks end where a shallower/equal `- ` entry or a top-level key
@@ -4629,7 +4646,7 @@ fn import_into_config(path: &Path, imports: &[ImportedProvider]) -> Result<Impor
         models_skipped: Vec::new(),
     };
     let mut inserts: Vec<CfgInsert> = Vec::new();
-    for p in imports {
+    for p in &imports {
         let local = blocks
             .iter()
             .find(|b| b.name.eq_ignore_ascii_case(&p.name));
@@ -6774,7 +6791,10 @@ mod tests {
     }
 
     #[test]
-    fn import_dedups_provider_names_with_same_name_different_base() {
+    fn import_merges_same_name_providers_with_different_base() {
+        // same vendor name with two different endpoints -> ONE provider block
+        // (the first api_base wins, both models merged): models of the same
+        // provider must be configured together, never as several providers
         let dir = std::env::temp_dir().join(format!("sysenv-imp-dd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("models.json");
@@ -6787,9 +6807,12 @@ mod tests {
         )
         .unwrap();
         let (ps, _) = parse_models_json(&path).unwrap();
-        assert_eq!(ps.len(), 2);
+        assert_eq!(ps.len(), 1);
         assert_eq!(ps[0].name, "multi");
-        assert_eq!(ps[1].name, "multi-2");
+        assert_eq!(ps[0].api_base, "https://a.example/v1");
+        assert_eq!(ps[0].models.len(), 2);
+        assert_eq!(ps[0].models[0].name, "m1");
+        assert_eq!(ps[0].models[1].name, "m2");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -6832,6 +6855,45 @@ mod tests {
         let bak = std::fs::read_dir(&dir).unwrap().count();
         assert_eq!(bak, 2); // config.yaml + one .bak
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn import_merges_same_name_imports_into_one_block() {
+        // two imports sharing a provider name (same and different api_base)
+        // must both merge into ONE provider block: config.yaml never gets the
+        // same provider as several entries
+        for (base_b, expect_base) in [
+            ("https://api.newco.example/v1", "https://api.newco.example/v1"),
+            ("https://api.newco-alt.example/v1", "https://api.newco.example/v1"),
+        ] {
+            let dir =
+                std::env::temp_dir().join(format!("sysenv-imp-mn-{}-{}", base_b.len(), std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("config.yaml");
+            std::fs::write(&path, import_sample_config()).unwrap();
+            let ps = vec![
+                import_provider(
+                    "newco",
+                    "https://api.newco.example/v1",
+                    "sk-new",
+                    &["nm-1"],
+                ),
+                import_provider("newco", base_b, "sk-new", &["nm-2"]),
+            ];
+            let report = import_into_config(&path, &ps).unwrap();
+            assert_eq!(report.providers_added, vec!["newco"], "{base_b}");
+            assert_eq!(report.models_added, vec!["newco/nm-1", "newco/nm-2"], "{base_b}");
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(text.matches("name: newco").count(), 1, "{base_b}");
+            assert!(
+                text.contains(&format!("api_base: {expect_base}")),
+                "{base_b}"
+            );
+            let (cfg, _) = chat::load_config(Some(&path)).unwrap();
+            let newco = cfg.providers.iter().find(|p| p.name == "newco").unwrap();
+            assert_eq!(newco.models.len(), 2, "{base_b}");
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 
     #[test]
@@ -6932,6 +6994,29 @@ mod tests {
         assert_eq!(ps[0].api_key, "sk-z");
         assert_eq!(ps[0].models.len(), 2);
         assert_eq!(ps[0].models[0].name, "GLM-5.2");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn import_opencode_merges_same_name_provider_blocks() {
+        // two provider ids sharing the same entry.name -> ONE provider with
+        // both models (same api_base here; a different base is merged the same
+        // way, first endpoint wins)
+        let dir = std::env::temp_dir().join(format!("sysenv-imp-ocn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("opencode.json");
+        std::fs::write(
+            &path,
+            r#"{"provider":{"p1":{"name":"multi","options":{"baseURL":"https://a.example/v1","apiKey":"k1"},"models":{"m1":{"name":"m1"}}},"p2":{"name":"multi","options":{"baseURL":"https://a.example/v1","apiKey":"k1"},"models":{"m2":{"name":"m2"}}}}}"#,
+        )
+        .unwrap();
+        let (ps, skipped) = parse_opencode_config(&path).unwrap();
+        assert!(skipped.is_empty());
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].name, "multi");
+        assert_eq!(ps[0].models.len(), 2);
+        assert_eq!(ps[0].models[0].name, "m1");
+        assert_eq!(ps[0].models[1].name, "m2");
         std::fs::remove_dir_all(&dir).ok();
     }
 

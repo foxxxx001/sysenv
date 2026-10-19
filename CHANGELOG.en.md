@@ -2,6 +2,19 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.12 (2026-10-19)
+
+### Added
+- **Config rule: models of the same provider must live in one block** — the `clients:` list of config.yaml must never contain the same provider (same name, case-insensitive) split into several entries
+- **`ai config --import` force-merges same-name providers** (src/ai.rs `merge_imported_providers`): providers sharing a name coming from the source are always merged into ONE block (the first entry's api_base / api_key wins); `models.json` no longer splits "same name, different api_base" entries with a `-2` suffix (old behavior removed); opencode / zcoder blocks that map several `provider.<id>`s to the same `entry.name` now write a single block; when the endpoints differ, the first api_base is kept and `sys: note: ... merged into one block (kept ...)` is printed; `import_into_config` also merges before writing, so config.yaml never receives the same provider as multiple entries
+- **Duplicate provider name warning on config load** (src/chat.rs `config_from_yaml`): parsing `clients:` prints `sys: warning: duplicate provider name ...` when the same name appears twice (non-blocking, both blocks are kept)
+
+### Changed
+- Version 0.6.11 -> 0.6.12; README (zh / en) `ai config` section + feature row, CHANGELOG (zh / en), requirements.md updated
+- `cargo test --bin sys` 358 -> 361 passed (3 added: models.json same-name/different-base merges into one block, import_into_config writes one block for same-name imports incl. the different-endpoint branch, opencode same `entry.name` merges; plus a chat.rs duplicate-provider-name loads test; the old `-2` suffix test was rewritten)
+
+---
+
 ## v0.6.11 (2026-10-19)
 
 ### Added

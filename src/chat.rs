@@ -396,8 +396,20 @@ fn config_from_yaml(y: &YVal) -> Result<Config> {
         .unwrap_or(false);
     let mut providers = Vec::new();
     if let Some(clients) = y.get("clients").and_then(|v| v.list()) {
+        let mut seen: Vec<String> = Vec::new();
         for c in clients {
-            providers.push(provider_from_yaml(c)?);
+            let p = provider_from_yaml(c)?;
+            if seen.iter().any(|s| ci_eq(s, &p.name)) {
+                // The config rule: models of the same provider must be
+                // configured in one block, never as several providers. This is
+                // informational — both blocks still load.
+                eprintln!(
+                    "sys: warning: duplicate provider name `{}` in config; models of the same provider should live in one block",
+                    p.name
+                );
+            }
+            seen.push(p.name.clone());
+            providers.push(p);
         }
     }
     Ok(Config { model, stream, providers })
@@ -2200,6 +2212,32 @@ stream: true
         assert_eq!(cfg.providers[0].models.len(), 1);
         assert_eq!(cfg.providers[0].models[0].name, "m1");
         assert_eq!(cfg.providers[0].models[0].weight, 3);
+    }
+
+    #[test]
+    fn duplicate_provider_names_still_load_but_warn() {
+        // same provider name twice: loading must not break (the loader prints
+        // a warning to stderr), both blocks stay — the config rule is that
+        // models of the same provider live in one block
+        let yaml = r#"clients:
+  - type: openai
+    name: agnes
+    api_base: https://a.example/v1
+    api_key: sk-a
+    models:
+      - name: m1
+  - type: openai
+    name: agnes
+    api_base: https://b.example/v1
+    api_key: sk-b
+    models:
+      - name: m2
+"#;
+        let y = parse_yaml(yaml).unwrap();
+        let cfg = config_from_yaml(&y).unwrap();
+        assert_eq!(cfg.providers.len(), 2);
+        assert_eq!(cfg.providers[0].name, "agnes");
+        assert_eq!(cfg.providers[1].name, "agnes");
     }
 
     #[test]

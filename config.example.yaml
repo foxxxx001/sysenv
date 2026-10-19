@@ -11,6 +11,7 @@
 model: agnes-3.0-flash
 
 # clients：provider（供应商）配置列表
+# 约定：同一 provider 的模型必须配置在同一个 provider 块下，不要把同一 provider 拆成多个条目
 clients:
   # type: openai（默认，兼容 "open"）| anthropic
   # 必填：name / api_base / api_key / models
