@@ -2,6 +2,19 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.15 (2026-10-20)
+
+### Fixed
+- **`sys ai chat --query-model` model-list URL rule corrected**: for OpenAI-compatible providers the list is no longer assumed to live at `{api_base}/v1/models` — `models` is appended to the configured api_base as-is (`{api_base}/models`), so Baidu Qianfan configured with `https://qianfan.baidubce.com/v2` is correctly queried at `/v2/models` (previously `/v2/v1/models` returned 404 ResourceNotFound). Anthropic keeps `{api_base}/v1/models` (`{api_base}/models` when api_base already ends with `/v1`)
+- The rule is now a single implementation: chat.rs `models_url` became `pub(crate)`, ai.rs dropped its private copy and calls `chat::models_url` — `--query-model` and `info list-model` no longer maintain their own URL builders
+
+### Changed
+- **`sys ai info models` now has the same function as `--query-model`**: `info models PROVIDER` switched from a models.dev lookup (duplicating `info model`) to querying the provider's own models API for the models its key can use (equivalent to `info list-model PROVIDER` / `sys ai chat --query-model PROVIDER`; live, paginated, `-o json/csv/md/yaml`); `info model` keeps listing the configured models
+- Version 0.6.14 -> 0.6.15; README (zh / en) `ai info` section + feature row, CHANGELOG (zh / en), requirements.md updated
+- `cargo test --bin sys`: 363 -> 364 passed (the `models_url` test was rewritten to openai appending `/models` (incl. a Baidu `/v2` case) + the anthropic `/v1` rule; one new test proves `info models` errors without a provider name and is no longer an alias of `info model`)
+
+---
+
 ## v0.6.14 (2026-10-19)
 
 ### Changed

@@ -48,6 +48,7 @@ Examples:
   sys ai info balance minimax
   sys ai info sale-price agnes
   sys ai info list-model agnes
+  sys ai info models baidu
   sys net -i urls.txt -t domain
   sys net -i urls.txt -t test -o ok.txt
   sys task list
@@ -473,7 +474,7 @@ struct CnModelArgs {
 
 #[derive(Args)]
 struct AiInfoArgs {
-    /// What to show: provider | model | balance | sale-price | list-model (omitted: the configured providers and models together; prices moved to `sys ai price`)
+    /// What to show: provider | model | balance | sale-price | list-model | models (omitted: the configured providers and models together; prices moved to `sys ai price`)
     #[arg(value_name = "FIELD")]
     field: Option<String>,
     /// provider KEYWORD: keep only providers whose name contains KEYWORD;
@@ -481,8 +482,9 @@ struct AiInfoArgs {
     /// (or `provider:model` / `provider:*` to select specific models);
     /// balance PROVIDER: query the provider's official balance with its api_key;
     /// sale-price PROVIDER: scrape the provider's official pricing page;
-    /// list-model PROVIDER: query the provider's own models API and list the
-    /// models its configured api_key can use
+    /// list-model / models PROVIDER: query the provider's own models API and
+    /// list the models its configured api_key can use (same as
+    /// `sys ai chat --query-model PROVIDER`)
     #[arg(value_name = "PARAM")]
     param: Vec<String>,
     /// Force re-fetching the models.dev price data (otherwise use the 24 h cache)
@@ -542,8 +544,11 @@ struct ChatArgs {
     /// left without any models are removed too
     #[arg(long, requires = "test")]
     remove: bool,
-    /// Query a configured provider's model list through its {api_base}/v1/models
-    /// endpoint and exit (PROVIDER = a `name` under `clients`, e.g. modelscope)
+    /// Query a configured provider's model list through its models endpoint and
+    /// exit (`{api_base}/models` for OpenAI-compatible — `models` is appended
+    /// to the configured api_base as-is, e.g. Baidu serves it at
+    /// `https://qianfan.baidubce.com/v2/models` — and `{api_base}/v1/models`
+    /// for Anthropic; PROVIDER = a `name` under `clients`, e.g. baidu)
     #[arg(long, value_name = "PROVIDER")]
     query_model: Option<String>,
 }

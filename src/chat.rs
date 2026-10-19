@@ -39,7 +39,7 @@ const STREAM_TIMEOUT: Duration = Duration::from_secs(600);
 /// test (only the first token is awaited).
 const TEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TEST_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
-/// `sys ai chat --query-model` timeouts for the provider's /v1/models call.
+/// `sys ai chat --query-model` timeouts for the provider's models call.
 const QUERY_MODEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const QUERY_MODEL_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const USER_AGENT_STR: &str = concat!("sys/", env!("CARGO_PKG_VERSION"));
@@ -1239,15 +1239,22 @@ pub(crate) fn chat_url(p: &Provider) -> String {
     }
 }
 
-/// The provider's model-list endpoint. OpenAI-compatible gateways expose it at
-/// `{api_base}/v1/models`; when `api_base` already ends with `/v1` (the common
-/// convention) the plain `/models` suffix is used.
-fn models_url(p: &Provider) -> String {
+/// The provider's model-list endpoint. For OpenAI-compatible providers the
+/// `models` path is appended to the configured api_base as-is — the models
+/// address is not always under `v1` (e.g. Baidu Qianfan serves the list at
+/// `https://qianfan.baidubce.com/v2/models`, not `/v2/v1/models`). Anthropic
+/// uses `{api_base}/v1/models`, or the plain `/models` suffix when api_base
+/// already ends with `/v1` (the common convention).
+pub(crate) fn models_url(p: &Provider) -> String {
     let base = p.api_base.trim_end_matches('/');
-    if base.ends_with("/v1") {
-        format!("{base}/models")
+    if p.kind == "anthropic" {
+        if base.ends_with("/v1") {
+            format!("{base}/models")
+        } else {
+            format!("{base}/v1/models")
+        }
     } else {
-        format!("{base}/v1/models")
+        format!("{base}/models")
     }
 }
 
@@ -1296,8 +1303,9 @@ fn parse_models_response(body: &str) -> Result<(Vec<(String, Option<String>)>, O
 }
 
 /// `sys ai chat --query-model PROVIDER`: query the provider's model list via
-/// its {api_base}/v1/models endpoint. Pagination (`next_page`) is followed with
-/// a page cap; duplicate ids are dropped.
+/// its models endpoint (`{api_base}/models` for OpenAI-compatible,
+/// `{api_base}/v1/models` for Anthropic). Pagination (`next_page`) is followed
+/// with a page cap; duplicate ids are dropped.
 pub(crate) fn query_provider_models(cfg: &Config, provider_name: &str) -> Result<()> {
     let p = cfg
         .providers
@@ -2084,7 +2092,9 @@ pub(crate) fn print_models(cfg: &Config) {
 /// prints every configured provider. `--update` fills the target models'
 /// missing `max_input_tokens` / `type` from models.dev into the config file
 /// (best effort) before the request. `--query-model PROVIDER` queries the
-/// provider's model list through its {api_base}/v1/models endpoint and exits.
+/// provider's model list through its models endpoint
+/// (`{api_base}/models` for OpenAI-compatible, `{api_base}/v1/models` for
+/// Anthropic) and exits.
 /// `--test` runs a parallel chat feedback-time test instead of a normal chat
 /// (see `chat_test`); `--remove` deletes the failed models from the config
 /// instead of setting weight to 0.
@@ -3086,14 +3096,29 @@ clients:
     }
 
     #[test]
-    fn models_url_builds_v1_models_endpoint() {
+    fn models_url_builds_models_endpoint() {
+        // OpenAI-compatible: `models` is appended to the api_base as-is.
         let p = local_provider(1234); // api_base ends with /v1
         assert_eq!(models_url(&p), "http://127.0.0.1:1234/v1/models");
         let p2 = Provider {
             api_base: "https://gateway.example.com".to_string(),
             ..local_provider(1)
         };
-        assert_eq!(models_url(&p2), "https://gateway.example.com/v1/models");
+        assert_eq!(models_url(&p2), "https://gateway.example.com/models");
+        // Baidu Qianfan: the list lives at /v2/models, not /v2/v1/models.
+        let p3 = Provider {
+            api_base: "https://qianfan.baidubce.com/v2".to_string(),
+            ..local_provider(1)
+        };
+        assert_eq!(models_url(&p3), "https://qianfan.baidubce.com/v2/models");
+        // Anthropic: {api_base}/v1/models, or plain /models when base ends with /v1.
+        let ant = |base: &str| Provider {
+            kind: "anthropic".to_string(),
+            api_base: base.to_string(),
+            ..local_provider(1)
+        };
+        assert_eq!(models_url(&ant("https://api.anthropic.com")), "https://api.anthropic.com/v1/models");
+        assert_eq!(models_url(&ant("https://api.anthropic.com/v1")), "https://api.anthropic.com/v1/models");
     }
 
     #[test]

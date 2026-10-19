@@ -2,6 +2,19 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.15（2026-10-20）
+
+### 修复
+- **`sys ai chat --query-model` 的 models 接口地址规则修正**：OpenAI 兼容 provider 的模型列表地址不再假设为 `{api_base}/v1/models`，而是把 `models` 直接追加在配置的 api_base 后（`{api_base}/models`）——如百度千帆配置 `https://qianfan.baidubce.com/v2` 时正确请求 `/v2/models`（此前生成 `/v2/v1/models` 返回 404 ResourceNotFound）。Anthropic 类型保持 `{api_base}/v1/models`（api_base 已以 `/v1` 结尾时用 `{api_base}/models`）
+- 规则收敛为单一实现：chat.rs `models_url` 改为 `pub(crate)`，ai.rs 删除私有副本并改调 `chat::models_url`，`--query-model` 与 `info list-model` 两条路径不再各自维护
+
+### 变更
+- **`sys ai info models` 与 `--query-model` 同功能**：`info models PROVIDER` 从"与 `info model` 重复的 models.dev 查询"改为查询该 provider 自身 models 接口的可用模型（等价 `info list-model PROVIDER` / `sys ai chat --query-model PROVIDER`，实时、分页翻页、`-o json/csv/md/yaml`）；`info model` 保持原配置模型清单查询
+- 版本 0.6.14 -> 0.6.15；README（中 / 英）`ai info` 段落 + 特性行、CHANGELOG（中 / 英）、requirements.md 同步
+- `cargo test --bin sys`：363 -> 364 项全绿（`models_url` 测试重写为 openai 直加 `/models`（含百度 `/v2` 用例）+ anthropic `/v1` 规则；新增 1 项：`info models` 无参报错、且与 `info model` 不再同义）
+
+---
+
 ## v0.6.14（2026-10-19）
 
 ### 变更

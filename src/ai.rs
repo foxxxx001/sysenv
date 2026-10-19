@@ -1579,10 +1579,12 @@ pub fn cmd_provider(
 // - `sys ai price P1,P2,...`   prints the per-1M-token price list (input /
 //   output / cache_read) of the comma-separated providers (source: models.dev,
 //   24 h cache, --refresh to force; prices moved here from the old `info price`).
-// - `info list-model PROVIDER`  queries the provider's own models API
-//   (`GET {api_base}/models` for OpenAI-compatible, `{api_base}/v1/models` for
-//   Anthropic) and prints the models the configured api_key can actually use
-//   (live query, no cache; Anthropic `next_page` pagination is followed).
+// - `info list-model PROVIDER` / `info models PROVIDER`  queries the
+//   provider's own models API (`GET {api_base}/models` for OpenAI-compatible,
+//   `{api_base}/v1/models` for Anthropic — same function as
+//   `sys ai chat --query-model PROVIDER`) and prints the models the configured
+//   api_key can actually use (live query, no cache; `next_page` pagination is
+//   followed).
 // ---------------------------------------------------------------------------
 
 /// Grouped view used by `sys ai server --help`: one line per configured
@@ -1615,9 +1617,9 @@ struct ProviderInfoRow {
 }
 
 /// Example request hitting the provider's models endpoint with its key,
-/// matching `models_url` (OpenAI-compatible vs Anthropic header).
+/// matching `chat::models_url` (OpenAI-compatible vs Anthropic header).
 fn provider_sample_request(p: &chat::Provider) -> String {
-    let url = models_url(p);
+    let url = chat::models_url(p);
     if p.kind == "anthropic" {
         format!(
             "{url}  x-api-key:\"{}\" anthropic-version:\"{}\"",
@@ -2040,10 +2042,11 @@ fn md_provider_rows(rows: &[(String, Value)]) -> String {
 ///   print every model's sale price (agnes / minimax scraped; the rest point
 ///   to their official pricing pages). Pages are cached 24 h, `--refresh`
 ///   forces a re-fetch.
-/// - `list-model PROVIDER` — query the provider's own models API and print
-///   the models its configured api_key can use (`GET {api_base}/models` for
-///   OpenAI-compatible providers, `{api_base}/v1/models` for Anthropic; live
-///   query, no cache; Anthropic `next_page` pagination is followed).
+/// - `list-model PROVIDER` / `models PROVIDER` — query the provider's own
+///   models API and print the models its configured api_key can use (same
+///   function as `sys ai chat --query-model PROVIDER`; `GET {api_base}/models`
+///   for OpenAI-compatible providers, `{api_base}/v1/models` for Anthropic;
+///   live query, no cache; `next_page` pagination is followed).
 /// - `-o json` / `-o csv` / `--json` — machine-readable output, supported by
 ///   `info provider`, `info model` and `info list-model` (JSON array or CSV
 ///   table).
@@ -2177,7 +2180,7 @@ pub fn cmd_info(
                 }
             }
         }
-        Some("model") | Some("models") => {
+        Some("model") => {
             let (cfg, _) = chat::load_config(config)?;
             let rows = info_model_rows(&cfg, keyword.as_deref())?;
             match fmt {
@@ -2235,14 +2238,16 @@ pub fn cmd_info(
             let (cfg, _) = chat::load_config(config)?;
             info_sale_price(&cfg, &kw, refresh)?;
         }
-        Some("list-model") | Some("list-models") => {
+        Some("list-model") | Some("list-models") | Some("models") => {
             let kw = keyword.ok_or_else(|| {
-                anyhow::anyhow!("`info list-model` needs a provider name: `sys ai info list-model agnes`")
+                anyhow::anyhow!(
+                    "`info list-model` / `info models` needs a provider name: `sys ai info models agnes`"
+                )
             })?;
             let (cfg, _) = chat::load_config(config)?;
             info_model_list(&cfg, &kw, fmt)?;
         }
-        Some(other) => bail!("unknown `info` field `{other}` (expected: provider | model | balance | sale-price | list-model; prices moved to `sys ai price`)"),
+        Some(other) => bail!("unknown `info` field `{other}` (expected: provider | model | balance | sale-price | list-model | models; prices moved to `sys ai price`)"),
     }
     Ok(())
 }
@@ -2316,13 +2321,16 @@ fn find_provider<'a>(cfg: &'a chat::Config, keyword: &str) -> Result<&'a chat::P
 }
 
 // ---------------------------------------------------------------------------
-// `sys ai info list-model` — query a provider's own models API and list the
-// models its configured api_key can actually use.
+// `sys ai info list-model` / `sys ai info models` — query a provider's own
+// models API and list the models its configured api_key can actually use
+// (the same function as `sys ai chat --query-model PROVIDER`).
 //
-// OpenAI 兼容 provider：GET {api_base}/models（Bearer api_key）；
-// Anthropic provider：GET {api_base}/v1/models（api_base 已以 /v1 结尾时
-// 直接用 {api_base}/models，x-api-key / anthropic-version）。实时查询，不走
-// 缓存；Anthropic 分页（next_page）自动翻页（上限 20 页）。
+// URL rule shared with chat::models_url: OpenAI 兼容 provider 用
+// GET {api_base}/models（Bearer api_key，`models` 直接追加在配置的 api_base
+// 后——如百度千帆是 /v2/models 而非 /v2/v1/models）；Anthropic provider 用
+// GET {api_base}/v1/models（api_base 已以 /v1 结尾时直接用 {api_base}/models，
+// x-api-key / anthropic-version）。实时查询，不走缓存；分页（next_page）
+// 自动翻页（上限 20 页）。
 // ---------------------------------------------------------------------------
 
 /// One row of `info list-model` (a model entry returned by the models API).
@@ -2330,20 +2338,6 @@ struct ModelListRow {
     id: String,
     owned_by: String,
     created: String,
-}
-
-/// Models list URL of a provider, mirroring `chat::chat_url`'s rules.
-fn models_url(p: &chat::Provider) -> String {
-    let base = p.api_base.trim_end_matches('/');
-    if p.kind == "anthropic" {
-        if base.ends_with("/v1") {
-            format!("{base}/models")
-        } else {
-            format!("{base}/v1/models")
-        }
-    } else {
-        format!("{base}/models")
-    }
 }
 
 /// Normalize a models API response into rows. Standard shape is `data[]`
@@ -2414,7 +2408,7 @@ fn info_model_list(cfg: &chat::Config, keyword: &str, fmt: Option<OutFormat>) ->
         );
     }
 
-    let base_url = models_url(p);
+    let base_url = chat::models_url(p);
     let mut url = base_url.clone();
     let mut rows: Vec<ModelListRow> = Vec::new();
     let mut pages = 0;
@@ -5950,21 +5944,55 @@ mod tests {
     }
 
     #[test]
+    fn cmd_info_models_needs_provider_and_differs_from_model() {
+        // `info models` is the provider-models-API query (the function of
+        // `--query-model`), not a duplicate of `info model`: without a provider
+        // name it fails fast (before any config / network work)...
+        let err = cmd_info(Some("models"), &[], false, None, None, false).unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("needs a provider name"), "got: {text}");
+        // ...while `info model` without args stays the config model listing.
+        let dir = std::env::temp_dir().join(format!("sysenv-info-model-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg_path = dir.join("config.yaml");
+        std::fs::write(
+            &cfg_path,
+            "clients:\n  - type: openai\n    name: agnes\n    api_base: https://apihub.example.cn/v1\n    api_key: sk-test-0000\n    models:\n      - name: agnes-3.0-flash\n",
+        )
+        .unwrap();
+        let (cfg, _) = chat::load_config(Some(&cfg_path)).unwrap();
+        let rows = info_model_rows(&cfg, None).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(format!("{}:{}", rows[0].provider, rows[0].name), "agnes:agnes-3.0-flash");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn models_url_formats() {
+        // The URL rule lives in chat::models_url (shared with `--query-model`).
         let cfg = sample_config();
         // OpenAI-compatible: {api_base}/models.
-        assert_eq!(models_url(&cfg.providers[0]), "https://apihub.agnes-ai.cn/v1/models");
-        // Anthropic: {api_base}/v1/models unless api_base already ends with /v1.
+        assert_eq!(chat::models_url(&cfg.providers[0]), "https://apihub.agnes-ai.cn/v1/models");
+        // A base without /v1 (e.g. Baidu Qianfan) appends plain `models`.
         let mut p = chat::Provider {
+            kind: "openai".into(),
+            name: "baidu".into(),
+            api_base: "https://qianfan.baidubce.com/v2".into(),
+            api_key: "sk-b".into(),
+            models: Vec::new(),
+        };
+        assert_eq!(chat::models_url(&p), "https://qianfan.baidubce.com/v2/models");
+        // Anthropic: {api_base}/v1/models unless api_base already ends with /v1.
+        p = chat::Provider {
             kind: "anthropic".into(),
             name: "anthropic".into(),
             api_base: "https://api.anthropic.com".into(),
             api_key: "sk-ant".into(),
             models: Vec::new(),
         };
-        assert_eq!(models_url(&p), "https://api.anthropic.com/v1/models");
+        assert_eq!(chat::models_url(&p), "https://api.anthropic.com/v1/models");
         p.api_base = "https://api.anthropic.com/v1".into();
-        assert_eq!(models_url(&p), "https://api.anthropic.com/v1/models");
+        assert_eq!(chat::models_url(&p), "https://api.anthropic.com/v1/models");
     }
 
     #[test]
