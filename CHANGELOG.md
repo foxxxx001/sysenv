@@ -2,6 +2,22 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.6（2026-10-19）
+
+### 修复
+- **`ai config workbuddy --update` 不再报 `not a JSON object`**：workbuddy 真实 `models.json` 顶层是**数组**（`[{id,name,vendor,url,apiKey,...}]`），merge 现同时接受数组根与 codebuddy 对象根（`{"models":[...],"availableModels":[...]}`）；数组根直接把数组当模型列表去重合并、写回仍为数组；非对象非数组才报错
+
+### 新增
+- **`ai config zcoder`（ZCode 格式）**：导出 / `--update` 目标 `~/.zcode/cli/config.json`（Windows `%USERPROFILE%\.zcode\cli\config.json`）；每个 provider 一个 `provider.<id>` 块（id=provider 名小写化、非法字符转 `-`），含 `kind`（anthropic / openai-compatible）、`options.baseURL` + `apiKey`、`models`（按模型 id 键控的对象）；`model.main` / `model.lite` 指向所选模型（`provider/model`）；`--update` 保留已有 provider 块与其它顶层键、`main/lite` 仅缺省时填入
+- **`ai config workbuddy` 导出改为纯数组**（匹配真实 workbuddy schema；codebuddy 保持对象形状不变）
+- **`ai config --list`**：列出全部 8 个支持格式（codex / opencode / litellm / freellmapi / codebuddy / workbuddy / trae / zcoder）与其默认配置文件路径（`--list` 时可省略 FORMAT 参数）
+
+### 变更
+- 版本 0.6.5 -> 0.6.6；README（中 / 英）`ai config` 小节同步 workbuddy 数组形状 / zcoder / `--list`；路径映射新增 zcoder / qoder（qoder 格式按用户拍板本次未实现）
+- `cargo test --bin sys` 333 -> 339 项全绿（新增 6 项：workbuddy 数组导出与数组根 merge、zcoder 导出 / merge / 缺省 main 填充、`--list` 全格式覆盖）
+
+---
+
 ## v0.6.5（2026-10-19）
 
 ### 新增

@@ -2,6 +2,22 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.6 (2026-10-19)
+
+### Fixed
+- **`ai config workbuddy --update` no longer reports `not a JSON object`**: the real workbuddy `models.json` is a **top-level array** (`[{id,name,vendor,url,apiKey,...}]`); the merge now accepts both the array root and the codebuddy object root (`{"models":[...],"availableModels":[...]}`); with an array root the array itself is the model list (dedup by id) and is written back as an array; only a root that is neither object nor array errors
+
+### Added
+- **`ai config zcoder` (ZCode format)**: export / `--update` target `~/.zcode/cli/config.json` (Windows `%USERPROFILE%\.zcode\cli\config.json`); each provider becomes a `provider.<id>` block (id = provider name lowercased, invalid chars -> `-`) with `kind` (anthropic / openai-compatible), `options.baseURL` + `apiKey`, and `models` (an object keyed by model id); `model.main` / `model.lite` point at the selected model (`provider/model`); `--update` keeps existing provider blocks and other top-level keys and fills `main/lite` only when absent
+- **`ai config workbuddy` now exports a plain array** (matches the real workbuddy schema; codebuddy keeps its object shape)
+- **`ai config --list`**: prints all 8 supported formats (codex / opencode / litellm / freellmapi / codebuddy / workbuddy / trae / zcoder) with their default config file paths (FORMAT may be omitted with `--list`)
+
+### Changed
+- version 0.6.5 -> 0.6.6; README (zh / en) `ai config` section updated for the workbuddy array shape / zcoder / `--list`; path mapping now also covers zcoder / qoder (the qoder format itself was not implemented per user decision)
+- `cargo test --bin sys` 333 -> 339 all green (6 new tests: workbuddy array export and array-root merge, zcoder export / merge / default-main fill, `--list` full coverage)
+
+---
+
 ## v0.6.5 (2026-10-19)
 
 ### Added
