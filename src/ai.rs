@@ -3877,6 +3877,7 @@ fn export_trae(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<String> {
 }
 
 /// `sys ai config FORMAT [-m MODEL] [--show] [-f FILE] [-c FILE] [--update]`
+/// [`--list`]
 ///
 /// FORMAT: `codex` (TOML) | `opencode` (JSON) | `litellm` (YAML) |
 /// `freellmapi` (JSON) | `codebuddy` (models.json) | `workbuddy`
@@ -3898,15 +3899,36 @@ fn export_trae(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<String> {
 /// `-f` path when given): the file must exist (a missing file is reported and
 /// nothing happens), a `.bak-*` copy is made first, then the selected models
 /// that are not already present are added and reported.
+/// All export formats and their default config file paths for `--list`.
+fn config_format_list() -> Vec<(&'static str, Option<PathBuf>)> {
+    ["codex", "opencode", "litellm", "freellmapi", "codebuddy", "workbuddy", "trae", "zcoder"]
+        .iter()
+        .map(|f| (*f, software_config_path(f)))
+        .collect()
+}
+
 pub fn cmd_config(
-    format: &str,
+    format: Option<&str>,
     selector: Option<&str>,
     out_file: Option<&Path>,
     config: Option<&Path>,
     show: bool,
     models: Option<&str>,
     update: bool,
+    list: bool,
 ) -> Result<()> {
+    if list {
+        // `sys ai config --list`: enumerate every supported format and the
+        // config file each one would target by default (same paths as --show).
+        for (name, path) in config_format_list() {
+            match path {
+                Some(p) => println!("{name:<12} {}", p.display()),
+                None => println!("{name:<12} <no default path; use -f FILE>"),
+            }
+        }
+        return Ok(());
+    }
+    let format = format.context("missing FORMAT")?;
     let (cfg, _) = chat::load_config(config)?;
     let format_lc = format.to_ascii_lowercase();
     let supported = matches!(
@@ -5821,6 +5843,40 @@ mod tests {
         );
         // unknown formats have no default path
         assert_eq!(software_config_path_in(&home, "nope"), None);
+    }
+
+    #[test]
+    fn config_format_list_covers_every_supported_format() {
+        let list = config_format_list();
+        let names: Vec<&str> = list.iter().map(|(n, _)| *n).collect();
+        assert_eq!(
+            names,
+            vec![
+                "codex",
+                "opencode",
+                "litellm",
+                "freellmapi",
+                "codebuddy",
+                "workbuddy",
+                "trae",
+                "zcoder"
+            ]
+        );
+        // every entry has a default path (freellmapi is cwd-relative)
+        assert!(list.iter().all(|(_, p)| p.is_some()));
+        // and the paths match the software_config_path mapping
+        let home = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+            .unwrap();
+        assert_eq!(
+            list.iter().find(|(n, _)| *n == "workbuddy").unwrap().1,
+            Some(home.join(".workbuddy").join("models.json"))
+        );
+        assert_eq!(
+            list.iter().find(|(n, _)| *n == "zcoder").unwrap().1,
+            Some(home.join(".zcode").join("cli").join("config.json"))
+        );
     }
 
     #[test]

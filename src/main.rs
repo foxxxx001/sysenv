@@ -340,9 +340,10 @@ enum AiCmd {
 #[derive(Args)]
 struct AiConfigArgs {
     /// Target format: codex (TOML) | opencode (JSON) | litellm (YAML) | freellmapi (JSON) |
-    /// codebuddy | workbuddy (models.json) | trae (trae_cli.yaml) | zcoder (ZCode config.json)
-    #[arg(value_name = "FORMAT")]
-    format: String,
+    /// codebuddy | workbuddy (models.json) | trae (trae_cli.yaml) | zcoder (ZCode config.json);
+    /// omitted when --list is given
+    #[arg(value_name = "FORMAT", required_unless_present = "list")]
+    format: Option<String>,
     /// Select models: omit for the same default as `sys ai chat` (top-level `model:`);
     /// `provider:*` = a provider's whole model list; `provider:model` = one specific model
     /// (legacy single selector; prefer -m)
@@ -360,13 +361,16 @@ struct AiConfigArgs {
     config: Option<PathBuf>,
     /// Show mode: print the target software's config file path, then the config
     /// that would be applied (no file is written)
-    #[arg(long)]
+    #[arg(long, conflicts_with = "list")]
     show: bool,
     /// Update the software's default config file in place: back up a .bak file first,
     /// merge the missing selected models into it, and report what was added
-    /// (codebuddy / workbuddy / trae only; -f FILE overrides the default path)
-    #[arg(long, conflicts_with = "show")]
+    /// (codebuddy / workbuddy / trae / zcoder; -f FILE overrides the default path)
+    #[arg(long, conflicts_with_all = ["show", "list"])]
     update: bool,
+    /// List every supported format and its default config file path
+    #[arg(long)]
+    list: bool,
 }
 
 #[derive(Args)]
@@ -1044,13 +1048,14 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             i.url,
         ),
         AiCmd::Config(g) => ai::cmd_config(
-            &g.format,
+            g.format.as_deref(),
             g.provider.as_deref(),
             g.file.as_deref(),
             g.config.as_deref(),
             g.show,
             g.models.as_deref(),
             g.update,
+            g.list,
         ),
     }
 }
