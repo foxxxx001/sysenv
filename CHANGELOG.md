@@ -2,6 +2,18 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.13（2026-10-19）
+
+### 新增
+- **导出同样按同名 Provider 归并**（src/ai.rs 新增 `export_groups`）：`sys ai config` 导出到 codex / opencode / litellm / freellmapi / codebuddy / workbuddy / trae / zcoder 时，选中模型按 Provider 名（大小写不敏感）归组——同一 Provider 只输出一个条目/块（首个块的 api_base / api_key 生效，模型跨同名块合并、按模型名去重），**绝不为同一 Provider 建立多个条目**
+- 修复两个由此暴露的隐患：litellm 同名 Provider 同名模型会输出重复 `model_name` 条目（现按名归并后天然去重）；freellmapi 同名 Provider 的后续块模型原本会被静默丢弃（现合并进同一条目）
+
+### 变更
+- 版本 0.6.12 -> 0.6.13；README（中 / 英）`ai config` 段落 + 特性行、CHANGELOG（中 / 英）、requirements.md 同步
+- `cargo test --bin sys` 361 -> 363 项全绿（新增 2 项：同名 Provider 跨 8 格式导出一块/一条（含 freellmapi 模型合并、litellm 无重复）；同名大小写变体仍归并为一组）
+
+---
+
 ## v0.6.12（2026-10-19）
 
 ### 新增

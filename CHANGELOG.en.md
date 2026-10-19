@@ -2,6 +2,18 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.13 (2026-10-19)
+
+### Added
+- **Exports merge same-name providers too** (src/ai.rs `export_groups`): `sys ai config` exports to codex / opencode / litellm / freellmapi / codebuddy / workbuddy / trae / zcoder now group the selected models by provider name (case-insensitive) — one entry/block per provider (the first block's api_base / api_key wins, models are merged across same-name blocks and deduped by name), **never creating several entries for the same provider**
+- Two latent bugs surfaced by this are fixed: litellm used to emit duplicate `model_name` rows for same-name providers sharing a model name (now naturally deduped by the grouping); freellmapi used to silently drop the models of later same-name blocks (now merged into the single entry)
+
+### Changed
+- Version 0.6.12 -> 0.6.13; README (zh / en) `ai config` section + feature row, CHANGELOG (zh / en), requirements.md updated
+- `cargo test --bin sys` 361 -> 363 passed (2 added: same-name providers across all 8 export formats yield one entry/block incl. freellmapi model merging and litellm dedup; a case-variant of the same name still merges into one group)
+
+---
+
 ## v0.6.12 (2026-10-19)
 
 ### Added

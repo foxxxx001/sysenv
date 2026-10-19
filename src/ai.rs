@@ -3678,6 +3678,33 @@ fn select_models(cfg: &chat::Config, selector: Option<&str>) -> Result<Vec<(usiz
         .collect())
 }
 
+/// The selected models grouped by provider name (case-insensitive). A
+/// provider name appears exactly once: models of the same provider must be
+/// exported as ONE entry/block, never several (mirrors the `--import` merge).
+/// The first block of the name supplies the endpoint/key; models are merged
+/// across blocks and deduped by name.
+struct ExportGroup<'a> {
+    p: &'a chat::Provider,
+    models: Vec<&'a chat::Model>,
+}
+
+fn export_groups<'a>(cfg: &'a chat::Config, pairs: &[(usize, usize)]) -> Vec<ExportGroup<'a>> {
+    let mut out: Vec<ExportGroup<'a>> = Vec::new();
+    for (pi, mi) in pairs {
+        let p = &cfg.providers[*pi];
+        let m = &p.models[*mi];
+        match out.iter_mut().find(|g| g.p.name.eq_ignore_ascii_case(&p.name)) {
+            Some(g) => {
+                if !g.models.iter().any(|x| x.name.eq_ignore_ascii_case(&m.name)) {
+                    g.models.push(m);
+                }
+            }
+            None => out.push(ExportGroup { p, models: vec![m] }),
+        }
+    }
+    out
+}
+
 /// Escape a string for a TOML basic string (double-quoted).
 fn toml_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -3723,43 +3750,33 @@ fn export_codex(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<String> 
     let first_m = &first.models[pairs[0].1];
     s.push_str(&format!("model = \"{}.{}\"\n", first.name, first_m.name));
     s.push_str(&format!("model_provider = {}\n\n", toml_str(&first.name)));
-    let mut seen: Vec<&str> = Vec::new();
-    for (pi, _mi) in pairs {
-        let p = &cfg.providers[*pi];
-        let env = format!("SYS_{}_API_KEY", env_key_name(&p.name));
-        if seen.contains(&p.name.as_str()) {
-            continue;
-        }
-        seen.push(&p.name);
-        s.push_str(&format!("[model_providers.{}]\n", toml_str(&p.name)));
-        s.push_str(&format!("name = {}\n", toml_str(&p.name)));
-        s.push_str(&format!("base_url = {}\n", toml_str(&p.api_base)));
+    for g in export_groups(cfg, pairs) {
+        let env = format!("SYS_{}_API_KEY", env_key_name(&g.p.name));
+        s.push_str(&format!("[model_providers.{}]\n", toml_str(&g.p.name)));
+        s.push_str(&format!("name = {}\n", toml_str(&g.p.name)));
+        s.push_str(&format!("base_url = {}\n", toml_str(&g.p.api_base)));
         s.push_str(&format!("env_key = {}\n", toml_str(&env)));
         s.push_str("wire_api = \"chat\"\n");
-        let models: Vec<&str> = cfg
-            .providers
-            .iter()
-            .filter(|pp| pp.name == p.name)
-            .flat_map(|pp| pp.models.iter().map(|mm| mm.name.as_str()))
-            .collect();
+        let models: Vec<&str> = g.models.iter().map(|m| m.name.as_str()).collect();
         s.push_str(&format!("# models: {}\n", models.join(", ")));
         s.push_str("\n");
-        eprintln!("sys: codex: export {env}={}", p.api_key);
+        eprintln!("sys: codex: export {env}={}", g.p.api_key);
     }
     Ok(s)
 }
 
-/// opencode: `opencode.json` — one provider entry with inline apiKey.
+/// opencode: `opencode.json` — one provider entry per provider name (merged
+/// across same-name blocks) with inline apiKey.
 fn export_opencode(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<String> {
     let mut providers = serde_json::Map::new();
-    for (pi, mi) in pairs {
-        let p = &cfg.providers[*pi];
-        let m = &p.models[*mi];
+    for g in export_groups(cfg, pairs) {
         let entry = providers
-            .entry(p.name.clone())
-            .or_insert_with(|| json!({ "npm": "@ai-sdk/openai-compatible", "name": p.name, "options": { "baseURL": p.api_base, "apiKey": p.api_key }, "models": {} }));
+            .entry(g.p.name.clone())
+            .or_insert_with(|| json!({ "npm": "@ai-sdk/openai-compatible", "name": g.p.name, "options": { "baseURL": g.p.api_base, "apiKey": g.p.api_key }, "models": {} }));
         if let Some(models) = entry.get_mut("models").and_then(|v| v.as_object_mut()) {
-            models.insert(m.name.clone(), json!({ "name": m.name }));
+            for m in &g.models {
+                models.insert(m.name.clone(), json!({ "name": m.name }));
+            }
         }
     }
     let mut root = serde_json::Map::new();
@@ -3768,41 +3785,42 @@ fn export_opencode(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<Strin
     Ok(serde_json::to_string_pretty(&Value::Object(root))?)
 }
 
-/// litellm: `config.yaml` — one `model_list` entry per model; the exposed
-/// model name is `{provider}:{model}` (collision-free) routing to
-/// `openai/{model}`.
+/// litellm: `config.yaml` — one `model_list` entry per selected model; the
+/// exposed model name is `{provider}:{model}` (collision-free) routing to
+/// `openai/{model}`. Same-name providers are merged, so a duplicate model
+/// name can never produce repeated entries.
 fn export_litellm(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<String> {
     let mut s = String::from("model_list:\n");
-    for (pi, mi) in pairs {
-        let p = &cfg.providers[*pi];
-        let m = &p.models[*mi];
-        s.push_str(&format!("  - model_name: {}\n", toml_str(&format!("{}:{}", p.name, m.name))));
-        s.push_str("    litellm_params:\n");
-        s.push_str(&format!("      model: {}\n", toml_str(&format!("openai/{}", m.name))));
-        s.push_str(&format!("      api_base: {}\n", toml_str(&p.api_base)));
-        s.push_str(&format!("      api_key: {}\n", toml_str(&p.api_key)));
+    for g in export_groups(cfg, pairs) {
+        for m in &g.models {
+            s.push_str(&format!(
+                "  - model_name: {}\n",
+                toml_str(&format!("{}:{}", g.p.name, m.name))
+            ));
+            s.push_str("    litellm_params:\n");
+            s.push_str(&format!("      model: {}\n", toml_str(&format!("openai/{}", m.name))));
+            s.push_str(&format!("      api_base: {}\n", toml_str(&g.p.api_base)));
+            s.push_str(&format!("      api_key: {}\n", toml_str(&g.p.api_key)));
+        }
     }
     Ok(s)
 }
 
 /// freellmapi: `freellmapi.config.json` — one `customProviders` entry per
-/// provider (the file also accepts `admin`/`keys`/`routing`; we export only
-/// the providers section so it can be merged).
+/// provider name (the file also accepts `admin`/`keys`/`routing`; we export
+/// only the providers section so it can be merged). Models of same-name
+/// blocks are merged into the single entry.
 fn export_freellmapi(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<String> {
     let mut list: Vec<Value> = Vec::new();
-    for (pi, _) in pairs {
-        let p = &cfg.providers[*pi];
-        if list.iter().any(|v| v["label"] == p.name) {
-            continue;
-        }
-        let models: Vec<Value> = p
+    for g in export_groups(cfg, pairs) {
+        let models: Vec<Value> = g
             .models
             .iter()
             .map(|m| json!({ "model": m.name, "displayName": m.name, "supportsTools": true }))
             .collect();
         list.push(json!({
-            "baseUrl": p.api_base,
-            "label": p.name,
+            "baseUrl": g.p.api_base,
+            "label": g.p.name,
             "models": models,
         }));
     }
@@ -3814,31 +3832,31 @@ fn export_freellmapi(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<Str
 /// `~/.workbuddy/models.json`).
 fn codebuddy_entries(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
-    for (pi, mi) in pairs {
-        let p = &cfg.providers[*pi];
-        let m = &p.models[*mi];
-        if out.iter().any(|v| v["id"].as_str() == Some(m.name.as_str())) {
-            continue;
+    for g in export_groups(cfg, pairs) {
+        for m in &g.models {
+            if out.iter().any(|v| v["id"].as_str() == Some(m.name.as_str())) {
+                continue;
+            }
+            let mut e = serde_json::Map::new();
+            e.insert("id".to_string(), json!(m.name));
+            e.insert("name".to_string(), json!(m.name));
+            e.insert("vendor".to_string(), json!(g.p.name));
+            e.insert(
+                "url".to_string(),
+                json!(format!("{}/chat/completions", g.p.api_base.trim_end_matches('/'))),
+            );
+            e.insert("apiKey".to_string(), json!(g.p.api_key));
+            if let Some(n) = m.max_input_tokens {
+                e.insert("maxInputTokens".to_string(), json!(n));
+            }
+            if let Some(n) = m.max_tokens {
+                e.insert("maxOutputTokens".to_string(), json!(n));
+            }
+            if let Some(t) = &m.model_type {
+                e.insert("supportsImages".to_string(), json!(t.contains("image")));
+            }
+            out.push(Value::Object(e));
         }
-        let mut e = serde_json::Map::new();
-        e.insert("id".to_string(), json!(m.name));
-        e.insert("name".to_string(), json!(m.name));
-        e.insert("vendor".to_string(), json!(p.name));
-        e.insert(
-            "url".to_string(),
-            json!(format!("{}/chat/completions", p.api_base.trim_end_matches('/'))),
-        );
-        e.insert("apiKey".to_string(), json!(p.api_key));
-        if let Some(n) = m.max_input_tokens {
-            e.insert("maxInputTokens".to_string(), json!(n));
-        }
-        if let Some(n) = m.max_tokens {
-            e.insert("maxOutputTokens".to_string(), json!(n));
-        }
-        if let Some(t) = &m.model_type {
-            e.insert("supportsImages".to_string(), json!(t.contains("image")));
-        }
-        out.push(Value::Object(e));
     }
     out
 }
@@ -3874,22 +3892,22 @@ fn trae_model_id(v: &Value) -> Option<&str> {
 /// compatible providers use the `open_ai` block, anthropic the `claude` one.
 fn trae_entries(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Vec<Value> {
     let mut list: Vec<Value> = Vec::new();
-    for (pi, mi) in pairs {
-        let p = &cfg.providers[*pi];
-        let m = &p.models[*mi];
-        if list.iter().any(|v| trae_model_id(v) == Some(m.name.as_str())) {
-            continue;
-        }
-        if p.kind.eq_ignore_ascii_case("anthropic") {
-            list.push(json!({
-                "name": m.name,
-                "claude": { "base_url": p.api_base, "model": m.name, "api_key": p.api_key }
-            }));
-        } else {
-            list.push(json!({
-                "name": m.name,
-                "open_ai": { "base_url": p.api_base, "api_key": p.api_key, "model": m.name }
-            }));
+    for g in export_groups(cfg, pairs) {
+        for m in &g.models {
+            if list.iter().any(|v| trae_model_id(v) == Some(m.name.as_str())) {
+                continue;
+            }
+            if g.p.kind.eq_ignore_ascii_case("anthropic") {
+                list.push(json!({
+                    "name": m.name,
+                    "claude": { "base_url": g.p.api_base, "model": m.name, "api_key": g.p.api_key }
+                }));
+            } else {
+                list.push(json!({
+                    "name": m.name,
+                    "open_ai": { "base_url": g.p.api_base, "api_key": g.p.api_key, "model": m.name }
+                }));
+            }
         }
     }
     list
@@ -4955,15 +4973,15 @@ fn zcode_provider_entry(p: &chat::Provider) -> Value {
 /// name; models are deduped by model id within each provider.
 fn zcode_providers(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Value {
     let mut map = serde_json::Map::new();
-    for (pi, mi) in pairs {
-        let p = &cfg.providers[*pi];
-        let m = &p.models[*mi];
+    for g in export_groups(cfg, pairs) {
         let entry = map
-            .entry(zcode_provider_id(&p.name))
-            .or_insert_with(|| zcode_provider_entry(p));
+            .entry(zcode_provider_id(&g.p.name))
+            .or_insert_with(|| zcode_provider_entry(g.p));
         let models = entry["models"].as_object_mut().expect("models is an object");
-        if !models.contains_key(&m.name) {
-            models.insert(m.name.clone(), json!({ "name": m.name }));
+        for m in &g.models {
+            if !models.contains_key(&m.name) {
+                models.insert(m.name.clone(), json!({ "name": m.name }));
+            }
         }
     }
     Value::Object(map)
@@ -6145,6 +6163,17 @@ mod tests {
         assert!(alibaba_limits_rows(&serde_json::json!({"output": {"quotas": []}})).is_empty());
     }
 
+    fn test_model(name: &str) -> chat::Model {
+        chat::Model {
+            name: name.to_string(),
+            weight: 1,
+            max_tokens: None,
+            max_input_tokens: None,
+            model_type: None,
+            group: Vec::new(),
+        }
+    }
+
     fn sample_cfg() -> chat::Config {
         let model = |name: &str| chat::Model {
             name: name.to_string(),
@@ -6328,6 +6357,99 @@ mod tests {
         let t: serde_yaml::Value =
             serde_yaml::from_str(&export_trae(&cfg, &all).unwrap()).unwrap();
         assert_eq!(t["models"].as_sequence().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn config_export_merges_same_name_providers() {
+        // the same provider name split across several blocks -> EVERY format
+        // exports ONE entry/block with all its models merged (the export rule
+        // mirrors the `--import` merge: never spread one provider out)
+        let mut cfg = sample_cfg();
+        cfg.providers.push(chat::Provider {
+            kind: "openai".to_string(),
+            name: "agnes".to_string(), // same name, second block
+            api_base: "https://api.agnes-alt.example/v1".to_string(),
+            api_key: "sk-agn-alt".to_string(),
+            models: vec![test_model("agn-9")],
+        });
+        let all = all_pairs(&cfg);
+
+        // codex: ONE [model_providers."agnes"] block, first base wins
+        let codex = export_codex(&cfg, &all).unwrap();
+        assert_eq!(codex.matches("[model_providers.\"agnes\"]").count(), 1);
+        assert!(codex.contains("base_url = \"https://api.agnes.example/v1\""));
+        assert!(codex.contains("# models: agn-1, agn-2, agn-9"));
+
+        // opencode: one provider key carrying all three models
+        let oc: Value = serde_json::from_str(&export_opencode(&cfg, &all).unwrap()).unwrap();
+        let p = &oc["provider"]["agnes"];
+        assert_eq!(p["options"]["baseURL"], "https://api.agnes.example/v1");
+        let models = p["models"].as_object().unwrap();
+        assert_eq!(models.len(), 3);
+        assert!(models.contains_key("agn-1") && models.contains_key("agn-2") && models.contains_key("agn-9"));
+
+        // litellm: no duplicate model_name rows
+        let litellm = export_litellm(&cfg, &all).unwrap();
+        assert_eq!(litellm.matches("model_name: \"agnes:agn-1\"").count(), 1);
+        assert_eq!(litellm.matches("model_name: \"agnes:agn-9\"").count(), 1);
+        assert_eq!(litellm.matches("model_name:").count(), 4);
+
+        // freellmapi: ONE entry whose models include agn-9 (before this fix
+        // the second block's models were silently dropped)
+        let f: Value = serde_json::from_str(&export_freellmapi(&cfg, &all).unwrap()).unwrap();
+        let list = f["customProviders"].as_array().unwrap();
+        assert_eq!(list.len(), 2);
+        let agnes = list.iter().find(|v| v["label"] == "agnes").unwrap();
+        let fmodels: Vec<&str> = agnes["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|m| m["model"].as_str())
+            .collect();
+        assert_eq!(fmodels, vec!["agn-1", "agn-2", "agn-9"]);
+
+        // codebuddy / trae / zcoder: no duplicate ids, one provider block
+        let cb: Value = serde_json::from_str(&export_codebuddy(&cfg, &all).unwrap()).unwrap();
+        let ids: Vec<&str> = cb["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|m| m["id"].as_str())
+            .collect();
+        assert_eq!(ids, vec!["agn-1", "agn-2", "agn-9", "mm-1"]);
+        let t: serde_yaml::Value =
+            serde_yaml::from_str(&export_trae(&cfg, &all).unwrap()).unwrap();
+        assert_eq!(t["models"].as_sequence().unwrap().len(), 4);
+        let z: Value = serde_json::from_str(&export_zcoder(&cfg, &all).unwrap()).unwrap();
+        assert_eq!(
+            z["provider"]["agnes"]["models"].as_object().unwrap().len(),
+            3
+        );
+    }
+
+    #[test]
+    fn config_export_groups_merge_case_insensitive() {
+        // the same provider name in a different case -> still ONE group
+        let mut cfg = sample_cfg();
+        cfg.providers.push(chat::Provider {
+            kind: "openai".to_string(),
+            name: "AGNES".to_string(),
+            api_base: "https://api.agnes-alt.example/v1".to_string(),
+            api_key: "sk-agn-alt".to_string(),
+            models: vec![test_model("agn-9")],
+        });
+        let all = all_pairs(&cfg);
+        let groups = export_groups(&cfg, &all);
+        assert_eq!(groups.len(), 2); // agnes + minimax
+        let agnes = groups
+            .iter()
+            .find(|g| g.p.name.eq_ignore_ascii_case("agnes"))
+            .unwrap();
+        assert_eq!(agnes.models.len(), 3);
+        // opencode keeps the FIRST block's casing as the provider key
+        let oc: Value = serde_json::from_str(&export_opencode(&cfg, &all).unwrap()).unwrap();
+        assert_eq!(oc["provider"].as_object().unwrap().len(), 2);
+        assert!(oc["provider"]["agnes"].is_object());
     }
 
     #[test]
