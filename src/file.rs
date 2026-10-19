@@ -13,9 +13,11 @@
 //!   sys file -l PATTERN [PATH]       count the matching lines (stdin or tree)
 //!   sys file -md5 FILE [MD5]         hash FILE with MD5; compare when MD5 given
 //!   sys file -sha FILE [SHA1]        hash FILE with SHA-1; compare when SHA1 given
-//!   sys file --enc SRC [DST]         convert file encoding: gbk/gb2312 <-> utf-8
-//!                                    (default target utf-8; `--from ENC` fixes the
-//!                                    source instead of auto-detecting; DST omitted
+//!   sys file --enc SRC [DST] [--from ENC] [--to ENC]
+//!                                    convert file encoding: gbk/gb2312 <-> utf-8
+//!                                    (default target utf-8; `--from ENC`/`-f ENC`
+//!                                    fixes the source instead of auto-detecting,
+//!                                    `--to ENC` sets the target; DST omitted
 //!                                    -> stdout; DST must differ from SRC)
 //!
 //! A single argument is a stdin search unless it is quoted ("me.txt" -> search
@@ -43,10 +45,10 @@
 //!                the same for SHA-1. Single-dash multi-letter, parsed from the
 //!                ARGS list (like `data`'s raw tokens), so they may appear at
 //!                any position
-//!   -enc         encoding-convert mode: `--enc SRC [DST] [--from ENC] [--to ENC]`
+//!   --enc        encoding-convert mode: `--enc SRC [DST] [--from ENC] [--to ENC]`
 //!                converts between utf-8 / gbk / gb2312 (default target utf-8,
-//!                source auto-detected unless `--from` is given); DST omitted
-//!                -> stdout, DST must differ from SRC. Registered clap flags
+//!                source auto-detected unless `--from`/`-f` is given); DST omitted
+//!                -> stdout, DST must differ from SRC. Scanned from the ARGS list
 //!                (`--enc` with aliases `--encode` / `--convert`; `-f ENC` is
 //!                an alias for `--from ENC`), so they may appear at any position
 //!   -S SIZE      only files at least SIZE bytes (plain number = bytes;

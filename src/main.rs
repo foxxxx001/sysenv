@@ -697,9 +697,13 @@ struct NetArgs {
 #[derive(Args)]
 struct FileArgs {
     /// PATTERN, or PATTERN PATH, or OLD NEW PATH (path = file or directory);
-    /// or -md5/-sha FILE [EXPECTED] to hash a file, or --enc SRC [DST] to
-    /// convert between utf-8 / gbk / gb2312 (flag-like tokens are absorbed
-    /// into ARGS, like `data`'s raw tokens)
+    /// or -md5/-sha FILE [EXPECTED] to hash a file; or --enc SRC [DST]
+    /// [--from ENC] [--to ENC] to convert between utf-8 / gbk / gb2312:
+    /// --from ENC (alias -f ENC) fixes the source encoding (omit to
+    /// auto-detect), --to ENC sets the target (default utf-8); ENC =
+    /// utf-8 | gbk | gb2312; --enc aliases --encode / --convert. These
+    /// flag-like tokens are absorbed into ARGS, like `data`'s raw tokens, so
+    /// they may appear at any position
     #[arg(value_name = "ARGS", allow_hyphen_values = true)]
     args: Vec<String>,
     /// Only search files with this extension (repeatable; leading dot optional, e.g. -e py -e md)
