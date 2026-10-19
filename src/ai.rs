@@ -4375,7 +4375,6 @@ fn yaml_scalar(v: &str) -> String {
 /// the model zone (first line after the last model entry / its sub-fields)
 /// and the model entry lines inside it.
 struct CfgBlock {
-    start: usize,
     end: usize,
     name: String,
     entry_indent: usize,
@@ -4481,7 +4480,6 @@ fn import_into_config(path: &Path, imports: &[ImportedProvider]) -> Result<Impor
         }
         if is_entry && cur.is_none() && provider_indent == Some(ind) {
             cur = Some(CfgBlock {
-                start: i,
                 end: eof,
                 name: String::new(),
                 entry_indent: ind,
