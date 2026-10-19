@@ -346,7 +346,8 @@ sys ai cn-model gpt-6-1-sol --refresh  # 强制重新抓取（--refresh 属 ai �
 
 * 配置文件默认位置 **`~/.sysenv/config.yaml`**（找不到会明确提示），可用 `-c/--config FILE` 覆盖；格式见 `doc/config.yaml`，脱敏模板见 `doc/config.example.yaml`
 
-* `clients` 列表存放 Provider：必填 `name / api_base / api_key / models`（`models` 每项 `name` + 可选 `weight`，缺省权重 1，**取值范围 0-9**，可选 `max_tokens`、`max_input_tokens`）；`type` 为 `openai`（默认，兼容 `open`）或 `anthropic`，分别按 OpenAI / Claude API 标准发请求
+* `clients` 列表存放 Provider：必填 `name / api_base / api_key / models`（`models` 每项 `name` + 可选 `weight`，缺省权重 1，**取值范围 0-9**，可选 `max_tokens`、`max_input_tokens`、`type`、`group`）；`type` 为 `openai`（默认，兼容 `open`）或 `anthropic`，分别按 OpenAI / Claude API 标准发请求
+  - `group`：模型的**分组**，可多分组、半角或全角逗号分隔（如 `group: fast, cheap`）；顶层 `model` 与 `-m` 可用 `group:<名>` 按组名选中**所有归属该组的模型**（跨 Provider、带权重轮询）
 
 * **能力字段只读本地配置，除非显式 `--update`**：`max_input_tokens` / `type` 默认完全来自配置文件，缺失时**不查询 models.dev、不写回任何内容**——仅影响消息截断（见下）与请求中的可选字段；chat 不依赖外部数据源
   - `--update`：发送前把本次目标模型**缺失**的 `max_input_tokens` / `type` 从 models.dev（24h 缓存）补齐并**写回配置文件**（best effort：查询或写入失败仅警告、不阻塞请求；stderr 打印实际补齐内容）；字段已齐的模型不再查询。不传该参数则保持上面的零查询/零写回行为
@@ -358,11 +359,12 @@ sys ai cn-model gpt-6-1-sol --refresh  # 强制重新抓取（--refresh 属 ai �
   - `provider:model` → Provider 名称与模型名称都匹配的那个模型
   - `provider:*` → 该 Provider 下**所有**模型，按 `weight` **带权重轮询**（缺省 1）
   - `model`（裸名）→ 所有 Provider 中名称匹配的模型合集，同样带权重轮询
-  - **多个选择**：顶层 `model` 与 `-m/--model` 都可用半角逗号 `,` 或全角逗号 `，` 分隔多个选择（如 `agnes:*,claude:claude-3-5-sonnet`），按权重轮询使用
+  - `group:<名>` → 所有 Provider 中 `group` 列表含该名的模型合集（大小写不敏感），同样带权重轮询；未命中报错并列出可用分组
+  - **多个选择**：顶层 `model` 与 `-m/--model` 都可用半角逗号 `,` 或全角逗号 `，` 分隔多个选择（如 `agnes:*,group:cheap`），按权重轮询使用
 
-* `-m/--model MODEL`：**临时覆盖**顶层 `model`，规则与配置完全一致（`provider:model` / `provider:*` / 裸名 / 逗号分隔多选）
+* `-m/--model MODEL`：**临时覆盖**顶层 `model`，规则与配置完全一致（`provider:model` / `provider:*` / 裸名 / `group:<名>` / 逗号分隔多选）
 
-* `--list-provider`：列出配置中所有 Provider（名称 / type / 模型数）后退出；`--list-model`：按 Provider 分组列出所有模型（含权重）后退出；两者可同时使用，均无需消息
+* `--list-provider`：列出配置中所有 Provider（名称 / type / 模型数）后退出；`--list-model`：按 Provider 分组列出所有模型（含权重与分组）后退出；两者可同时使用，均无需消息
 
 * **动态权重轮询**：请求失败时若该模型 `weight > 1` 则 `-1` 并**写回配置文件**，随后自动尝试下一个模型；替补模型成功且 `weight < 9` 则 `+1` 并写回。权重越高的模型被选中概率越大，失败惩罚 / 成功奖励持续生效（weight 0 表示基本不参与轮询）
 
@@ -383,6 +385,7 @@ sys ai chat "你好" --no-stream         # 关闭流式
 sys ai chat "你好" --debug             # 打印实际请求与响应（含 header）
 sys ai chat "你好" -m agnes:agnes-3.0-flash   # 覆盖顶层 model，只用 agnes 的该模型
 sys ai chat "你好" -m "agnes:*,claude:claude-3-5-sonnet"  # 多模型逗号分隔，加权轮询
+sys ai chat "你好" -m "group:cheap"               # 用分组名选中所有归属 cheap 组的模型
 sys ai chat --list-provider            # 列出配置中的 Provider
 sys ai chat --list-model               # 列出配置中的所有模型（含权重）
 sys ai server                          # 以 OpenAI 兼容 API 对外提供聊天服务（默认 127.0.0.1:10000）
@@ -401,7 +404,7 @@ sys ai server --help                   # 查询服务是否已启动：地址/�
 
 * 配置文件与 `ai chat` 完全一致（默认 `~/.sysenv/config.yaml`，`-c/--config` 覆盖），只支持 **OpenAI 兼容 Provider（`type: openai`）**；`type: anthropic` 目标在发请求前明确报错（Anthropic 没有 Images API）
 
-* **模型选择与 `ai chat` 同一套规则**：顶层 `model` 或 `-m/--model`（`{provider}:{model}` / `{model}` / `provider:*` / 逗号分隔多选），多目标按 `weight` 加权轮询，失败自动降权并尝试下一个模型，替补成功升权，权重写回配置文件
+* **模型选择与 `ai chat` 同一套规则**：顶层 `model` 或 `-m/--model`（`{provider}:{model}` / `{model}` / `provider:*` / `group:<名>` / 逗号分隔多选），多目标按 `weight` 加权轮询，失败自动降权并尝试下一个模型，替补成功升权，权重写回配置文件
 
 * **参数**：`-o/--output DIR` 保存目录（默认当前目录，自动创建）；`-n/--count N` 生成数量（默认 1）；`-s/--size SIZE` 尺寸（默认 `1024x1024`，原样传给 API，如 `512x512` / `1792x1024`）；`--url` 请求图片 URL 并下载保存（默认请求 `b64_json`，本地解码保存，无需二次网络请求）
 

@@ -1655,6 +1655,9 @@ fn md_model_list(rows: &[ModelInfoRow]) -> String {
             s.push_str(&format!("- {}\n", md_cell(&r.provider)));
         }
         s.push_str(&format!("  - name：{}\n", md_cell(&r.name)));
+        if !r.groups.is_empty() {
+            s.push_str(&format!("  - group：{}\n", md_cell(&r.groups.join(", "))));
+        }
     }
     s
 }
@@ -1704,6 +1707,7 @@ fn provider_links(name: &str) -> (String, String) {
 struct ModelInfoRow {
     provider: String,
     name: String,
+    groups: Vec<String>,
 }
 
 /// One model of a models.dev provider with its token prices.
@@ -1751,7 +1755,11 @@ fn info_model_rows(cfg: &chat::Config, keyword: Option<&str>) -> Result<Vec<Mode
         None => {
             for p in &cfg.providers {
                 for m in &p.models {
-                    rows.push(ModelInfoRow { provider: p.name.clone(), name: m.name.clone() });
+                    rows.push(ModelInfoRow {
+                        provider: p.name.clone(),
+                        name: m.name.clone(),
+                        groups: m.group.clone(),
+                    });
                 }
             }
         }
@@ -1774,7 +1782,11 @@ fn info_model_rows(cfg: &chat::Config, keyword: Option<&str>) -> Result<Vec<Mode
             for p in hits {
                 for m in &p.models {
                     if msel == "*" || contains_ci(&m.name, msel) {
-                        rows.push(ModelInfoRow { provider: p.name.clone(), name: m.name.clone() });
+                        rows.push(ModelInfoRow {
+                            provider: p.name.clone(),
+                            name: m.name.clone(),
+                            groups: m.group.clone(),
+                        });
                     }
                 }
             }
@@ -1794,7 +1806,11 @@ fn info_model_rows(cfg: &chat::Config, keyword: Option<&str>) -> Result<Vec<Mode
                 for p in &cfg.providers {
                     for m in &p.models {
                         if contains_ci(&m.name, k) {
-                            rows.push(ModelInfoRow { provider: p.name.clone(), name: m.name.clone() });
+                            rows.push(ModelInfoRow {
+                                provider: p.name.clone(),
+                                name: m.name.clone(),
+                                groups: m.group.clone(),
+                            });
                         }
                     }
                 }
@@ -1805,7 +1821,11 @@ fn info_model_rows(cfg: &chat::Config, keyword: Option<&str>) -> Result<Vec<Mode
             } else {
                 for p in hits {
                     for m in &p.models {
-                        rows.push(ModelInfoRow { provider: p.name.clone(), name: m.name.clone() });
+                        rows.push(ModelInfoRow {
+                            provider: p.name.clone(),
+                            name: m.name.clone(),
+                            groups: m.group.clone(),
+                        });
                     }
                 }
             }
@@ -2164,14 +2184,14 @@ pub fn cmd_info(
                 Some(OutFormat::Json) => {
                     let arr: Vec<Value> = rows
                         .iter()
-                        .map(|r| serde_json::json!({"provider": r.provider, "name": r.name}))
+                        .map(|r| serde_json::json!({"provider": r.provider, "name": r.name, "groups": r.groups}))
                         .collect();
                     println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
                 }
                 Some(OutFormat::Csv) => {
-                    println!("provider,name");
+                    println!("provider,name,groups");
                     for r in &rows {
-                        println!("{},{}", r.provider, r.name);
+                        println!("{},{},{}", r.provider, r.name, r.groups.join("|"));
                     }
                 }
                 Some(OutFormat::Md) => {
@@ -2180,13 +2200,17 @@ pub fn cmd_info(
                 Some(OutFormat::Yaml) => {
                     let arr: Vec<Value> = rows
                         .iter()
-                        .map(|r| serde_json::json!({"provider": r.provider, "name": r.name}))
+                        .map(|r| serde_json::json!({"provider": r.provider, "name": r.name, "groups": r.groups}))
                         .collect();
                     println!("{}", serde_yaml::to_string(&Value::Array(arr))?);
                 }
                 None => {
                     for r in &rows {
-                        println!("{}:{}", r.provider, r.name);
+                        if r.groups.is_empty() {
+                            println!("{}:{}", r.provider, r.name);
+                        } else {
+                            println!("{}:{} (group: {})", r.provider, r.name, r.groups.join(", "));
+                        }
                     }
                 }
             }
@@ -4964,6 +4988,7 @@ mod tests {
                             max_tokens: None,
                             max_input_tokens: Some(524288),
                             model_type: Some("text,image".into()),
+                            group: vec!["flash".into()],
                         },
                         chat::Model {
                             name: "deepseek-v4-flash".into(),
@@ -4971,6 +4996,7 @@ mod tests {
                             max_tokens: None,
                             max_input_tokens: None,
                             model_type: None,
+                            group: Vec::new(),
                         },
                     ],
                 },
@@ -4985,6 +5011,7 @@ mod tests {
                         max_tokens: None,
                         max_input_tokens: None,
                         model_type: None,
+                        group: Vec::new(),
                     }],
                 },
             ],
@@ -5389,6 +5416,7 @@ mod tests {
             max_tokens: None,
             max_input_tokens: None,
             model_type: None,
+            group: Vec::new(),
         };
         chat::Config {
             model: Some("agnes:agn-1".to_string()),
@@ -5549,6 +5577,7 @@ mod tests {
             max_tokens: None,
             max_input_tokens: None,
             model_type: None,
+            group: Vec::new(),
         });
         let all = all_pairs(&cfg);
         let v: Value =

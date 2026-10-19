@@ -2,6 +2,19 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.7（2026-10-19）
+
+### 新增
+- **模型分组 `group`**：config.yaml 的 `clients` 下每个模型条目可加 `group` 参数，**支持多分组**，半角 / 全角逗号分隔（如 `group: fast, cheap`）；未配置的模型分组为空
+- **分组选择器 `group:<名>`**：顶层 `model` 与 `-m/--model`（chat / image / config 导出同规则）可用分组名选中**所有归属该分组的模型**（跨 Provider、大小写不敏感、按 `weight` 加权轮询、重叠去重）；未命中报错并列出可用分组（`no model belongs to group \`x\` (available groups: ...)`），完全未配置分组时给出配置提示
+- **分组展示**：`ai chat --list-model` 模型行显示 `[group: ...]`；`ai info model` 文本显示 `(group: ...)`、md 显示 `- group：...` 行、JSON/YAML 增加 `groups` 字段、CSV 增加 `groups` 列（多分组用 `|` 分隔）
+
+### 变更
+- 版本 0.6.6 -> 0.6.7；README（中 / 英）`clients` 模型字段、`model` / `-m` 选择器规则、`info model` 输出、`ai image` 选择规则同步 `group`
+- `cargo test --bin sys` 339 -> 341 项全绿（新增 2 项：`group` 字段解析（多分组 / 空串 / 缺省）、`group:<名>` 选择器（跨 provider / 大小写 / 逗号混合去重 / 未命中报错 / 空名 / 无分组提示））
+
+---
+
 ## v0.6.6（2026-10-19）
 
 ### 修复

@@ -77,6 +77,10 @@ pub(crate) struct Model {
     /// Modality type (e.g. `text,image`) read from the config as-is; only
     /// `sys ai chat --update` consults it to decide whether to fill it in.
     pub(crate) model_type: Option<String>,
+    /// Model groups read from the config's `group:` field (comma-separated,
+    /// several allowed). Selectors `group:<name>` in the top-level `model:`
+    /// or `-m` pick every model whose groups contain the name.
+    pub(crate) group: Vec<String>,
 }
 
 /// Resolve the config path: explicit `-c` wins, otherwise `~/.sysenv/config.yaml`.
@@ -344,12 +348,24 @@ fn provider_from_yaml(c: &YVal) -> Result<Provider> {
                     .and_then(|v| v.scalar())
                     .filter(|s| !s.is_empty())
                     .map(str::to_string);
+                let group = item
+                    .get("group")
+                    .and_then(|v| v.scalar())
+                    .map(|s| {
+                        s.split([',', '，'])
+                            .map(str::trim)
+                            .filter(|g| !g.is_empty())
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
                 models.push(Model {
                     name: mname.to_string(),
                     weight,
                     max_tokens,
                     max_input_tokens,
                     model_type,
+                    group,
                 });
                 last = Some(models.len() - 1);
             } else if let Some(w) = item.get("weight").and_then(|v| v.scalar()) {
@@ -426,6 +442,8 @@ fn split_selector(s: &str) -> Vec<String> {
 /// - `prov:model`      -> one matching model of one provider
 /// - `prov:*`          -> every model of that provider (weighted round-robin)
 /// - `model`           -> every matching model across all providers (weighted round-robin)
+/// - `group:<name>`    -> every model across all providers whose `group`
+///   list contains the name (case-insensitive)
 ///
 /// The selector may contain several comma-separated (half- or full-width)
 /// selectors, each resolved by the rules above; the union is returned.
@@ -444,6 +462,42 @@ pub(crate) fn resolve_targets(cfg: &Config, selector: &str) -> Result<Vec<Target
     }
     let mut out: Vec<Target> = Vec::new();
     for sel in parts {
+        let lower = sel.to_ascii_lowercase();
+        if let Some(name) = lower.strip_prefix("group:") {
+            let name = name.trim();
+            if name.is_empty() {
+                bail!("empty group name in selector `{sel}`");
+            }
+            let mut found = false;
+            for (pi, p) in cfg.providers.iter().enumerate() {
+                for (mi, m) in p.models.iter().enumerate() {
+                    if m.group.iter().any(|g| ci_eq(g, name)) {
+                        out.push(Target { provider: pi, model: mi });
+                        found = true;
+                    }
+                }
+            }
+            if !found {
+                let mut seen: Vec<&str> = Vec::new();
+                for p in &cfg.providers {
+                    for m in &p.models {
+                        for g in &m.group {
+                            if !seen.iter().any(|s| ci_eq(s, g)) {
+                                seen.push(g);
+                            }
+                        }
+                    }
+                }
+                if seen.is_empty() {
+                    bail!("no model belongs to group `{name}` (no groups configured; add `group:` to models in config.yaml)");
+                }
+                bail!(
+                    "no model belongs to group `{name}` (available groups: {})",
+                    seen.join(", ")
+                );
+            }
+            continue;
+        }
         if let Some((prov, m)) = sel.split_once(':') {
             let prov = prov.trim();
             let m = m.trim();
@@ -1996,7 +2050,12 @@ pub(crate) fn print_models(cfg: &Config) {
             } else {
                 format!(" (weight {})", m.weight)
             };
-            println!("  - {}{}", m.name, w);
+            let g = if m.group.is_empty() {
+                String::new()
+            } else {
+                format!(" [group: {}]", m.group.join(", "))
+            };
+            println!("  - {}{}{}", m.name, w, g);
         }
     }
 }
@@ -2206,6 +2265,71 @@ stream: true
         // Overlapping selectors are de-duplicated.
         let t = resolve_targets(&cfg, "agnes:*,agnes-3.0-flash").unwrap();
         assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn resolve_targets_group_form() {
+        let y = parse_yaml(
+            r#"clients:
+  - type: openai
+    name: agnes
+    api_base: https://x.example/v1
+    api_key: sk-test
+    models:
+      - name: m1
+        group: fast, cheap
+      - name: m2
+        group: fast
+  - type: anthropic
+    name: claude
+    api_base: https://api.anthropic.example.com
+    api_key: sk-ant-test
+    models:
+      - name: c1
+        group: cheap
+      - name: c2
+"#,
+        )
+        .unwrap();
+        let cfg = config_from_yaml(&y).unwrap();
+
+        // `group:<name>` picks every model whose groups contain the name,
+        // across providers, in config order.
+        let t = resolve_targets(&cfg, "group:fast").unwrap();
+        assert_eq!(t, vec![Target { provider: 0, model: 0 }, Target { provider: 0, model: 1 }]);
+        let t = resolve_targets(&cfg, "group:cheap").unwrap();
+        assert_eq!(t, vec![Target { provider: 0, model: 0 }, Target { provider: 1, model: 0 }]);
+
+        // Case-insensitive on both the `group:` prefix and the name.
+        let t = resolve_targets(&cfg, "GROUP:FAST").unwrap();
+        assert_eq!(t.len(), 2);
+
+        // Comma lists mix group and provider selectors, de-duplicated.
+        let t = resolve_targets(&cfg, "group:fast,claude:c1").unwrap();
+        assert_eq!(t.len(), 3);
+
+        // Unknown group -> error listing available groups (deduplicated).
+        let err = resolve_targets(&cfg, "group:nope").unwrap_err();
+        assert!(err.to_string().contains("available groups: fast, cheap"), "{err}");
+
+        // Empty group name -> error.
+        assert!(resolve_targets(&cfg, "group:").is_err());
+
+        // No groups configured at all -> explicit hint.
+        let y = parse_yaml(
+            r#"clients:
+  - type: openai
+    name: agnes
+    api_base: https://x.example/v1
+    api_key: sk-test
+    models:
+      - name: m1
+"#,
+        )
+        .unwrap();
+        let cfg = config_from_yaml(&y).unwrap();
+        let err = resolve_targets(&cfg, "group:fast").unwrap_err();
+        assert!(err.to_string().contains("no groups configured"), "{err}");
     }
 
     #[test]
@@ -2724,6 +2848,39 @@ clients:
     }
 
     #[test]
+    fn model_parses_group_field() {
+        let y = parse_yaml(
+            r#"clients:
+  - type: openai
+    name: agnes
+    api_base: https://x.example/v1
+    api_key: sk-test
+    models:
+      - name: m1
+        group: fast, cheap
+      - name: m2
+        group: fast
+      - name: m3
+        group: ""
+      - name: m4
+"#,
+        )
+        .unwrap();
+        let cfg = config_from_yaml(&y).unwrap();
+        let groups: Vec<Vec<String>> = cfg.providers[0]
+            .models
+            .iter()
+            .map(|m| m.group.clone())
+            .collect();
+        assert_eq!(groups, vec![
+            vec!["fast".to_string(), "cheap".to_string()],
+            vec!["fast".to_string()],
+            Vec::<String>::new(),
+            Vec::<String>::new(),
+        ]);
+    }
+
+    #[test]
     fn missing_capability_fields_reports_only_absent_ones() {
         let full = Model {
             name: "m".into(),
@@ -2731,6 +2888,7 @@ clients:
             max_tokens: None,
             max_input_tokens: Some(4096),
             model_type: Some("text,image".into()),
+            group: Vec::new(),
         };
         assert_eq!(missing_capability_fields(&full), (false, false));
         let no_ctx = Model { max_input_tokens: None, ..full.clone() };
@@ -2760,6 +2918,7 @@ clients:
             max_tokens: None,
             max_input_tokens: None,
             model_type: None,
+            group: Vec::new(),
         }
     }
 

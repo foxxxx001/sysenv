@@ -2,6 +2,19 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.7 (2026-10-19)
+
+### Added
+- **Model groups (`group`)**: every model entry under `clients` in config.yaml may carry a `group` parameter; **several groups are allowed**, separated by half- / full-width commas (e.g. `group: fast, cheap`); models without a `group` simply have none
+- **`group:<name>` selector**: the top-level `model` and `-m/--model` (chat / image / `ai config` export all share the same rules) accept a group name and pick **every model belonging to that group** (across providers, case-insensitive, weighted round-robin by `weight`, overlapping selectors deduped); on a miss the error lists the available groups (`no model belongs to group \`x\` (available groups: ...)`), and when no groups are configured a config hint is shown instead
+- **Group display**: `ai chat --list-model` prints `[group: ...]` per model; `ai info model` prints `(group: ...)` in text, a `- group：...` line in markdown, a `groups` field in JSON/YAML, and a `groups` column in CSV (multiple groups joined with `|`)
+
+### Changed
+- version 0.6.6 -> 0.6.7; README (zh / en) updated for the `clients` model fields, the `model` / `-m` selector rules, `info model` output and the `ai image` selection rules
+- `cargo test --bin sys` 339 -> 341 all green (2 new tests: `group` field parsing (multi-group / empty string / absent), `group:<name>` selector (cross-provider / case-insensitive / comma-mixed dedup / miss error / empty name / no-groups hint))
+
+---
+
 ## v0.6.6 (2026-10-19)
 
 ### Fixed

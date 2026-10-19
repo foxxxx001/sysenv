@@ -367,6 +367,7 @@ mod tests {
             max_tokens: None,
             max_input_tokens: None,
             model_type: None,
+            group: Vec::new(),
         }
     }
 
