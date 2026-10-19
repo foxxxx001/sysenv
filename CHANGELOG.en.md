@@ -2,6 +2,15 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.1 (2026-10-19)
+
+### Changed
+- **CSV / table header detection fixed**: the first line is the column header by default; a second line made of `----` separators (e.g. ps' `------- ------`) is recognised as a header underline and skipped, so it no longer becomes a junk data row; `--no-header` is the only way to enable `col1..colN` (no more auto-inference), `--header` forces the first line as header
+- version 0.6.0 -> 0.6.1; README (zh / en) data row updated
+- `cargo test --bin sys` 319 -> 321 all green
+
+---
+
 ## v0.6.0 (2026-10-19)
 
 ### Changed

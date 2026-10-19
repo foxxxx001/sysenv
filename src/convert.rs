@@ -85,14 +85,26 @@ pub(crate) fn cell_to_value(s: String) -> Value {
     }
 }
 
+/// A row is a separator line (e.g. ps' `------- ------` or a Markdown
+/// `---|---`) when every cell is only `-` / `:` / `|` / blank and at least
+/// one cell contains a dash.
+fn is_sep_row(cells: &[String]) -> bool {
+    if cells.is_empty() || !cells.iter().any(|c| c.contains('-')) {
+        return false;
+    }
+    cells
+        .iter()
+        .all(|c| c.trim().is_empty() || c.trim().chars().all(|ch| matches!(ch, '-' | ':' | '|')))
+}
+
 /// CSV rows -> array of objects.
 ///
 /// Column headers are virtualised as object keys, mirroring `-i table`:
-/// * `header = Some(true)` — the first non-blank row is the column header.
-/// * `header = Some(false)` — every row is data; columns are named
-///   `col1..colN` (N = widest row).
-/// * `header = None` (auto) — the first non-blank row is the header iff it
-///   contains at least one non-numeric cell; an all-numeric first row is data.
+/// * `header = Some(true)` / `None` — the first non-blank row is the column
+///   header (the default); a second row made of `----` separators is
+///   recognised as a header underline and skipped.
+/// * `header = Some(false)` (`--no-header`) — every row is data; columns are
+///   named `col1..colN` (N = widest row).
 ///
 /// Empty header cells fall back to `colN`. Blank rows are skipped; cell
 /// values are type-inferred (null / bool / int / float / string).
@@ -101,19 +113,18 @@ pub(crate) fn csv_to_value(text: &str, header: Option<bool>) -> Result<Value> {
     if rows.is_empty() {
         return Ok(Value::Array(Vec::new()));
     }
-    let first = &rows[0];
-    let use_header = match header {
-        Some(h) => h,
-        None => first.iter().any(|c| !table_cell_is_numeric(c)),
-    };
+    let use_header = header.unwrap_or(true);
     let mut arr = Vec::new();
     if use_header {
-        let keys: Vec<String> = first
+        let keys: Vec<String> = rows[0]
             .iter()
             .enumerate()
             .map(|(i, c)| if c.trim().is_empty() { format!("col{}", i + 1) } else { c.clone() })
             .collect();
         for row in &rows[1..] {
+            if is_sep_row(row) {
+                continue;
+            }
             let mut obj = Map::new();
             for (i, k) in keys.iter().enumerate() {
                 obj.insert(k.clone(), cell_to_value(row.get(i).cloned().unwrap_or_default()));
@@ -317,26 +328,20 @@ fn split_table_cells(line: &str) -> Vec<String> {
     line.split_whitespace().map(str::to_string).collect()
 }
 
-/// A cell counts as numeric when it parses as a plain integer or float; an
-/// all-numeric first line is treated as data rather than a header.
-fn table_cell_is_numeric(cell: &str) -> bool {
-    !cell.is_empty() && (cell.parse::<i64>().is_ok() || cell.parse::<f64>().is_ok())
-}
-
 /// `-i table`: parse whitespace-separated table output (like `ps`) into an
 /// array of objects.
 ///
-/// * `header = Some(true)` — the first non-blank line is the column header.
-/// * `header = Some(false)` — every line is data; columns are named
-///   `col1..colN` (N = widest row).
-/// * `header = None` (auto) — the first non-blank line is the header iff it
-///   contains at least one non-numeric cell; an all-numeric first line is data.
+/// * `header = Some(true)` / `None` — the first non-blank line is the column
+///   header (the default); a second line made of `----` separators is
+///   recognised as a header underline and skipped.
+/// * `header = Some(false)` (`--no-header`) — every line is data; columns are
+///   named `col1..colN` (N = widest row).
 ///
 /// Rows with more cells than headers append the overflow cells (joined with a
 /// single space) to the last column — the common `ps` shape where the COMMAND
 /// field may contain spaces. Rows with fewer cells are padded with empty
-/// strings. Blank lines are skipped. Cell values are type-inferred exactly
-/// like CSV (null / bool / int / float / string).
+/// strings. Blank lines and separator lines are skipped. Cell values are
+/// type-inferred exactly like CSV (null / bool / int / float / string).
 pub(crate) fn table_to_value(text: &str, header: Option<bool>) -> Result<Value> {
     let lines: Vec<&str> = text
         .lines()
@@ -345,20 +350,21 @@ pub(crate) fn table_to_value(text: &str, header: Option<bool>) -> Result<Value> 
     if lines.is_empty() {
         return Ok(Value::Array(Vec::new()));
     }
-    let first = split_table_cells(lines[0]);
-    let use_header = match header {
-        Some(h) => h,
-        None => first.iter().any(|c| !table_cell_is_numeric(c)),
-    };
+    let use_header = header.unwrap_or(true);
     let mut arr = Vec::new();
     if use_header {
+        let first = split_table_cells(lines[0]);
         let keys: Vec<String> = first
             .iter()
             .enumerate()
             .map(|(i, c)| if c.is_empty() { format!("col{}", i + 1) } else { c.clone() })
             .collect();
         for raw in &lines[1..] {
-            let mut cells = split_table_cells(raw);
+            let cells = split_table_cells(raw);
+            if is_sep_row(&cells) {
+                continue;
+            }
+            let mut cells = cells;
             if cells.len() > keys.len() {
                 // Overflow cells (e.g. COMMAND with spaces) join the last column.
                 let tail = cells.split_off(keys.len()).join(" ");
@@ -569,15 +575,35 @@ gary         4567    123  0 10:20 pts/0    00:00:00 bash --norc
     }
 
     #[test]
-    fn table_all_numeric_first_line_means_no_header() {
+    fn table_numeric_first_row_is_default_header() {
+        // 无分隔线、无旗标时第一行默认是列名（不做 colN 自动推断）。
         let v = table_to_value("1 2 3\n4 5 6\n", None).unwrap();
         let arr = v.as_array().unwrap();
-        assert_eq!(arr.len(), 2);
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0].as_object().unwrap().get("1"), Some(&Value::from(4)));
+        assert_eq!(arr[0].as_object().unwrap().get("2"), Some(&Value::from(5)));
+        // col1..colN 仅在显式 --no-header 时启用。
+        let v = table_to_value("1 2 3\n4 5 6\n", Some(false)).unwrap();
+        let arr = v.as_array().unwrap();
         assert_eq!(arr[0]["col1"], 1);
         assert_eq!(arr[0]["col2"], 2);
         assert_eq!(arr[0]["col3"], 3);
         assert_eq!(arr[1]["col1"], 4);
         assert_eq!(arr[1]["col3"], 6);
+    }
+
+    #[test]
+    fn table_second_line_separator_means_header_and_is_skipped() {
+        let v = table_to_value("A B\n---- ----\n1 2\n", None).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1, "separator line must not become a data row");
+        assert_eq!(arr[0]["A"], 1);
+        assert_eq!(arr[0]["B"], 2);
+        // ps 风格：第二行 `------- ------` 亦识别。
+        let v = table_to_value("Name Id\n------ --\nfoo 1\nbar 2\n", None).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[1]["Name"], "bar");
     }
 
     #[test]
@@ -612,15 +638,35 @@ gary         4567    123  0 10:20 pts/0    00:00:00 bash --norc
     }
 
     #[test]
-    fn csv_all_numeric_first_line_means_no_header() {
+    fn csv_numeric_first_row_is_default_header() {
+        // 无分隔线、无旗标时第一行默认是列名（不做 colN 自动推断）。
         let v = csv_to_value("1,2,3\n4,5,6\n", None).unwrap();
         let arr = v.as_array().unwrap();
-        assert_eq!(arr.len(), 2);
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0].as_object().unwrap().get("1"), Some(&Value::from(4)));
+        assert_eq!(arr[0].as_object().unwrap().get("2"), Some(&Value::from(5)));
+        // col1..colN 仅在显式 --no-header 时启用。
+        let v = csv_to_value("1,2,3\n4,5,6\n", Some(false)).unwrap();
+        let arr = v.as_array().unwrap();
         assert_eq!(arr[0]["col1"], 1);
         assert_eq!(arr[0]["col2"], 2);
         assert_eq!(arr[0]["col3"], 3);
         assert_eq!(arr[1]["col1"], 4);
         assert_eq!(arr[1]["col3"], 6);
+    }
+
+    #[test]
+    fn csv_second_line_separator_means_header_and_is_skipped() {
+        let v = csv_to_value("A,B\n----,----\n1,2\n", None).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1, "separator row must not become a data row");
+        assert_eq!(arr[0]["A"], 1);
+        assert_eq!(arr[0]["B"], 2);
+        // 单字段分隔线行（如 `----`）。
+        let v = csv_to_value("A,B\n----\n1,2\n", None).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["A"], 1);
     }
 
     #[test]

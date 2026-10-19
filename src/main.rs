@@ -138,12 +138,13 @@ struct DataArgs {
     #[arg(short = 'o', long, value_name = "FMT")]
     output: Option<String>,
     /// `-i csv` / `-i table` only: treat the first non-blank line as the
-    /// column header (overrides auto-detection, which uses a header iff the
-    /// first line has a non-numeric cell)
+    /// column header. The first line is the header by default; a second line
+    /// made of `----` separators is detected and skipped. Use `--no-header`
+    /// to get col1..colN instead
     #[arg(long, conflicts_with = "no_header")]
     header: bool,
     /// `-i csv` / `-i table` only: treat every line as data and name the
-    /// columns col1..colN (overrides auto-detection)
+    /// columns col1..colN (required for colN keys; never auto-inferred)
     #[arg(long, conflicts_with = "header")]
     no_header: bool,
     /// Write the result back to FILE instead of stdout (with an expression the
