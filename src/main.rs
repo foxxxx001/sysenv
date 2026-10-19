@@ -162,6 +162,12 @@ struct DataArgs {
     /// the expression.
     #[arg(long, value_name = "N", num_args = 0..=1, default_missing_value = "1")]
     depth: Option<usize>,
+    /// Keep only the first N rows when the document is an array (csv / table
+    /// input parses to an array of rows). Applied to the whole document before
+    /// the expression, so `sys data -i table --limit 3` prints the first 3
+    /// rows (header still included).
+    #[arg(long, value_name = "N")]
+    limit: Option<usize>,
 }
 
 #[derive(Args)]
@@ -883,6 +889,7 @@ fn main() -> ExitCode {
                 (_, true) => Some(false),
                 _ => None,
             },
+            d.limit,
         )
         .map(|_| 0),
         Cmd::Task(t) => run_task(t).map(|_| 0),

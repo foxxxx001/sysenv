@@ -32,6 +32,11 @@
 //! `--depth N` (default 1): delete every node deeper than N levels from the
 //! whole document (root = level 0; levels 0..=N are kept), e.g.
 //! `sys data --depth 1 -f cfg.yaml` keeps the top-level keys only.
+//!
+//! `--limit N`: keep only the first N rows when the document is an array
+//! (csv / table input parses to an array of rows), e.g.
+//! `sys data -i table --limit 3` prints the first 3 rows (header included).
+//! Applied to the whole document before the expression.
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -1381,6 +1386,22 @@ pub struct DataOpts {
     pub root: bool,
 }
 
+/// Keep only the first `limit` elements of the root array (csv / table input
+/// parses to an array of rows). Non-array roots are rejected so a forgotten
+/// `--limit` is reported instead of silently ignored.
+pub(crate) fn apply_limit(v: &mut Value, limit: usize) -> Result<()> {
+    match v {
+        Value::Array(a) => {
+            a.truncate(limit);
+            Ok(())
+        }
+        other => bail!(
+            "`--limit` requires an array document (use with -i csv / -i table; got {})",
+            type_name(other)
+        ),
+    }
+}
+
 /// Run `sys data`.
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_data(
@@ -1394,6 +1415,7 @@ pub fn cmd_data(
     root: bool,
     depth: Option<usize>,
     table_header: Option<bool>,
+    limit: Option<usize>,
 ) -> Result<()> {
     if file.is_some() && url.is_some() {
         bail!("-f/--file and -u/--url cannot be combined");
@@ -1426,6 +1448,12 @@ pub fn cmd_data(
         None => source_fmt.unwrap_or_else(|| detect_format(&text).expect("detect input format")),
     };
     let mut v = parse_input(&text, in_f, table_header)?;
+
+    // 2.5. --limit N: keep only the first N rows of an array root (csv /
+    // table input parses to an array of rows).
+    if let Some(n) = limit {
+        apply_limit(&mut v, n)?;
+    }
 
     // 3. Output format: -o, else input format.
     let out_f = match out_fmt {
@@ -2114,5 +2142,50 @@ mod tests {
         let mut v = json!({"a": {"b": {"c": 1}}});
         prune_depth(&mut v, 3);
         assert_eq!(v, json!({"a": {"b": {"c": 1}}}));
+    }
+
+    // ------------------------------------------------------------------
+    // --limit N: keep the first N rows of an array document
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn apply_limit_truncates_array_rows() {
+        let mut v = json!([{"A": 1}, {"A": 2}, {"A": 3}]);
+        apply_limit(&mut v, 2).unwrap();
+        assert_eq!(v, json!([{"A": 1}, {"A": 2}]));
+        // N = 0 -> empty; N >= len -> unchanged.
+        let mut v = json!([{"A": 1}]);
+        apply_limit(&mut v, 0).unwrap();
+        assert_eq!(v, json!([]));
+        let mut v = json!([{"A": 1}, {"A": 2}]);
+        apply_limit(&mut v, 5).unwrap();
+        assert_eq!(v, json!([{"A": 1}, {"A": 2}]));
+    }
+
+    #[test]
+    fn apply_limit_rejects_non_array() {
+        let mut v = json!({"a": 1});
+        assert!(apply_limit(&mut v, 1).is_err());
+        let mut v = json!("rows");
+        assert!(apply_limit(&mut v, 1).is_err());
+        let mut v = json!(42);
+        assert!(apply_limit(&mut v, 1).is_err());
+    }
+
+    #[test]
+    fn limit_flows_through_table_and_csv() {
+        // `sys data -i table --limit 2` core path: parse -> limit -> serialize
+        // keeps the header plus the first 2 data rows.
+        let mut v = parse_input("A B\n1 2\n3 4\n5 6\n", DataFormat::Table, None).unwrap();
+        apply_limit(&mut v, 2).unwrap();
+        assert_eq!(serialize_output(&v, DataFormat::Table, false).unwrap(), "A B\n1 2\n3 4\n");
+        // Same for csv.
+        let mut v = parse_input("A,B\n1,2\n3,4\n5,6\n", DataFormat::Csv, None).unwrap();
+        apply_limit(&mut v, 2).unwrap();
+        assert_eq!(serialize_output(&v, DataFormat::Csv, false).unwrap(), "A,B\n1,2\n3,4\n");
+        // --no-header: rows are pure data, col1..colN keys.
+        let mut v = parse_input("1 2\n3 4\n5 6\n", DataFormat::Table, Some(false)).unwrap();
+        apply_limit(&mut v, 1).unwrap();
+        assert_eq!(serialize_output(&v, DataFormat::Table, false).unwrap(), "col1 col2\n1    2   \n");
     }
 }

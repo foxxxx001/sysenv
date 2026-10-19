@@ -2,6 +2,17 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.3 (2026-10-19)
+
+### Added
+- **`--limit N`**: `sys data` row truncation — when the document root is an array, only the first N rows are kept (`-i csv` / `-i table` parse into an array of row objects, so this shows only the first N data rows, header still printed); applied before the expression (the query / filter runs on the truncated document); a non-array root errors out clearly
+
+### Changed
+- version 0.6.2 -> 0.6.3; README (zh / en) data row notes `--limit`; module header comment updated
+- `cargo test --bin sys` 323 -> 326 all green (3 new tests: apply_limit truncation / non-array rejection / full table+csv pipeline)
+
+---
+
 ## v0.6.2 (2026-10-19)
 
 ### Added
