@@ -1453,6 +1453,15 @@ pub fn cmd_data(
     // table input parses to an array of rows).
     if let Some(n) = limit {
         apply_limit(&mut v, n)?;
+        if n == 0 {
+            // head -n 0 semantics: the document is empty, so emit nothing
+            // (the table / csv serialisers would reject the empty array).
+            if let Some(p) = write_back {
+                std::fs::write(p, "").with_context(|| format!("cannot write {p}"))?;
+                eprintln!("sys data: wrote {p}");
+            }
+            return Ok(());
+        }
     }
 
     // 3. Output format: -o, else input format.

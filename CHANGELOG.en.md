@@ -5,7 +5,7 @@ Versioned record of new features / fixes / release conventions. Artifact naming:
 ## v0.6.3 (2026-10-19)
 
 ### Added
-- **`--limit N`**: `sys data` row truncation — when the document root is an array, only the first N rows are kept (`-i csv` / `-i table` parse into an array of row objects, so this shows only the first N data rows, header still printed); applied before the expression (the query / filter runs on the truncated document); a non-array root errors out clearly
+- **`--limit N`**: `sys data` row truncation — when the document root is an array, only the first N rows are kept (`-i csv` / `-i table` parse into an array of row objects, so this shows only the first N data rows, header still printed); applied before the expression (the query / filter runs on the truncated document); `N=0` prints nothing (head -n 0 semantics); a non-array root errors out clearly
 
 ### Changed
 - version 0.6.2 -> 0.6.3; README (zh / en) data row notes `--limit`; module header comment updated
