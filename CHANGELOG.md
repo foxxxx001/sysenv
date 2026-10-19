@@ -2,6 +2,18 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.14（2026-10-19）
+
+### 变更
+- **以 api_base 判定"是否同一 Provider"**（导入 / 导出统一）：Provider 的身份是其端点，不再按名字归并
+  - 导入（`merge_imported_providers` / `import_into_config`）：来源中指向同一 api_base（尾部斜杠与大小写忽略）的条目合并为一个块（首个条目的名字 / kind / api_key 保留，模型按名去重）；指向不同 api_base 的条目即使名字相同也是不同 Provider，各自成块。原"同名不同端点强制合并 + note"逻辑移除
+  - 导出（`export_groups` + 新增 `export_key`）：8 种格式（codex / opencode / litellm / freellmapi / codebuddy / workbuddy / trae / zcoder）按 api_base 归组——同一端点只输出一个条目/块（首个块名字 / api_key 生效，模型合并去重）；同名但端点不同的 Provider 保持为不同条目，条目名冲突时以 `名字@主机名` 唯一化（如 `openroute@openrouter.ai`）
+  - 加载：重复检测同步改为按 api_base（同端点重复才 warning；同名不同端点视为不同 Provider，不再误报）
+- 版本 0.6.13 -> 0.6.14；README（中 / 英）`ai config` 段落 + 特性行、CHANGELOG（中 / 英）、requirements.md 同步
+- `cargo test --bin sys`：363 项全绿（导出 2 项重写为同端点归并 / 同名不同端点分开；导入 2 项重写为同端点合并 / 不同端点分块；加载 1 项重写为按 api_base 检测）
+
+---
+
 ## v0.6.13（2026-10-19）
 
 ### 新增

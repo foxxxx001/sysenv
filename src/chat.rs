@@ -396,19 +396,21 @@ fn config_from_yaml(y: &YVal) -> Result<Config> {
         .unwrap_or(false);
     let mut providers = Vec::new();
     if let Some(clients) = y.get("clients").and_then(|v| v.list()) {
+        // A provider's identity is its api_base: blocks sharing the endpoint
+        // are the same provider and must live in one block (informational —
+        // both blocks still load). Same name at a different endpoint is a
+        // distinct provider and is NOT a duplicate.
         let mut seen: Vec<String> = Vec::new();
         for c in clients {
             let p = provider_from_yaml(c)?;
-            if seen.iter().any(|s| ci_eq(s, &p.name)) {
-                // The config rule: models of the same provider must be
-                // configured in one block, never as several providers. This is
-                // informational — both blocks still load.
+            let base = p.api_base.trim_end_matches('/').to_ascii_lowercase();
+            if !base.is_empty() && seen.iter().any(|s| *s == base) {
                 eprintln!(
-                    "sys: warning: duplicate provider name `{}` in config; models of the same provider should live in one block",
-                    p.name
+                    "sys: warning: duplicate provider (same api_base) `{}` in config; models of the same provider should live in one block",
+                    p.api_base
                 );
             }
-            seen.push(p.name.clone());
+            seen.push(base);
             providers.push(p);
         }
     }
@@ -2215,11 +2217,32 @@ stream: true
     }
 
     #[test]
-    fn duplicate_provider_names_still_load_but_warn() {
-        // same provider name twice: loading must not break (the loader prints
-        // a warning to stderr), both blocks stay — the config rule is that
-        // models of the same provider live in one block
+    fn duplicate_api_base_still_loads_but_warns() {
+        // the same api_base twice: loading must not break (a warning goes to
+        // stderr), both blocks stay — a provider's identity is its endpoint,
+        // so same-endpoint blocks must live together
         let yaml = r#"clients:
+  - type: openai
+    name: agnes
+    api_base: https://a.example/v1
+    api_key: sk-a
+    models:
+      - name: m1
+  - type: openai
+    name: agnes
+    api_base: https://a.example/v1
+    api_key: sk-b
+    models:
+      - name: m2
+"#;
+        let y = parse_yaml(yaml).unwrap();
+        let cfg = config_from_yaml(&y).unwrap();
+        assert_eq!(cfg.providers.len(), 2);
+        assert_eq!(cfg.providers[0].name, "agnes");
+        assert_eq!(cfg.providers[1].name, "agnes");
+        // same name at a DIFFERENT endpoint is a distinct provider, not a
+        // duplicate: loading stays clean
+        let yaml2 = r#"clients:
   - type: openai
     name: agnes
     api_base: https://a.example/v1
@@ -2233,11 +2256,10 @@ stream: true
     models:
       - name: m2
 "#;
-        let y = parse_yaml(yaml).unwrap();
-        let cfg = config_from_yaml(&y).unwrap();
-        assert_eq!(cfg.providers.len(), 2);
-        assert_eq!(cfg.providers[0].name, "agnes");
-        assert_eq!(cfg.providers[1].name, "agnes");
+        let cfg2 = config_from_yaml(&parse_yaml(yaml2).unwrap()).unwrap();
+        assert_eq!(cfg2.providers.len(), 2);
+        assert_eq!(cfg2.providers[0].api_base, "https://a.example/v1");
+        assert_eq!(cfg2.providers[1].api_base, "https://b.example/v1");
     }
 
     #[test]

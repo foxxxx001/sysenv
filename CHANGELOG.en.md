@@ -2,6 +2,18 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.14 (2026-10-19)
+
+### Changed
+- **"Is it the same provider?" is now decided by api_base** (unified for import / export): a provider's identity is its endpoint, no longer its name
+  - Import (`merge_imported_providers` / `import_into_config`): source entries pointing at the same api_base (trailing slashes and case ignored) merge into ONE block (the first entry's name / kind / api_key wins; models deduped by name); entries at a different api_base are distinct providers even when the names match and keep their own blocks. The old "same-name different-endpoint force-merge + note" is removed
+  - Export (`export_groups` + new `export_key`): all 8 formats (codex / opencode / litellm / freellmapi / codebuddy / workbuddy / trae / zcoder) group by api_base — one entry/block per endpoint (the first block's name/key wins; models merged and deduped by name); same-name providers at different endpoints stay distinct, and a name collision on the entry key is resolved as `name@host` (e.g. `openroute@openrouter.ai`)
+  - Loading: the duplicate check now keys on api_base too (only a repeated endpoint warns; same name at a different endpoint is a distinct provider and no longer a false positive)
+- Version 0.6.13 -> 0.6.14; README (zh / en) `ai config` section + feature row, CHANGELOG (zh / en), requirements.md updated
+- `cargo test --bin sys`: 363 passed (2 export tests rewritten to same-endpoint merge / same-name-different-endpoint split; 2 import tests rewritten to same-endpoint merge / different-endpoint blocks; 1 loading test rewritten to api_base-keyed detection)
+
+---
+
 ## v0.6.13 (2026-10-19)
 
 ### Added
