@@ -3925,16 +3925,27 @@ fn export_trae(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<String> {
 /// that are not already present are added and reported.
 /// All export formats and their default config file paths for `--list`.
 fn config_format_list() -> Vec<(&'static str, Option<PathBuf>)> {
+    config_format_list_with(None)
+}
+
+/// The formats plus their config paths; `src` overrides the location: the
+/// software's usual config file name is then looked up directly inside `src`
+/// (used when an agent is installed at a non-default place).
+fn config_format_list_with(src: Option<&Path>) -> Vec<(&'static str, Option<PathBuf>)> {
     ["codex", "opencode", "litellm", "freellmapi", "codebuddy", "workbuddy", "trae", "zcoder"]
         .iter()
-        .map(|f| (*f, software_config_path(f)))
+        .map(|f| (*f, software_config_path_with(src, f)))
         .collect()
 }
 
 /// Every format whose default config file actually exists on this machine
 /// (used by `--list`: only existing configs are shown).
 fn config_existing_list() -> Vec<(&'static str, PathBuf)> {
-    config_format_list()
+    config_existing_list_with(None)
+}
+
+fn config_existing_list_with(src: Option<&Path>) -> Vec<(&'static str, PathBuf)> {
+    config_format_list_with(src)
         .into_iter()
         .filter_map(|(name, path)| path.filter(|p| p.exists()).map(|p| (name, p)))
         .collect()
@@ -3950,11 +3961,12 @@ pub fn cmd_config(
     update: bool,
     list: bool,
     import_mode: bool,
+    src: Option<&Path>,
 ) -> Result<()> {
     if list {
-        // `sys ai config --list`: show only the formats whose default config
-        // file actually exists on this machine (missing ones are filtered out).
-        let existing = config_existing_list();
+        // `sys ai config --list`: show only the formats whose config file
+        // actually exists (at the default location, or under --src DIR).
+        let existing = config_existing_list_with(src);
         if existing.is_empty() {
             eprintln!("sys: no existing config files found");
             return Ok(());
@@ -3985,10 +3997,11 @@ pub fn cmd_config(
     }
     if import_mode {
         // Import: reverse direction — read the third-party config (default
-        // path or -f FILE) and merge its providers/models into the sysenv
-        // config, backing up first. Only codebuddy / workbuddy / zcoder can
-        // be imported; the local cfg is not needed for selection here.
-        return cmd_config_import(&format_lc, out_file, config);
+        // path, --src DIR or -f FILE) and merge its providers/models into the
+        // sysenv config, backing up first. Only codebuddy / workbuddy /
+        // opencode / zcoder can be imported; the local cfg is not needed for
+        // selection here.
+        return cmd_config_import(&format_lc, out_file, config, src);
     }
     let (cfg, _) = chat::load_config(config)?;
     let sel = models.or(selector);
@@ -3997,7 +4010,7 @@ pub fn cmd_config(
         bail!("nothing to export (no models selected)");
     }
     if update {
-        return cmd_config_update(&format_lc, &cfg, &pairs, out_file);
+        return cmd_config_update(&format_lc, &cfg, &pairs, out_file, src);
     }
     let text = match format_lc.as_str() {
         "codex" => export_codex(&cfg, &pairs)?,
@@ -4013,7 +4026,7 @@ pub fn cmd_config(
     if show {
         // Show mode: print the target software's config file path first, then the
         // config that would be applied — without touching any file.
-        match software_config_path(format) {
+        match software_config_path_with(src, format) {
             Some(p) => println!("config file: {}", p.display()),
             None => println!("config file: <no default path; choose one with -f FILE>"),
         }
@@ -4070,6 +4083,7 @@ fn cmd_config_update(
     cfg: &chat::Config,
     pairs: &[(usize, usize)],
     out_file: Option<&Path>,
+    src: Option<&Path>,
 ) -> Result<()> {
     if !matches!(format, "codebuddy" | "workbuddy" | "trae" | "zcoder") {
         bail!(
@@ -4078,7 +4092,7 @@ fn cmd_config_update(
     }
     let path = match out_file {
         Some(p) => p.to_path_buf(),
-        None => software_config_path(format)
+        None => software_config_path_with(src, format)
             .ok_or_else(|| anyhow::anyhow!("no default config path for `{format}`; use -f FILE"))?,
     };
     if !path.exists() {
@@ -4335,6 +4349,71 @@ fn parse_zcoder_config(path: &Path) -> Result<(Vec<ImportedProvider>, Vec<String
         providers.push(ImportedProvider {
             name,
             kind,
+            api_base: api_base.to_string(),
+            api_key: api_key.to_string(),
+            models,
+        });
+    }
+    Ok((providers, skipped))
+}
+
+/// Parse an opencode `opencode.json` back into providers. Every
+/// `provider.<id>` block becomes one provider: `options.baseURL` /
+/// `options.apiKey` supply the endpoint and key, the `models` object keys are
+/// the model ids (`models.*.name` wins when present). opencode carries no
+/// provider kind field, so everything imports as OpenAI-compatible. Blocks
+/// without a key or without models are skipped.
+fn parse_opencode_config(path: &Path) -> Result<(Vec<ImportedProvider>, Vec<String>)> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+    let root: Value = serde_json::from_str(content)
+        .with_context(|| format!("{} is not valid JSON", path.display()))?;
+    let providers_obj = root
+        .get("provider")
+        .and_then(|p| p.as_object())
+        .with_context(|| format!("{} has no `provider` object", path.display()))?;
+
+    let mut providers: Vec<ImportedProvider> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for (id, entry) in providers_obj {
+        let name = entry["name"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| id.clone());
+        let options = entry.get("options").unwrap_or(&Value::Null);
+        let Some(api_base) = options["baseURL"].as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+            skipped.push(format!("provider `{id}` without `options.baseURL`"));
+            continue;
+        };
+        let Some(api_key) = options["apiKey"].as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+            skipped.push(format!("provider `{id}` without `options.apiKey`"));
+            continue;
+        };
+        let mut models: Vec<ImportedModel> = Vec::new();
+        if let Some(models_obj) = entry["models"].as_object() {
+            for (mid, mv) in models_obj {
+                let mname = mv["name"]
+                    .as_str()
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|| mid.clone());
+                models.push(ImportedModel {
+                    name: mname,
+                    max_tokens: None,
+                    max_input_tokens: None,
+                    model_type: None,
+                });
+            }
+        }
+        if models.is_empty() {
+            skipped.push(format!("provider `{id}` without models"));
+            continue;
+        }
+        providers.push(ImportedProvider {
+            name,
+            kind: "openai".to_string(),
             api_base: api_base.to_string(),
             api_key: api_key.to_string(),
             models,
@@ -4636,29 +4715,31 @@ fn cmd_config_import(
     format: &str,
     source: Option<&Path>,
     config: Option<&Path>,
+    src: Option<&Path>,
 ) -> Result<()> {
-    if !matches!(format, "codebuddy" | "workbuddy" | "zcoder") {
+    if !matches!(format, "codebuddy" | "workbuddy" | "opencode" | "openxode" | "zcoder") {
         bail!(
-            "`--import` is not supported for `{format}` (only codebuddy, workbuddy, zcoder)"
+            "`--import` is not supported for `{format}` (only codebuddy, workbuddy, opencode, zcoder)"
         );
     }
-    let src = match source {
+    let src_path = match source {
         Some(p) => p.to_path_buf(),
-        None => software_config_path(format)
-            .ok_or_else(|| anyhow::anyhow!("no default config path for `{format}`; use -f FILE"))?,
+        None => software_config_path_with(src, format)
+            .ok_or_else(|| anyhow::anyhow!("no default config path for `{format}`; use -f FILE or --src DIR"))?,
     };
-    if !src.exists() {
-        bail!("source file not found at {} (nothing to import)", src.display());
+    if !src_path.exists() {
+        bail!("source file not found at {} (nothing to import)", src_path.display());
     }
     let (providers, skipped) = match format {
-        "codebuddy" | "workbuddy" => parse_models_json(&src)?,
-        "zcoder" => parse_zcoder_config(&src)?,
+        "codebuddy" | "workbuddy" => parse_models_json(&src_path)?,
+        "opencode" | "openxode" => parse_opencode_config(&src_path)?,
+        "zcoder" => parse_zcoder_config(&src_path)?,
         _ => unreachable!("format checked above"),
     };
     if providers.is_empty() {
         bail!(
             "nothing importable from {} ({} incomplete entry/entries skipped)",
-            src.display(),
+            src_path.display(),
             skipped.len()
         );
     }
@@ -4948,6 +5029,37 @@ fn merge_zcode_models(
 /// Default config file of the target software for `ai config` exports.
 /// Paths are the tools' usual conventions; `-f FILE` always overrides them.
 fn software_config_path(format: &str) -> Option<PathBuf> {
+    software_config_path_with(None, format)
+}
+
+/// Default config file for `format`, or the file named after the format's
+/// convention inside `src` when a `--src` directory is given (agents
+/// installed at a non-default place). `-f FILE` always wins over both.
+fn software_config_path_with(src: Option<&Path>, format: &str) -> Option<PathBuf> {
+    let Some(dir) = src else {
+        return software_config_path_default(format);
+    };
+    config_file_name(format).map(|name| dir.join(name))
+}
+
+/// The config file name each format's software conventionally uses (used to
+/// resolve `--src DIR`).
+fn config_file_name(format: &str) -> Option<&'static str> {
+    match format.to_ascii_lowercase().as_str() {
+        "codex" => Some("config.toml"),
+        "opencode" | "openxode" => Some("opencode.json"),
+        "litellm" => Some("config.yaml"),
+        "freellmapi" => Some("freellmapi.config.json"),
+        "codebuddy" | "workbuddy" => Some("models.json"),
+        "trae" => Some("trae_cli.yaml"),
+        "zcoder" => Some("config.json"),
+        _ => None,
+    }
+}
+
+/// The software's usual config path under the user's home (the historical
+/// convention; `--src` replaces it).
+fn software_config_path_default(format: &str) -> Option<PathBuf> {
     if format.eq_ignore_ascii_case("trae") {
         #[cfg(not(windows))]
         if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
@@ -6389,7 +6501,7 @@ mod tests {
         let cfg = sample_cfg();
         let all = all_pairs(&cfg);
         // absent file -> Ok, no file and no backup created
-        cmd_config_update("codebuddy", &cfg, &all, Some(&missing)).unwrap();
+        cmd_config_update("codebuddy", &cfg, &all, Some(&missing), None).unwrap();
         assert!(!missing.exists());
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
         std::fs::remove_dir_all(&dir).ok();
@@ -6403,7 +6515,7 @@ mod tests {
         std::fs::write(&path, "[model_providers]\n").unwrap();
         let cfg = sample_cfg();
         let all = all_pairs(&cfg);
-        assert!(cmd_config_update("codex", &cfg, &all, Some(&path)).is_err());
+        assert!(cmd_config_update("codex", &cfg, &all, Some(&path), None).is_err());
         // unchanged and no stray backup
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[model_providers]\n");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
@@ -6801,8 +6913,87 @@ mod tests {
     }
 
     #[test]
+    fn import_parse_opencode_config() {
+        let dir = std::env::temp_dir().join(format!("sysenv-imp-oc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("opencode.json");
+        std::fs::write(
+            &path,
+            r#"{"$schema":"https://opencode.ai/config.json","provider":{"zai":{"npm":"@ai-sdk/anthropic","name":"zai","options":{"baseURL":"https://api.z.ai/api/anthropic","apiKey":"sk-z"},"models":{"glm-5.2":{"name":"GLM-5.2"},"glm-5.1":{"name":"GLM-5.1"}}},"nokey":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"https://x.example/v1"},"models":{"m1":{}}}}}"#,
+        )
+        .unwrap();
+        let (ps, skipped) = parse_opencode_config(&path).unwrap();
+        assert_eq!(skipped.len(), 1); // nokey has no apiKey
+        assert!(skipped[0].contains("nokey"));
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].name, "zai");
+        assert_eq!(ps[0].kind, "openai"); // opencode carries no kind field
+        assert_eq!(ps[0].api_base, "https://api.z.ai/api/anthropic");
+        assert_eq!(ps[0].api_key, "sk-z");
+        assert_eq!(ps[0].models.len(), 2);
+        assert_eq!(ps[0].models[0].name, "GLM-5.2");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_file_name_maps_every_format() {
+        let dir = PathBuf::from("D:\\agents");
+        for (f, name) in [
+            ("codex", "config.toml"),
+            ("opencode", "opencode.json"),
+            ("openxode", "opencode.json"),
+            ("litellm", "config.yaml"),
+            ("freellmapi", "freellmapi.config.json"),
+            ("codebuddy", "models.json"),
+            ("workbuddy", "models.json"),
+            ("trae", "trae_cli.yaml"),
+            ("zcoder", "config.json"),
+        ] {
+            assert_eq!(
+                software_config_path_with(Some(&dir), f),
+                Some(dir.join(name)),
+                "--src mapping for {f}"
+            );
+        }
+        assert_eq!(software_config_path_with(Some(&dir), "nope"), None);
+        // without --src the home-relative convention still applies
+        let home = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+            .unwrap();
+        assert_eq!(
+            software_config_path("workbuddy"),
+            Some(home.join(".workbuddy").join("models.json"))
+        );
+    }
+
+    #[test]
+    fn import_opencode_via_src_dir() {
+        // --src DIR points at the agent's config dir: opencode.json is read
+        // from there even though ~/.config/opencode has no file
+        let dir = std::env::temp_dir().join(format!("sysenv-imp-ocsrc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src_file = dir.join("opencode.json");
+        std::fs::write(
+            &src_file,
+            r#"{"provider":{"newco":{"name":"newco","options":{"baseURL":"https://api.newco.example/v1","apiKey":"sk-new"},"models":{"nm-1":{"name":"nm-1"}}}}}"#,
+        )
+        .unwrap();
+        let cfg = dir.join("config.yaml");
+        std::fs::write(&cfg, "model: agnes:agn-1\nclients:\n  - type: openai\n    name: agnes\n    api_base: https://api.agnes.example/v1\n    api_key: sk-agn\n    models:\n      - name: agn-1\nstream: true\n").unwrap();
+        cmd_config_import("opencode", None, Some(&cfg), Some(&dir)).unwrap();
+        let (parsed, _) = chat::load_config(Some(&cfg)).unwrap();
+        assert_eq!(parsed.providers.len(), 2);
+        assert_eq!(parsed.providers[1].name, "newco");
+        assert_eq!(parsed.providers[1].api_base, "https://api.newco.example/v1");
+        assert_eq!(parsed.providers[1].models[0].name, "nm-1");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn import_unsupported_format_rejected() {
-        assert!(cmd_config_import("codex", None, None).is_err());
-        assert!(cmd_config_import("trae", None, None).is_err());
+        assert!(cmd_config_import("codex", None, None, None).is_err());
+        assert!(cmd_config_import("trae", None, None, None).is_err());
+        assert!(cmd_config_import("litellm", None, None, None).is_err());
     }
 }

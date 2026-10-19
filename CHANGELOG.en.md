@@ -2,6 +2,18 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.11 (2026-10-19)
+
+### Added
+- **`ai config --import` now supports opencode**: `parse_opencode_config` parses the `provider.<id>` blocks of `opencode.json` (`options.baseURL` / `options.apiKey` / the `models` object, `models.*.name` wins; opencode carries no kind field → everything imports as OpenAI-compatible); blocks without a key or without models are skipped and reported; the same add-new-first / keep-existing merge as zcoder
+- **`--src DIR` agent config directory**: `software_config_path_with` looks each format's conventional file name up directly inside `DIR` (codex `config.toml`, opencode `opencode.json`, litellm `config.yaml`, freellmapi `freellmapi.config.json`, codebuddy / workbuddy `models.json`, trae `trae_cli.yaml`, zcoder `config.json` via `config_file_name`), replacing the default home-relative path; it drives the default path of **`--show` / `--update` / `--import` / `--list`** (`-f FILE` always wins); agents installed at a non-default place need no file name to be typed
+
+### Changed
+- Version 0.6.10 -> 0.6.11; `AiConfigArgs` gains `--src`; `cmd_config` / `cmd_config_update` / `cmd_config_import` gain the `src` parameter; README (zh / en) `ai config` section + feature row, CHANGELOG (zh / en), requirements.md updated
+- `cargo test --bin sys` 355 -> 358 all green (3 new tests: opencode reverse parse, the `config_file_name` / `software_config_path_with` `--src` mapping for all 8 formats plus the home convention without `--src`, and an end-to-end opencode import through a `--src` dir)
+
+---
+
 ## v0.6.10 (2026-10-19)
 
 ### Changed

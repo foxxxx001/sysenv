@@ -356,6 +356,12 @@ struct AiConfigArgs {
     /// Write the export to this file instead of stdout (the previous file is backed up first)
     #[arg(short = 'f', long, value_name = "FILE")]
     file: Option<PathBuf>,
+    /// Agent config directory: the target software's usual config file name is
+    /// looked up directly inside this dir, replacing the default home-relative
+    /// path for --show / --update / --import / --list (for agents installed at
+    /// a non-default place). -f FILE always wins
+    #[arg(long, value_name = "DIR")]
+    src: Option<PathBuf>,
     /// Config file path (default: ~/.sysenv/config.yaml)
     #[arg(short = 'c', long, value_name = "FILE")]
     config: Option<PathBuf>,
@@ -1064,6 +1070,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             g.update,
             g.list,
             g.import,
+            g.src.as_deref(),
         ),
     }
 }

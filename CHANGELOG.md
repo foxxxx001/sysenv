@@ -2,6 +2,18 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.11（2026-10-19）
+
+### 新增
+- **`ai config --import` 支持 opencode**：`parse_opencode_config` 解析 `opencode.json` 的 `provider.<id>` 块（`options.baseURL` / `options.apiKey` / `models` 对象，`models.*.name` 优先；opencode 无 kind 字段 → 全部按 OpenAI 兼容导入）；缺 key / 无模型的块跳过并提示；与 zcoder 同样走「新增优先、同名保留本地」合并
+- **`--src DIR` 指定 agent 配置目录**：`software_config_path_with` 把各格式约定文件名（codex `config.toml`、opencode `opencode.json`、litellm `config.yaml`、freellmapi `freellmapi.config.json`、codebuddy / workbuddy `models.json`、trae `trae_cli.yaml`、zcoder `config.json`，`config_file_name`）直接在 `DIR` 下查找，替代默认 home 相对路径；作用于 **`--show` / `--update` / `--import` / `--list`** 四种模式的缺省路径（`-f FILE` 显式路径始终优先）；agent 装在非默认位置时无需记完整文件名
+
+### 变更
+- 版本 0.6.10 -> 0.6.11；`AiConfigArgs` 增加 `--src`；`cmd_config` / `cmd_config_update` / `cmd_config_import` 增加 `src` 参数；README（中 / 英）`ai config` 段落 + 特性行、CHANGELOG（中 / 英）、requirements.md 同步
+- `cargo test --bin sys` 355 -> 358 项全绿（新增 3 项：opencode 配置反向解析、`config_file_name` / `software_config_path_with` 的 `--src` 映射（8 格式）+ 无 `--src` 时仍走 home 约定、opencode 经 `--src` 目录端到端导入）
+
+---
+
 ## v0.6.10（2026-10-19）
 
 ### 变更
