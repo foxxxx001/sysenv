@@ -6,6 +6,7 @@ Versioned record of new features / fixes / release conventions. Artifact naming:
 
 ### Fixed
 - **Non-UTF-8 input no longer errors**: `sys data` reads files / stdin as bytes and decodes them — UTF-8 (BOM-stripped declaration) -> UTF-16 (BOM) -> GBK (Windows ANSI 936) -> GB18030 -> lossy fallback (U+FFFD); also handles the mojibake trap where GBK byte pairs happen to be valid UTF-8 (GBK wins when its view contains real CJK while the UTF-8 view has none) — `sys data -f xxx.log` (GBK device log) no longer fails with `stream did not contain valid UTF-8`
+- **Format detection no longer panics**: single-line input without `-i` now returns a proper `cannot detect the input format` error instead of the previous `.expect()` panic
 - new dependency `encoding_rs` (pure Rust, cross-platform)
 
 ### Changed

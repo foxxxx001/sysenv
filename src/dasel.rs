@@ -1505,7 +1505,10 @@ pub fn cmd_data(
     // else content detection.
     let in_f = match in_fmt {
         Some(s) => parse_format(s)?,
-        None => source_fmt.unwrap_or_else(|| detect_format(&text).expect("detect input format")),
+        None => match source_fmt {
+            Some(f) => f,
+            None => detect_format(&text)?,
+        },
     };
     let mut v = parse_input(&text, in_f, table_header)?;
 

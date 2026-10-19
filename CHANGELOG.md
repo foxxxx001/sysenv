@@ -6,6 +6,7 @@
 
 ### 修复
 - **非 UTF-8 输入不再报错**：`sys data` 读取文件 / stdin 改为字节级解码，按 UTF-8（BOM 剥离声明）→ UTF-16（BOM）→ GBK（Windows ANSI 936）→ GB18030 → 宽松降级（U+FFFD）的顺序解码；并处理 GBK 字节对恰好是合法 UTF-8 的摩斯码陷阱（UTF-8 视图无汉字而 GBK 视图含汉字时取 GBK）——`sys data -f xxx.log`（GBK 设备日志）不再报 `stream did not contain valid UTF-8`
+- **格式检测失败不再 panic**：单行输入且无 `-i` 时 `detect_format` 报错改为正常错误返回（原 `.expect()` 直接 panic），提示 `cannot detect the input format`
 - 新增依赖 `encoding_rs`（纯 Rust，跨平台）
 
 ### 变更
