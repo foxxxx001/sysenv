@@ -1,5 +1,5 @@
 //! `sys data` (alias `dasel`) — query, modify and convert structured data
-//! (JSON / YAML / TOML / CSV), a Rust port of the dasel core workflow.
+//! (JSON / JSONL / YAML / TOML / CSV), a Rust port of the dasel core workflow.
 //!
 //! Usage:
 //!   sys data -i yaml 'a.b[0].name'                     # read a value
@@ -7,6 +7,11 @@
 //!   sys data -i json -o yaml '{}'                      # format conversion
 //!   echo '{"a":{"b":"你好"}}' | sys data 'a.b'          # read from stdin
 //!   sys data --root 'a.b = "x"' < in.json              # modify, print whole doc
+//!
+//! JSONL (JSON Lines / NDJSON): one JSON value per line; the input parses to a
+//! root array, so selectors / filters work as on a JSON array — e.g.
+//! `sys data -f app.log 'level=="error"'` auto-filters the log lines, and
+//! `sys data -f app.log '[*].filter(level=="error")' --limit 10` is equivalent.
 //!
 //! Selector syntax (dasel-compatible subset):
 //!   .a.b            dotted keys (a leading `.` is optional)
@@ -52,10 +57,11 @@ use std::path::Path;
 // Formats
 // ---------------------------------------------------------------------------
 
-/// Formats supported by `sys data` (superset of the removed `sys con`: + TOML + table).
+/// Formats supported by `sys data` (superset of the removed `sys con`: + TOML + table + jsonl).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataFormat {
     Json,
+    Jsonl,
     Yaml,
     Toml,
     Csv,
@@ -66,12 +72,13 @@ pub enum DataFormat {
 fn parse_format(s: &str) -> Result<DataFormat> {
     match s.to_ascii_lowercase().as_str() {
         "json" => Ok(DataFormat::Json),
+        "jsonl" | "ndjson" => Ok(DataFormat::Jsonl),
         "yaml" | "yml" => Ok(DataFormat::Yaml),
         "toml" => Ok(DataFormat::Toml),
         "csv" => Ok(DataFormat::Csv),
         "md" | "markdown" => Ok(DataFormat::Md),
         "table" => Ok(DataFormat::Table),
-        other => bail!("unknown format `{other}` (expected: json | yaml | toml | csv | md | table)"),
+        other => bail!("unknown format `{other}` (expected: json | jsonl | yaml | toml | csv | md | table)"),
     }
 }
 
@@ -79,6 +86,7 @@ fn format_from_ext(path: &Path) -> Option<DataFormat> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
         "json" => Some(DataFormat::Json),
+        "jsonl" | "ndjson" => Some(DataFormat::Jsonl),
         "yaml" | "yml" => Some(DataFormat::Yaml),
         "toml" => Some(DataFormat::Toml),
         "csv" => Some(DataFormat::Csv),
@@ -96,6 +104,21 @@ fn format_from_ext(path: &Path) -> Option<DataFormat> {
 pub fn parse_input(text: &str, fmt: DataFormat, table_header: Option<bool>) -> Result<Value> {
     match fmt {
         DataFormat::Json => serde_json::from_str(text).context("invalid JSON input"),
+        DataFormat::Jsonl => {
+            // JSON Lines: one standalone JSON value per line, collected into a
+            // root array so selectors / filters work as on a JSON array.
+            let mut arr = Vec::new();
+            for (i, line) in text.lines().enumerate() {
+                let t = line.trim();
+                if t.is_empty() {
+                    continue;
+                }
+                arr.push(serde_json::from_str(t).with_context(|| {
+                    format!("invalid JSONL at line {} (each line must be one JSON value)", i + 1)
+                })?);
+            }
+            Ok(Value::Array(arr))
+        }
         DataFormat::Yaml => parse_yaml_tolerant(text),
         DataFormat::Toml => {
             toml::from_str(text).context("invalid TOML input")
@@ -160,6 +183,21 @@ pub fn serialize_output(v: &Value, fmt: DataFormat, compact: bool) -> Result<Str
                 Ok(format!("{}\n", serde_json::to_string(v)?))
             } else {
                 Ok(format!("{}\n", serde_json::to_string_pretty(v)?))
+            }
+        }
+        DataFormat::Jsonl => {
+            // JSON Lines output: one compact JSON value per line (an array is
+            // unwrapped into one line per element, mirroring the input).
+            match v {
+                Value::Array(arr) => {
+                    let mut out = String::new();
+                    for item in arr {
+                        out.push_str(&serde_json::to_string(item)?);
+                        out.push('\n');
+                    }
+                    Ok(out)
+                }
+                other => Ok(format!("{}\n", serde_json::to_string(other)?)),
             }
         }
         DataFormat::Yaml => {
@@ -1582,10 +1620,11 @@ pub fn cmd_data(
             }
         };
     } else if looks_like_bare_predicate(expr)
-        && matches!(in_f, DataFormat::Csv | DataFormat::Table)
+        && matches!(in_f, DataFormat::Csv | DataFormat::Table | DataFormat::Jsonl)
     {
-        // Bare comparison predicate on csv / table input: auto-filter the
-        // root array (e.g. `sys data -i table 'Id==7360'`).
+        // Bare comparison predicate on csv / table / jsonl input: auto-filter
+        // the root array (e.g. `sys data -i table 'Id==7360'` or
+        // `sys data -f x.jsonl 'level=="error"'`).
         let fc = FunctionCall {
             path: Some("[*]".to_string()),
             name: "filter".to_string(),
@@ -1702,17 +1741,22 @@ fn is_stdin_tty() -> bool {
     }
 }
 
-/// Best-effort format detection (JSON / YAML first, then CSV / MD).
+/// Best-effort format detection (JSON / JSONL / YAML first, then CSV / MD).
 fn detect_format(text: &str) -> Result<DataFormat> {
     let t = text.trim_start();
     if t.starts_with('{') || t.starts_with('[') {
         if serde_json::from_str::<Value>(text).is_ok() {
             return Ok(DataFormat::Json);
         }
+        // JSON Lines: the whole text is not one JSON value, but every line is
+        // (pretty-printed JSON already succeeded above).
+        if lines_are_jsonl(text) {
+            return Ok(DataFormat::Jsonl);
+        }
         if parse_yaml_tolerant(text).is_ok() {
             return Ok(DataFormat::Yaml);
         }
-        bail!("input starts like JSON/YAML but cannot be parsed (use -i json|yaml|toml|table)");
+        bail!("input starts like JSON/YAML but cannot be parsed (use -i json|jsonl|yaml|toml|table)");
     }
     if toml::from_str::<toml::Value>(text).is_ok() && t.lines().any(|l| l.contains('=')) {
         return Ok(DataFormat::Toml);
@@ -1735,7 +1779,23 @@ fn detect_format(text: &str) -> Result<DataFormat> {
     if lines.len() > 1 {
         return Ok(DataFormat::Csv);
     }
-    bail!("cannot detect the input format (use -i json|yaml|toml|csv|md|table)")
+    bail!("cannot detect the input format (use -i json|jsonl|yaml|toml|csv|md|table)")
+}
+
+/// True when every non-blank line of `text` is a standalone JSON value
+/// (JSON Lines / NDJSON).
+fn lines_are_jsonl(text: &str) -> bool {
+    let mut n = 0;
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if serde_json::from_str::<Value>(line.trim()).is_err() {
+            return false;
+        }
+        n += 1;
+    }
+    n > 0
 }
 
 // ---------------------------------------------------------------------------
@@ -2293,5 +2353,70 @@ mod tests {
         // Garbage that decodes under no encoding -> lossy U+FFFD, no panic.
         let s = decode_text(&[0xFF, 0xFE, 0x01, 0x02, 0x03]);
         assert!(s.chars().any(|c| c == '\u{FFFD}'));
+    }
+
+    // ------------------------------------------------------------------
+    // JSONL (JSON Lines): one JSON value per line -> root array
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn jsonl_parse_and_roundtrip() {
+        let src = "{\"level\":\"info\",\"pid\":1}\n{\"level\":\"error\",\"pid\":2}\n";
+        let v = parse_input(src, DataFormat::Jsonl, None).unwrap();
+        assert!(v.is_array());
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["level"], "info");
+        assert_eq!(arr[1]["pid"], 2);
+        // Round-trip: serialize back to one compact JSON per line.
+        assert_eq!(serialize_output(&v, DataFormat::Jsonl, false).unwrap(), src);
+        // Blank lines are skipped.
+        let v = parse_input("{\"a\":1}\n\n{\"a\":2}\n", DataFormat::Jsonl, None).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn jsonl_invalid_line_reports_line_number() {
+        let err = parse_input("{\"a\":1}\nnot json\n{\"a\":3}\n", DataFormat::Jsonl, None)
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("line 2"), "got: {err:#}");
+    }
+
+    #[test]
+    fn detect_format_jsonl_vs_pretty_json() {
+        // Multi-line pretty JSON is one JSON value -> Json.
+        let pretty = "{\n  \"a\": 1,\n  \"b\": [1, 2]\n}\n";
+        assert_eq!(detect_format(pretty).unwrap(), DataFormat::Json);
+        // One JSON value per line -> Jsonl.
+        let jsonl = "{\"a\":1}\n{\"a\":2}\n";
+        assert_eq!(detect_format(jsonl).unwrap(), DataFormat::Jsonl);
+        // A single JSON object line is still plain Json.
+        assert_eq!(detect_format("{\"a\":1}\n").unwrap(), DataFormat::Json);
+    }
+
+    #[test]
+    fn jsonl_bare_predicate_filters_array() {
+        // Core of `sys data -f x.jsonl 'level=="error"'`: parse -> root array
+        // -> auto-filter on the bare predicate -> jsonl output.
+        let v = parse_input(
+            "{\"level\":\"info\",\"pid\":1}\n{\"level\":\"error\",\"pid\":2}\n{\"level\":\"error\",\"pid\":3}\n",
+            DataFormat::Jsonl,
+            None,
+        ).unwrap();
+        let fc = FunctionCall {
+            path: Some("[*]".to_string()),
+            name: "filter".to_string(),
+            args: "level==\"error\"".to_string(),
+        };
+        let out = apply_filter(&v, &fc, DataFormat::Jsonl, false).unwrap();
+        assert_eq!(out, "{\"level\":\"error\",\"pid\":2}\n{\"level\":\"error\",\"pid\":3}\n");
+        // --limit composes with the array root.
+        let mut v = parse_input(
+            "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n",
+            DataFormat::Jsonl,
+            None,
+        ).unwrap();
+        apply_limit(&mut v, 2).unwrap();
+        assert_eq!(serialize_output(&v, DataFormat::Jsonl, false).unwrap(), "{\"a\":1}\n{\"a\":2}\n");
     }
 }

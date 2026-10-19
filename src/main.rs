@@ -131,7 +131,7 @@ struct DataArgs {
     /// json; -i overrides). Example: `sys data -u https://api.dev/config status`
     #[arg(short = 'u', long, value_name = "URL", conflicts_with = "file")]
     url: Option<String>,
-    /// Input format: json | yaml | toml | csv | md | table (default: -f extension, else detection)
+    /// Input format: json | jsonl | yaml | toml | csv | md | table (default: -f extension, else detection)
     #[arg(short = 'i', long, value_name = "FMT")]
     input: Option<String>,
     /// Output format (default: the input format)

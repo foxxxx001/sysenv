@@ -2,6 +2,18 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.5 (2026-10-19)
+
+### Added
+- **JSONL (JSON Lines / NDJSON) format**: `-i jsonl` / `-o jsonl` / `.jsonl` / `.ndjson` extension; input parses one JSON value per line into a **root array** — selectors, `[*].filter(...)`, `search(...)` and `--limit` all work as on a JSON array; **bare-predicate auto-filter** matches csv/table (`sys data -f app.log 'level=="error"'` works directly); output is one compact JSON per line; content-detection fallback (whole text is not one JSON but every line is -> jsonl, so `.log` files need no `-i`)
+- bad lines error with the line number (`invalid JSONL at line N`)
+
+### Changed
+- version 0.6.4 -> 0.6.5; README (zh / en) data row updated to the seven formats JSON/JSONL/YAML/TOML/CSV/MD/TABLE; module header notes the jsonl example
+- `cargo test --bin sys` 329 -> 333 all green (4 new tests: parse+round-trip, line-number error, detection vs pretty JSON, bare-predicate filter + limit)
+
+---
+
 ## v0.6.4 (2026-10-19)
 
 ### Fixed

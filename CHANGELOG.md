@@ -2,6 +2,18 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.5（2026-10-19）
+
+### 新增
+- **JSONL（JSON Lines / NDJSON）格式**：`-i jsonl` / `-o jsonl` / `.jsonl` / `.ndjson` 后缀；输入每行一个 JSON 值解析为**根数组**——选择器、`[*].filter(...)`、`search(...)`、`--limit` 全部按 JSON 数组工作；**裸谓词自动过滤**与 csv / table 一致（`sys data -f app.log 'level=="error"'` 直接可用）；输出为逐行紧凑 JSON；内容检测兜底（整文非单一 JSON 但每行都是 JSON 时判为 jsonl，`.log` 日志文件无需 `-i`）
+- 错误行报错带行号（`invalid JSONL at line N`）
+
+### 变更
+- 版本 0.6.4 -> 0.6.5；README（中 / 英）data 特性行更新为 JSON/JSONL/YAML/TOML/CSV/MD/TABLE 七格式；模块头注释补充 jsonl 示例
+- `cargo test --bin sys` 329 -> 333 项全绿（新增 4 项：解析+回环、行号报错、格式检测区分、裸谓词过滤+limit 组合）
+
+---
+
 ## v0.6.4（2026-10-19）
 
 ### 修复
