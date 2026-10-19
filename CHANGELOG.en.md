@@ -2,6 +2,19 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.5.12 (2026-10-19)
+
+### Added
+- **`sys data -i table`**: parse whitespace-separated tabular output (e.g. `ps`), one record per line; a first non-blank line with any non-numeric cell is treated as the header (queryable by column name, e.g. `[0].PID` / `[*].COMMAND`), otherwise columns are named `col1..colN`; `--header` / `--no-header` force either mode (mutually exclusive); extra cells fold into the last column, missing cells pad empty, cell types inferred like CSV
+- **`-o table`**: aligned table output for arrays of objects / a single object / arrays of scalars; scalar reads (e.g. `[0].PID`) print the number / bool / string directly
+- **Root-array selectors**: `[0]` / `[-1]` / `[*]` are now valid selector prefixes addressing a root array
+
+### Changed
+- version 0.5.11 -> 0.5.12; README (zh / en) data row updated to six formats + table parsing
+- `cargo test --bin sys` 300 -> 314 all green
+
+---
+
 ## v0.5.11 (2026-10-17)
 
 ### Removed

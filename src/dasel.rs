@@ -43,7 +43,7 @@ use std::path::Path;
 // Formats
 // ---------------------------------------------------------------------------
 
-/// Formats supported by `sys data` (superset of the removed `sys con`: + TOML).
+/// Formats supported by `sys data` (superset of the removed `sys con`: + TOML + table).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataFormat {
     Json,
@@ -51,6 +51,7 @@ pub enum DataFormat {
     Toml,
     Csv,
     Md,
+    Table,
 }
 
 fn parse_format(s: &str) -> Result<DataFormat> {
@@ -60,7 +61,8 @@ fn parse_format(s: &str) -> Result<DataFormat> {
         "toml" => Ok(DataFormat::Toml),
         "csv" => Ok(DataFormat::Csv),
         "md" | "markdown" => Ok(DataFormat::Md),
-        other => bail!("unknown format `{other}` (expected: json | yaml | toml | csv | md)"),
+        "table" => Ok(DataFormat::Table),
+        other => bail!("unknown format `{other}` (expected: json | yaml | toml | csv | md | table)"),
     }
 }
 
@@ -82,7 +84,7 @@ fn format_from_ext(path: &Path) -> Option<DataFormat> {
 /// generated files) frequently indent with tabs, which strict YAML rejects.
 /// Tabs are normalised to 4 spaces before the strict parser, and the
 /// project's tolerant block parser is used as a last-resort fallback.
-pub fn parse_input(text: &str, fmt: DataFormat) -> Result<Value> {
+pub fn parse_input(text: &str, fmt: DataFormat, table_header: Option<bool>) -> Result<Value> {
     match fmt {
         DataFormat::Json => serde_json::from_str(text).context("invalid JSON input"),
         DataFormat::Yaml => parse_yaml_tolerant(text),
@@ -91,6 +93,7 @@ pub fn parse_input(text: &str, fmt: DataFormat) -> Result<Value> {
         }
         DataFormat::Csv => crate::convert::csv_to_value(text),
         DataFormat::Md => crate::convert::md_to_value(text),
+        DataFormat::Table => crate::convert::table_to_value(text, table_header),
     }
 }
 
@@ -164,6 +167,7 @@ pub fn serialize_output(v: &Value, fmt: DataFormat, compact: bool) -> Result<Str
         }
         DataFormat::Csv => crate::convert::value_to_csv(v),
         DataFormat::Md => crate::convert::value_to_md(v),
+        DataFormat::Table => crate::convert::value_to_table(v),
     }
 }
 
@@ -213,7 +217,10 @@ fn parse_selector(sel: &str) -> Result<Vec<Step>> {
         if expect_segment {
             match bytes[i] {
                 '.' => bail!("unexpected `.` at position {i} in `{sel}`"),
-                '[' => bail!("missing key before `[` at position {i} in `{sel}`"),
+                '[' => {
+                    // Root array index: `[0].key`, `[-1]`, `[*]` on a root array.
+                    i = parse_brackets(&bytes, i, &mut steps, sel)?;
+                }
                 '"' | '\'' => {
                     let quote = bytes[i];
                     i += 1;
@@ -343,10 +350,13 @@ fn get_values<'a>(root: &'a Value, steps: &[Step]) -> Vec<&'a Value> {
 fn render_get(v: &Value, fmt: DataFormat, compact: bool) -> Result<String> {
     match v {
         Value::Null => Ok(String::new()),
-        Value::String(s) if matches!(fmt, DataFormat::Json | DataFormat::Yaml) && !s.contains('\n') => {
+        Value::String(s) if matches!(fmt, DataFormat::Json | DataFormat::Yaml | DataFormat::Table) && !s.contains('\n') => {
             // dasel prints scalar strings unquoted.
             Ok(format!("{s}\n"))
         }
+        // `-o table` scalar reads (e.g. `sys data -i table '[0].PID'`) print the
+        // plain JSON scalar instead of failing the table serializer.
+        Value::Number(_) | Value::Bool(_) if fmt == DataFormat::Table => Ok(format!("{v}\n")),
         _ => serialize_output(v, fmt, compact),
     }
 }
@@ -1341,6 +1351,7 @@ pub fn cmd_data(
     compact: bool,
     root: bool,
     depth: Option<usize>,
+    table_header: Option<bool>,
 ) -> Result<()> {
     if file.is_some() && url.is_some() {
         bail!("-f/--file and -u/--url cannot be combined");
@@ -1372,7 +1383,7 @@ pub fn cmd_data(
         Some(s) => parse_format(s)?,
         None => source_fmt.unwrap_or_else(|| detect_format(&text).expect("detect input format")),
     };
-    let mut v = parse_input(&text, in_f)?;
+    let mut v = parse_input(&text, in_f, table_header)?;
 
     // 3. Output format: -o, else input format.
     let out_f = match out_fmt {
@@ -1548,7 +1559,7 @@ fn detect_format(text: &str) -> Result<DataFormat> {
         if parse_yaml_tolerant(text).is_ok() {
             return Ok(DataFormat::Yaml);
         }
-        bail!("input starts like JSON/YAML but cannot be parsed (use -i json|yaml|toml)");
+        bail!("input starts like JSON/YAML but cannot be parsed (use -i json|yaml|toml|table)");
     }
     if toml::from_str::<toml::Value>(text).is_ok() && t.lines().any(|l| l.contains('=')) {
         return Ok(DataFormat::Toml);
@@ -1571,7 +1582,7 @@ fn detect_format(text: &str) -> Result<DataFormat> {
     if lines.len() > 1 {
         return Ok(DataFormat::Csv);
     }
-    bail!("cannot detect the input format (use -i json|yaml|toml|csv|md)")
+    bail!("cannot detect the input format (use -i json|yaml|toml|csv|md|table)")
 }
 
 // ---------------------------------------------------------------------------
@@ -1616,7 +1627,8 @@ mod tests {
         );
         assert!(parse_selector("a..b").is_err());
         assert!(parse_selector("a.").is_err());
-        assert!(parse_selector("[0]").is_err());
+        // 根数组索引自 v0.5.12 起合法（[0] / [-1] / [*]）。
+        assert_eq!(parse_selector("[0]").unwrap(), vec![Step::Index(Some(0))]);
         assert!(parse_selector("a[x]").is_err());
     }
 
@@ -1654,13 +1666,13 @@ mod tests {
     #[test]
     fn tab_yaml_parsing() {
         // Tabs as indentation: strict YAML rejects this; we must normalise.
-        let v = parse_input("a:\n\tb: 1\n\tc: 中文\n", DataFormat::Yaml).unwrap();
+        let v = parse_input("a:\n\tb: 1\n\tc: 中文\n", DataFormat::Yaml, None).unwrap();
         assert_eq!(v, json!({"a": {"b": 1, "c": "中文"}}));
         // Mixed tabs + spaces.
-        let v2 = parse_input("a:\n  b:\n\t\tc: 值\n", DataFormat::Yaml).unwrap();
+        let v2 = parse_input("a:\n  b:\n\t\tc: 值\n", DataFormat::Yaml, None).unwrap();
         assert_eq!(v2, json!({"a": {"b": {"c": "值"}}}));
         // Normal list style keeps working.
-        let v3 = parse_input("list:\n  - 苹果\n  - 香蕉\n", DataFormat::Yaml).unwrap();
+        let v3 = parse_input("list:\n  - 苹果\n  - 香蕉\n", DataFormat::Yaml, None).unwrap();
         assert_eq!(v3, json!({"list": ["苹果", "香蕉"]}));
     }
 
@@ -1677,7 +1689,7 @@ mod tests {
         // JSON -> YAML -> JSON keeps CJK text intact.
         let y = serialize_output(&v, DataFormat::Yaml, false).unwrap();
         assert!(y.contains("中文测试"), "yaml: {y}");
-        let back = parse_input(&y, DataFormat::Yaml).unwrap();
+        let back = parse_input(&y, DataFormat::Yaml, None).unwrap();
         assert_eq!(v, back);
         // YAML -> JSON keeps CJK text intact.
         let j = serialize_output(&back, DataFormat::Json, false).unwrap();
@@ -1687,25 +1699,25 @@ mod tests {
     #[test]
     fn yaml_multiline_chinese_survives() {
         let src = "a:\n  b: |\n    第一行\n    第二行\n";
-        let v = parse_input(src, DataFormat::Yaml).unwrap();
+        let v = parse_input(src, DataFormat::Yaml, None).unwrap();
         // `|` keeps the trailing newline (YAML standard).
         assert_eq!(v["a"]["b"], json!("第一行\n第二行\n"));
         let y = serialize_output(&v, DataFormat::Yaml, false).unwrap();
-        let back = parse_input(&y, DataFormat::Yaml).unwrap();
+        let back = parse_input(&y, DataFormat::Yaml, None).unwrap();
         assert_eq!(back["a"]["b"], json!("第一行\n第二行\n"));
         // `|-` strips it.
         let src2 = "a:\n  b: |-\n    第一行\n    第二行\n";
-        let v2 = parse_input(src2, DataFormat::Yaml).unwrap();
+        let v2 = parse_input(src2, DataFormat::Yaml, None).unwrap();
         assert_eq!(v2["a"]["b"], json!("第一行\n第二行"));
     }
 
     #[test]
     fn toml_roundtrip_chinese() {
         let src = "name = \"中文\"\n[server]\nport = 8080\n";
-        let v = parse_input(src, DataFormat::Toml).unwrap();
+        let v = parse_input(src, DataFormat::Toml, None).unwrap();
         assert_eq!(v["name"], json!("中文"));
         let out = serialize_output(&v, DataFormat::Toml, false).unwrap();
-        let back = parse_input(&out, DataFormat::Toml).unwrap();
+        let back = parse_input(&out, DataFormat::Toml, None).unwrap();
         assert_eq!(back["name"], json!("中文"));
         assert_eq!(back["server"]["port"], json!(8080));
     }
@@ -1753,7 +1765,7 @@ mod tests {
 
     #[test]
     fn csv_get_chinese() {
-        let v = parse_input("名称,数量\n苹果,3\n香蕉,5\n", DataFormat::Csv).unwrap();
+        let v = parse_input("名称,数量\n苹果,3\n香蕉,5\n", DataFormat::Csv, None).unwrap();
         let arr = v.as_array().unwrap();
         assert_eq!(arr[0]["名称"], json!("苹果"));
         let out = serialize_output(&v, DataFormat::Md, false).unwrap();
@@ -1786,12 +1798,56 @@ mod tests {
     }
 
     #[test]
+    fn table_format_parse_and_roundtrip() {
+        assert_eq!(parse_format("table").unwrap(), DataFormat::Table);
+        assert!(parse_format("TABLE").is_ok());
+        assert!(parse_format("xlsx").is_err());
+        let v = parse_input("A B\n1 2\n", DataFormat::Table, None).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr[0]["A"], 1);
+        assert_eq!(arr[0]["B"], 2);
+        let t = serialize_output(&v, DataFormat::Table, false).unwrap();
+        assert_eq!(t, "A B\n1 2\n");
+        // --no-header → colN 键。
+        let v = parse_input("1 2\n3 4\n", DataFormat::Table, Some(false)).unwrap();
+        assert_eq!(v[0]["col1"], 1);
+        assert_eq!(v[0]["col2"], 2);
+    }
+
+    #[test]
+    fn selector_root_array_index() {
+        assert_eq!(
+            parse_selector("[0].name").unwrap(),
+            vec![Step::Index(Some(0)), Step::Key("name".into())]
+        );
+        assert_eq!(parse_selector("[-1]").unwrap(), vec![Step::Index(Some(-1))]);
+        assert_eq!(
+            parse_selector("[*].id").unwrap(),
+            vec![Step::Index(None), Step::Key("id".into())]
+        );
+        // 根数组 + 列标题查询（table 解析结果的直接寻址）。
+        let v = parse_input("USER PID\nroot 1\ngary 2\n", DataFormat::Table, None).unwrap();
+        let got = get_values(&v, &parse_selector("[1].PID").unwrap());
+        assert_eq!(got.len(), 1);
+        assert_eq!(*got[0], json!(2));
+        let got = get_values(&v, &parse_selector("[0].USER").unwrap());
+        assert_eq!(*got[0], json!("root"));
+    }
+
+    #[test]
     fn render_get_scalar_string() {
         // dasel-style: scalar strings print unquoted.
         let s = render_get(&json!("你好"), DataFormat::Json, false).unwrap();
         assert_eq!(s, "你好\n");
         let s = render_get(&json!(42), DataFormat::Json, false).unwrap();
         assert_eq!(s, "42\n");
+        // `-o table` 下标量同样直接打印（数字 / 布尔 / 字符串）。
+        let s = render_get(&json!(42), DataFormat::Table, false).unwrap();
+        assert_eq!(s, "42\n");
+        let s = render_get(&json!(true), DataFormat::Table, false).unwrap();
+        assert_eq!(s, "true\n");
+        let s = render_get(&json!("root"), DataFormat::Table, false).unwrap();
+        assert_eq!(s, "root\n");
     }
 
     // ------------------------------------------------------------------

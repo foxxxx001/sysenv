@@ -131,12 +131,21 @@ struct DataArgs {
     /// json; -i overrides). Example: `sys data -u https://api.dev/config status`
     #[arg(short = 'u', long, value_name = "URL", conflicts_with = "file")]
     url: Option<String>,
-    /// Input format: json | yaml | toml | csv | md (default: -f extension, else detection)
+    /// Input format: json | yaml | toml | csv | md | table (default: -f extension, else detection)
     #[arg(short = 'i', long, value_name = "FMT")]
     input: Option<String>,
     /// Output format (default: the input format)
     #[arg(short = 'o', long, value_name = "FMT")]
     output: Option<String>,
+    /// `-i table` only: treat the first non-blank line as the column header
+    /// (overrides auto-detection, which uses a header iff the first line has a
+    /// non-numeric cell)
+    #[arg(long, conflicts_with = "no_header")]
+    header: bool,
+    /// `-i table` only: treat every line as data and name the columns
+    /// col1..colN (overrides auto-detection)
+    #[arg(long, conflicts_with = "header")]
+    no_header: bool,
     /// Write the result back to FILE instead of stdout (with an expression the
     /// whole modified document is written; also pass --root to keep stdout quiet)
     #[arg(short = 'w', long, value_name = "FILE")]
@@ -868,6 +877,11 @@ fn main() -> ExitCode {
             d.compact,
             d.root,
             d.depth,
+            match (d.header, d.no_header) {
+                (true, _) => Some(true),
+                (_, true) => Some(false),
+                _ => None,
+            },
         )
         .map(|_| 0),
         Cmd::Task(t) => run_task(t).map(|_| 0),
