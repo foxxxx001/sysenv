@@ -685,8 +685,9 @@ struct NetArgs {
 #[derive(Args)]
 struct FileArgs {
     /// PATTERN, or PATTERN PATH, or OLD NEW PATH (path = file or directory);
-    /// or -md5/-sha FILE [EXPECTED] to hash a file (single-dash forms are
-    /// absorbed into ARGS, like `data`'s raw tokens)
+    /// or -md5/-sha FILE [EXPECTED] to hash a file, or --enc SRC [DST] to
+    /// convert between utf-8 / gbk / gb2312 (flag-like tokens are absorbed
+    /// into ARGS, like `data`'s raw tokens)
     #[arg(value_name = "ARGS", allow_hyphen_values = true)]
     args: Vec<String>,
     /// Only search files with this extension (repeatable; leading dot optional, e.g. -e py -e md)

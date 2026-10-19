@@ -2,6 +2,18 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.8 (2026-10-19)
+
+### Added
+- **`file --enc` encoding conversion**: `sys file --enc SRC [DST] [--from ENC] [--to ENC]` converts a text file between `utf-8` / `gbk` / `gb2312` (**default target utf-8**); without `--from` the source encoding is auto-detected (the same heuristic as `data`: UTF-8 strict + a GBK cross-check; an undetectable file errors with a `--from` hint); DST omitted -> stdout, and **DST must differ from SRC** (in-place overwrite refused); a UTF-8 BOM is stripped and never re-emitted; `gb2312` uses the GBK codec (GB2312 is a subset of GBK)
+- The marker is scanned from the ARGS list (same mechanism as `-md5`/`-sha`/`-l`): `--enc` plus aliases `--encode` / `--convert`; `-f ENC` equals `--from ENC`. Because `-e` (ext) is a registered clap short flag, the single-dash `-enc` would be eaten by clap — the double-dash `--enc` is the documented form (help/README updated); combining `--enc` with `-md5`/`-sha` errors
+
+### Changed
+- version 0.6.7 -> 0.6.8; README (zh / en) `file` row and command reference updated for `--enc`; file.rs module header and main.rs FileArgs help text updated; dasel.rs `decode_clean` / `has_cjk` made `pub(crate)` for reuse by file
+- `cargo test --bin sys` 341 -> 345 all green (4 new tests: `--enc` marker with `--from`/`--to`/alias scanning, encoding-name aliases and unknown errors, source auto-detection (UTF-8 / GBK / lookalike trap / detection failure), end-to-end conversion round-trip (explicit and auto-detected source, gb2312 alias, BOM stripping, same-path refusal, source file untouched))
+
+---
+
 ## v0.6.7 (2026-10-19)
 
 ### Added

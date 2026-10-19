@@ -1490,13 +1490,13 @@ fn decode_text(bytes: &[u8]) -> String {
 
 /// Decode with the given encoding; `None` when the decoder reports errors,
 /// i.e. the byte stream is not a clean instance of that encoding.
-fn decode_clean(enc: &'static encoding_rs::Encoding, bytes: &[u8]) -> Option<String> {
+pub(crate) fn decode_clean(enc: &'static encoding_rs::Encoding, bytes: &[u8]) -> Option<String> {
     let (s, _used, had_errors) = enc.decode(bytes);
     if had_errors { None } else { Some(s.into_owned()) }
 }
 
 /// Any CJK ideograph in the text (used to disambiguate GBK vs UTF-8).
-fn has_cjk(s: &str) -> bool {
+pub(crate) fn has_cjk(s: &str) -> bool {
     s.chars().any(|c| matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF))
 }
 

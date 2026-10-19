@@ -2,6 +2,18 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.8（2026-10-19）
+
+### 新增
+- **`file --enc` 编码转换**：`sys file --enc SRC [DST] [--from ENC] [--to ENC]` 在 `utf-8` / `gbk` / `gb2312` 之间转换文本文件（**默认目标 utf-8**）；`--from` 缺省自动检测源编码（与 `data` 同一套启发：UTF-8 严格 + GBK 清洗对照，检测不出报错提示 `--from`）；DST 缺省输出到 stdout，**DST 必须不同于 SRC**（拒绝原地覆盖）；UTF-8 BOM 剥离、输出不带 BOM；`gb2312` 按 GBK 编解码（GB2312 是 GBK 子集）
+- 标记从 ARGS 扫描（与 `-md5`/`-sha`/`-l` 同机制）：`--enc` 及别名 `--encode` / `--convert`，`-f ENC` 等价 `--from ENC`；因 `-e`（ext）是已注册短旗标，单杠 `-enc` 会被 clap 吃掉，需用双杠 `--enc`（已写入帮助/README）；`--enc` 与 `-md5`/`-sha` 同用报错
+
+### 变更
+- 版本 0.6.7 -> 0.6.8；README（中 / 英）`file` 特性行与命令参考同步 `--enc`；file.rs 模块头、main.rs FileArgs 帮助文本同步；dasel.rs `decode_clean` / `has_cjk` 改 `pub(crate)` 供 file 复用
+- `cargo test --bin sys` 341 -> 345 项全绿（新增 4 项：`--enc` 标记与 `--from`/`--to`/别名扫描、编码名别名与未知报错、源编码自动检测（UTF-8 / GBK / 陷阱 / 检测失败）、转换端到端回环（显式与自动检测、gb2312 别名、BOM 剥离、同路径拒绝、源文件不被破坏））
+
+---
+
 ## v0.6.7（2026-10-19）
 
 ### 新增

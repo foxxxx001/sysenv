@@ -13,6 +13,10 @@
 //!   sys file -l PATTERN [PATH]       count the matching lines (stdin or tree)
 //!   sys file -md5 FILE [MD5]         hash FILE with MD5; compare when MD5 given
 //!   sys file -sha FILE [SHA1]        hash FILE with SHA-1; compare when SHA1 given
+//!   sys file --enc SRC [DST]         convert file encoding: gbk/gb2312 <-> utf-8
+//!                                    (default target utf-8; `--from ENC` fixes the
+//!                                    source instead of auto-detecting; DST omitted
+//!                                    -> stdout; DST must differ from SRC)
 //!
 //! A single argument is a stdin search unless it is quoted ("me.txt" -> search
 //! the string) or carries an extension (me.txt -> display that file); with `-l`
@@ -39,6 +43,12 @@
 //!                the same for SHA-1. Single-dash multi-letter, parsed from the
 //!                ARGS list (like `data`'s raw tokens), so they may appear at
 //!                any position
+//!   -enc         encoding-convert mode: `--enc SRC [DST] [--from ENC] [--to ENC]`
+//!                converts between utf-8 / gbk / gb2312 (default target utf-8,
+//!                source auto-detected unless `--from` is given); DST omitted
+//!                -> stdout, DST must differ from SRC. Registered clap flags
+//!                (`--enc` with aliases `--encode` / `--convert`; `-f ENC` is
+//!                an alias for `--from ENC`), so they may appear at any position
 //!   -S SIZE      only files at least SIZE bytes (plain number = bytes;
 //!                2k/2m/2g/2t = 1024-based KiB/MiB/GiB/TiB)
 //!   --newer TIME only files modified at/after TIME (YYYY-MM-DD [HH:MM[:SS]])
@@ -53,7 +63,7 @@ use chrono::NaiveDate;
 use chrono::{Local, NaiveDateTime, TimeZone};
 use std::collections::HashSet;
 use std::fs;
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -830,6 +840,173 @@ fn run_hash(algo: HashAlgo, rest: &[&str]) -> Result<()> {
     }
 }
 
+// --- encoding conversion (`-enc`) ---------------------------------------------
+
+/// Resolve an encoding name to the codec used for `-enc`. `gb2312` maps to the
+/// GBK codec: GB2312 is a subset of GBK, so the GBK decoder/encoder handles
+/// GB2312 files and emits GB2312-compatible output for in-range characters.
+fn parse_enc_name(name: &str) -> Result<&'static encoding_rs::Encoding> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "utf-8" | "utf8" => Ok(encoding_rs::UTF_8),
+        "gbk" | "gb2312" => Ok(encoding_rs::GBK),
+        other => bail!("unknown encoding `{other}` (supported: utf-8, gbk, gb2312)"),
+    }
+}
+
+/// Pick the source encoding of a `-enc` conversion without `--from`. Same
+/// heuristics as `sys data` input decoding, minus UTF-16 and the lossy
+/// fallback: a UTF-8 BOM declares UTF-8; otherwise UTF-8 strict, cross-checked
+/// against GBK (legacy GBK byte pairs are often *also* valid UTF-8, so GBK wins
+/// when it cleanly decodes to real CJK while the UTF-8 view has none); then
+/// clean GBK; neither clean -> error, never a silent wrong guess.
+fn detect_enc_name(bytes: &[u8]) -> Result<&'static encoding_rs::Encoding> {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return Ok(encoding_rs::UTF_8);
+    }
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        if !crate::dasel::has_cjk(s) {
+            if let Some(g) = crate::dasel::decode_clean(encoding_rs::GBK, bytes) {
+                if crate::dasel::has_cjk(&g) {
+                    return Ok(encoding_rs::GBK);
+                }
+            }
+        }
+        return Ok(encoding_rs::UTF_8);
+    }
+    if crate::dasel::decode_clean(encoding_rs::GBK, bytes).is_some() {
+        return Ok(encoding_rs::GBK);
+    }
+    bail!("cannot detect the source encoding (try --from gbk or --from utf-8)")
+}
+
+/// Parsed `--enc` invocation: `from` (None = auto-detect), `to` (default
+/// utf-8), and the positional tokens `SRC [DST]`.
+struct EncArgs {
+    from: Option<String>,
+    to: String,
+    rest: Vec<String>,
+}
+
+/// Scan ARGS for the `--enc` / `--encode` / `--convert` marker plus the
+/// optional `--from ENC` (`-f ENC`) and `--to ENC` selectors; everything else
+/// is kept in order as `SRC [DST]`. The token is matched after trimming its
+/// leading dashes, so the double-dash forms reach ARGS untouched (clap's
+/// `allow_hyphen_values` swallows unknown flag-like tokens). The single-dash
+/// `-enc` is intentionally not supported: clap would read it as `-e nc` (the
+/// registered `-e/--ext` short flag), so the long form is the marker.
+fn split_enc_args(args: &[String]) -> Result<Option<EncArgs>> {
+    let mut mode = false;
+    let mut from: Option<String> = None;
+    let mut to: Option<String> = None;
+    let mut rest: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        let t = a.trim_start_matches('-');
+        if t == "enc" || t == "encode" || t == "convert" {
+            if mode {
+                bail!("duplicate --enc marker");
+            }
+            mode = true;
+            i += 1;
+            continue;
+        }
+        if t == "from" || a == "-f" {
+            let v = args
+                .get(i + 1)
+                .ok_or_else(|| anyhow::anyhow!("--from requires an encoding (utf-8 | gbk | gb2312)"))?;
+            from = Some(v.clone());
+            i += 2;
+            continue;
+        }
+        if t == "to" {
+            let v = args
+                .get(i + 1)
+                .ok_or_else(|| anyhow::anyhow!("--to requires an encoding (utf-8 | gbk | gb2312)"))?;
+            to = Some(v.clone());
+            i += 2;
+            continue;
+        }
+        rest.push(a.clone());
+        i += 1;
+    }
+    if !mode {
+        return Ok(None);
+    }
+    Ok(Some(EncArgs { from, to: to.unwrap_or_else(|| "utf-8".to_string()), rest }))
+}
+
+/// `sys file --enc SRC [DST] [--from ENC] [--to ENC]` — convert a text file
+/// between utf-8 / gbk / gb2312 (default: to utf-8; source auto-detected
+/// without `--from`). Output goes to DST when given, else to stdout. DST must
+/// differ from SRC (no in-place overwrite).
+fn run_convert(args: EncArgs) -> Result<()> {
+    // `--enc` cannot be combined with hash markers — they would be misread as SRC.
+    if split_hash_args(&args.rest)?.is_some() {
+        bail!("cannot combine --enc with -md5/-sha");
+    }
+    let (src, dst) = match args.rest.len() {
+        1 => (args.rest[0].as_str(), None),
+        2 => (args.rest[0].as_str(), Some(args.rest[1].as_str())),
+        0 => bail!(
+            "--enc requires a file name (usage: sys file --enc SRC [DST] [--from ENC] [--to ENC])"
+        ),
+        _ => bail!("too many arguments for --enc (expected SRC [DST])"),
+    };
+    let sp = Path::new(src);
+    if !sp.is_file() {
+        bail!("`{src}` is not a file (no such file?)");
+    }
+    if let Some(d) = dst {
+        let dp = Path::new(d);
+        let (sa, da) = (std::path::absolute(sp)?, std::path::absolute(dp)?);
+        if sa == da {
+            bail!("output must differ from the input file (use a different DST)");
+        }
+    }
+    let bytes = fs::read(sp).with_context(|| format!("cannot read `{src}`"))?;
+    let from_enc = match &args.from {
+        Some(n) => parse_enc_name(n)?,
+        None => detect_enc_name(&bytes)?,
+    };
+    let to_enc = parse_enc_name(&args.to)?;
+    // A UTF-8 BOM declares UTF-8; strip it before decoding and never re-emit.
+    let body = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        &bytes[3..]
+    } else {
+        &bytes[..]
+    };
+    let text = if from_enc.name() == "UTF-8" {
+        std::str::from_utf8(body)
+            .with_context(|| format!("`{src}` is not valid UTF-8 (use --from gbk for GBK files)"))?
+            .to_string()
+    } else {
+        from_enc.decode(body).0.into_owned()
+    };
+    let out: Vec<u8> = if to_enc.name() == "UTF-8" {
+        text.into_bytes()
+    } else {
+        to_enc.encode(&text).0.into_owned()
+    };
+    match dst {
+        None => {
+            let mut so = io::stdout().lock();
+            so.write_all(&out)?;
+            so.flush()?;
+        }
+        Some(d) => fs::write(d, &out).with_context(|| format!("cannot write `{d}`"))?,
+    }
+    eprintln!(
+        "sys: {}: {} -> {} ({} bytes -> {} bytes)",
+        src,
+        from_enc.name(),
+        to_enc.name(),
+        bytes.len(),
+        out.len()
+    );
+    Ok(())
+}
+
 /// Entry point: `sys file ...`
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_file(
@@ -872,6 +1049,12 @@ pub fn cmd_file(
         || opts.newer.is_some()
         || opts.older.is_some()
         || opts.max_depth.is_some();
+    // Encoding-convert mode (`--enc` / `--encode` / `--convert` markers)
+    // takes precedence over every other mode: `sys file --enc SRC [DST]
+    // [--from ENC] [--to ENC]`.
+    if let Some(enc) = split_enc_args(args)? {
+        return run_convert(enc);
+    }
     // Hash mode (`-md5` / `-sha` markers) takes precedence over every other
     // mode: `sys file -md5 FILE [EXPECTED]`, `sys file -sha FILE [EXPECTED]`.
     if let Some((algo, rest)) = split_hash_args(args)? {
@@ -912,7 +1095,7 @@ pub fn cmd_file(
         0 if has_filter => list_files(".", &opts),
         1 if has_filter => list_files(&args[0], &opts),
         0 => bail!(
-            "usage:\n  sys file PATTERN             search PATTERN in stdin (piped)\n  sys file PATTERN PATH        search PATTERN in PATH\n  sys file OLD NEW PATH        replace OLD with NEW in PATH\n  sys file NAME.EXT            display a file (e.g. file me.txt)\n  sys file -l FILE             count the lines of FILE\n  sys file -l PATTERN [PATH]   count the matching lines\n  sys file -md5 FILE [MD5]     print MD5 of FILE (compare when MD5 given)\n  sys file -sha FILE [SHA1]    print SHA1 of FILE (compare when SHA1 given)\n  sys file -S SIZE [PATH]      list files by size (e.g. -S 2m)\n  sys file --newer TIME [PATH] list files by mtime\noptions: -e EXT (repeatable) -i -t -w -c NUM -n -l -md5 -sha -S SIZE --newer TIME --older TIME -d NUM"
+            "usage:\n  sys file PATTERN             search PATTERN in stdin (piped)\n  sys file PATTERN PATH        search PATTERN in PATH\n  sys file OLD NEW PATH        replace OLD with NEW in PATH\n  sys file NAME.EXT            display a file (e.g. file me.txt)\n  sys file -l FILE             count the lines of FILE\n  sys file -l PATTERN [PATH]   count the matching lines\n  sys file -md5 FILE [MD5]     print MD5 of FILE (compare when MD5 given)\n  sys file -sha FILE [SHA1]    print SHA1 of FILE (compare when SHA1 given)\n  sys file --enc SRC [DST]     convert encoding: gbk/gb2312 <-> utf-8\n                               (default to utf-8; --from ENC to set source,\n                               DST omitted -> stdout; DST must differ from SRC)\n  sys file -S SIZE [PATH]      list files by size (e.g. -S 2m)\n  sys file --newer TIME [PATH] list files by mtime\noptions: -e EXT (repeatable) -i -t -w -c NUM -n -l -md5 -sha --enc -S SIZE --newer TIME --older TIME -d NUM"
         ),
         1 => {
             if let Some(inner) = strip_quotes(&args[0]) {
@@ -1114,6 +1297,160 @@ mod tests {
         assert!(split_hash_args(&v).unwrap().is_none());
         let v = vec!["-md5x".to_string()]; // 相似但不是标记
         assert!(split_hash_args(&v).unwrap().is_none());
+    }
+
+    #[test]
+    fn split_enc_args_detects_marker_and_selectors() {
+        // 标记在任意位置；其余参数按原序保留；缺省 --to=utf-8
+        let v = vec!["a.txt".to_string(), "--enc".to_string()];
+        let e = split_enc_args(&v).unwrap().unwrap();
+        assert_eq!(e.from, None);
+        assert_eq!(e.to, "utf-8");
+        assert_eq!(e.rest, vec!["a.txt"]);
+
+        // --from / --to / --encode 别名 / -f 短形式；SRC DST 都保留
+        let v = vec![
+            "--from".to_string(),
+            "gbk".to_string(),
+            "--enc".to_string(),
+            "a.txt".to_string(),
+            "b.txt".to_string(),
+            "--to".to_string(),
+            "utf-8".to_string(),
+        ];
+        let e = split_enc_args(&v).unwrap().unwrap();
+        assert_eq!(e.from.as_deref(), Some("gbk"));
+        assert_eq!(e.to, "utf-8");
+        assert_eq!(e.rest, vec!["a.txt", "b.txt"]);
+
+        let v = vec!["--encode".to_string(), "x.log".to_string(), "-f".to_string(), "gb2312".to_string()];
+        let e = split_enc_args(&v).unwrap().unwrap();
+        assert_eq!(e.from.as_deref(), Some("gb2312"));
+        assert_eq!(e.rest, vec!["x.log"]);
+
+        let v = vec!["--convert".to_string(), "x.log".to_string()];
+        let e = split_enc_args(&v).unwrap().unwrap();
+        assert_eq!(e.rest, vec!["x.log"]);
+
+        // 无标记返回 None；相似 token 不是标记
+        assert!(split_enc_args(&["hello".to_string()]).unwrap().is_none());
+        assert!(split_enc_args(&["-encx".to_string(), "f".to_string()]).unwrap().is_none());
+        assert!(split_enc_args(&["--encoding".to_string(), "f".to_string()]).unwrap().is_none());
+        // 重复标记 / 缺值报错
+        assert!(split_enc_args(&["--enc".to_string(), "--enc".to_string()]).is_err());
+        assert!(split_enc_args(&["--enc".to_string(), "--from".to_string()]).is_err());
+        assert!(split_enc_args(&["--enc".to_string(), "--to".to_string()]).is_err());
+    }
+
+    #[test]
+    fn parse_enc_name_accepts_aliases_and_rejects_unknown() {
+        assert_eq!(parse_enc_name("utf-8").unwrap().name(), "UTF-8");
+        assert_eq!(parse_enc_name("utf8").unwrap().name(), "UTF-8");
+        assert_eq!(parse_enc_name("UTF-8").unwrap().name(), "UTF-8");
+        assert_eq!(parse_enc_name("gbk").unwrap().name(), "GBK");
+        assert_eq!(parse_enc_name("gb2312").unwrap().name(), "GBK");
+        let err = parse_enc_name("big5").unwrap_err();
+        assert!(err.to_string().contains("supported: utf-8, gbk, gb2312"));
+    }
+
+    #[test]
+    fn detect_enc_name_picks_utf8_gbk_and_rejects_both() {
+        // 纯 ASCII / 真 UTF-8 中文 -> UTF-8
+        assert_eq!(detect_enc_name(b"hello world").unwrap().name(), "UTF-8");
+        assert_eq!(detect_enc_name("中文abc".as_bytes()).unwrap().name(), "UTF-8");
+        // UTF-8 BOM -> UTF-8
+        let mut bom = vec![0xEF, 0xBB, 0xBF];
+        bom.extend_from_slice("中文".as_bytes());
+        assert_eq!(detect_enc_name(&bom).unwrap().name(), "UTF-8");
+        // GBK 字节 -> GBK（含“专业”这种也恰好是合法 UTF-8 的 GBK 陷阱：UTF-8 视图无 CJK、GBK 视图有）
+        let gbk_bytes = encoding_rs::GBK.encode("专业").0.into_owned();
+        assert_eq!(detect_enc_name(&gbk_bytes).unwrap().name(), "GBK");
+        let gbk_bytes = encoding_rs::GBK.encode("中文日志").0.into_owned();
+        assert_eq!(detect_enc_name(&gbk_bytes).unwrap().name(), "GBK");
+        // 两者都不是（随机高位字节）-> 报错提示 --from
+        let junk = vec![0x80, 0x81, 0x82, 0xFF, 0x00];
+        let err = detect_enc_name(&junk).unwrap_err();
+        assert!(err.to_string().contains("--from"));
+    }
+
+    #[test]
+    fn run_convert_roundtrip_between_encodings() {
+        let dir = std::env::temp_dir();
+        let tag = format!("sys-file-enc-{}", std::process::id());
+        let gbk_src = dir.join(format!("{tag}-gbk.txt"));
+        let utf8_dst = dir.join(format!("{tag}-utf8.txt"));
+        let gbk_out = dir.join(format!("{tag}-out-gbk.txt"));
+        let utf8_bom = dir.join(format!("{tag}-bom.txt"));
+
+        let text = "第一行 中文日志\n第二行 mixed ascii 123\n";
+        let gbk_bytes = encoding_rs::GBK.encode(text).0.into_owned();
+        fs::write(&gbk_src, &gbk_bytes).unwrap();
+
+        // 显式 --from gbk -> 默认 utf-8，写 DST
+        run_convert(EncArgs {
+            from: Some("gbk".to_string()),
+            to: "utf-8".to_string(),
+            rest: vec![gbk_src.to_string_lossy().into_owned(), utf8_dst.to_string_lossy().into_owned()],
+        })
+        .unwrap();
+        assert_eq!(fs::read_to_string(&utf8_dst).unwrap(), text);
+
+        // 自动检测源编码（GBK 内容）同样得到 UTF-8
+        run_convert(EncArgs {
+            from: None,
+            to: "utf-8".to_string(),
+            rest: vec![gbk_src.to_string_lossy().into_owned(), utf8_dst.to_string_lossy().into_owned()],
+        })
+        .unwrap();
+        assert_eq!(fs::read_to_string(&utf8_dst).unwrap(), text);
+
+        // utf-8 -> gbk 回环（gb2312 别名同样按 GBK 编解码）
+        run_convert(EncArgs {
+            from: Some("utf-8".to_string()),
+            to: "gb2312".to_string(),
+            rest: vec![utf8_dst.to_string_lossy().into_owned(), gbk_out.to_string_lossy().into_owned()],
+        })
+        .unwrap();
+        let back = encoding_rs::GBK.decode(&fs::read(&gbk_out).unwrap()).0.into_owned();
+        assert_eq!(back, text);
+
+        // UTF-8 BOM 输入：剥离 BOM 解码、输出不带 BOM
+        let mut bom_bytes = vec![0xEF, 0xBB, 0xBF];
+        bom_bytes.extend_from_slice(text.as_bytes());
+        fs::write(&utf8_bom, &bom_bytes).unwrap();
+        run_convert(EncArgs {
+            from: None,
+            to: "utf-8".to_string(),
+            rest: vec![utf8_bom.to_string_lossy().into_owned(), utf8_dst.to_string_lossy().into_owned()],
+        })
+        .unwrap();
+        let out = fs::read(&utf8_dst).unwrap();
+        assert!(!out.starts_with(&[0xEF, 0xBB, 0xBF]));
+        assert_eq!(String::from_utf8(out).unwrap(), text);
+
+        // DST 与 SRC 相同 -> 报错（不允许原地覆盖）
+        let same = run_convert(EncArgs {
+            from: Some("gbk".to_string()),
+            to: "utf-8".to_string(),
+            rest: vec![gbk_src.to_string_lossy().into_owned(), gbk_src.to_string_lossy().into_owned()],
+        });
+        assert!(same.is_err());
+        // 源文件未被破坏
+        assert_eq!(fs::read(&gbk_src).unwrap(), gbk_bytes);
+
+        // 未知编码报错；SRC 不存在报错
+        assert!(parse_enc_name("big5").is_err());
+        let missing = run_convert(EncArgs {
+            from: None,
+            to: "utf-8".to_string(),
+            rest: vec![dir.join(format!("{tag}-nope.txt")).to_string_lossy().into_owned()],
+        });
+        assert!(missing.is_err());
+
+        // 清理临时文件
+        for p in [gbk_src, utf8_dst, gbk_out, utf8_bom] {
+            let _ = fs::remove_file(p);
+        }
     }
 
     #[test]
