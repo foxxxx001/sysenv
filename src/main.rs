@@ -108,7 +108,7 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     Log(LogArgs),
     /// fd/sd-style text search and replacement: search stdin or a directory tree, or replace a string in place
     File(FileArgs),
-    /// Query / modify / convert structured data (JSON / YAML / TOML / CSV / MD), dasel-compatible
+    /// Query / modify / convert structured data (JSON / JSONL / YAML / TOML / CSV / MD / TABLE), dasel-compatible
     /// (alias `dasel`): `sys data [SELECTOR | 'PATH = VALUE'] [-f FILE] [-i FMT] [-o FMT] [-w FILE] [--compact] [--root]`
     #[command(alias = "dasel")]
     Data(DataArgs),
@@ -163,9 +163,10 @@ struct DataArgs {
     #[arg(long, value_name = "N", num_args = 0..=1, default_missing_value = "1")]
     depth: Option<usize>,
     /// Keep only the first N rows when the document is an array (csv / table
-    /// input parses to an array of rows). Applied to the whole document before
-    /// the expression, so `sys data -i table --limit 3` prints the first 3
-    /// rows (header still included).
+    /// input parses to an array of rows; jsonl parses to an array of JSON
+    /// values). Applied to the whole document before the expression, so
+    /// `sys data -i table --limit 3` prints the first 3 rows (header still
+    /// included).
     #[arg(long, value_name = "N")]
     limit: Option<usize>,
 }
