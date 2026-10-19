@@ -331,7 +331,7 @@ enum AiCmd {
     Server(ServerArgs),
     /// Generate images via an OpenAI-compatible Images API (/v1/images/generations)
     Image(ImageArgs),
-    /// Export the local config to another tool's format (codex | opencode | litellm | freellmapi | codebuddy | workbuddy | trae);
+    /// Export the local config to another tool's format (codex | opencode | litellm | freellmapi | codebuddy | workbuddy | trae | zcoder);
     /// --show previews the target config file path and content, -f writes with a backup,
     /// --update merges into the software's default config file (backup first)
     Config(AiConfigArgs),
@@ -340,7 +340,7 @@ enum AiCmd {
 #[derive(Args)]
 struct AiConfigArgs {
     /// Target format: codex (TOML) | opencode (JSON) | litellm (YAML) | freellmapi (JSON) |
-    /// codebuddy | workbuddy (models.json) | trae (trae_cli.yaml)
+    /// codebuddy | workbuddy (models.json) | trae (trae_cli.yaml) | zcoder (ZCode config.json)
     #[arg(value_name = "FORMAT")]
     format: String,
     /// Select models: omit for the same default as `sys ai chat` (top-level `model:`);

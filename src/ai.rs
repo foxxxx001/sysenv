@@ -3826,6 +3826,14 @@ fn export_codebuddy(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<Stri
         + "\n")
 }
 
+fn export_workbuddy(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<String> {
+    // The real workbuddy models.json is a plain top-level array of model
+    // entries (`[{id,name,vendor,url,apiKey,...}]`), not the codebuddy
+    // `{"models":[...],"availableModels":[...]}` wrapper.
+    let models = codebuddy_entries(cfg, pairs);
+    Ok(serde_json::to_string_pretty(&json!(models))? + "\n")
+}
+
 /// The model id of a trae `models` entry (`open_ai.model` / `claude.model`).
 fn trae_model_id(v: &Value) -> Option<&str> {
     v.get("open_ai")
@@ -3871,8 +3879,9 @@ fn export_trae(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<String> {
 /// `sys ai config FORMAT [-m MODEL] [--show] [-f FILE] [-c FILE] [--update]`
 ///
 /// FORMAT: `codex` (TOML) | `opencode` (JSON) | `litellm` (YAML) |
-/// `freellmapi` (JSON) | `codebuddy` | `workbuddy` (models.json) | `trae`
-/// (trae_cli.yaml). SELECTION: omit = the models `sys ai chat` uses by
+/// `freellmapi` (JSON) | `codebuddy` (models.json) | `workbuddy`
+/// (models.json, plain array) | `trae` (trae_cli.yaml) | `zcoder` (ZCode
+/// config.json). SELECTION: omit = the models `sys ai chat` uses by
 /// default (top-level `model:` selector, else the first provider's first
 /// model); `-m` takes the same comma-separated forms as `sys ai chat -m`
 /// (`provider:*`, `provider:model`, bare model name; the legacy positional
@@ -3910,10 +3919,11 @@ pub fn cmd_config(
             | "codebuddy"
             | "workbuddy"
             | "trae"
+            | "zcoder"
     );
     if !supported {
         bail!(
-            "unknown format `{format}` (supported: codex, opencode, litellm, freellmapi, codebuddy, workbuddy, trae)"
+            "unknown format `{format}` (supported: codex, opencode, litellm, freellmapi, codebuddy, workbuddy, trae, zcoder)"
         );
     }
     let sel = models.or(selector);
@@ -3929,8 +3939,10 @@ pub fn cmd_config(
         "opencode" | "openxode" => export_opencode(&cfg, &pairs)?,
         "litellm" => export_litellm(&cfg, &pairs)?,
         "freellmapi" => export_freellmapi(&cfg, &pairs)?,
-        "codebuddy" | "workbuddy" => export_codebuddy(&cfg, &pairs)?,
+        "codebuddy" => export_codebuddy(&cfg, &pairs)?,
+        "workbuddy" => export_workbuddy(&cfg, &pairs)?,
         "trae" => export_trae(&cfg, &pairs)?,
+        "zcoder" => export_zcoder(&cfg, &pairs)?,
         other => unreachable!("format validated above: {other}"),
     };
     if show {
@@ -3994,9 +4006,9 @@ fn cmd_config_update(
     pairs: &[(usize, usize)],
     out_file: Option<&Path>,
 ) -> Result<()> {
-    if !matches!(format, "codebuddy" | "workbuddy" | "trae") {
+    if !matches!(format, "codebuddy" | "workbuddy" | "trae" | "zcoder") {
         bail!(
-            "`--update` is not supported for `{format}` (only codebuddy, workbuddy, trae; use -f FILE to write)"
+            "`--update` is not supported for `{format}` (only codebuddy, workbuddy, trae, zcoder; use -f FILE to write)"
         );
     }
     let path = match out_file {
@@ -4019,6 +4031,7 @@ fn cmd_config_update(
             let entries = trae_entries(cfg, pairs);
             merge_trae_models(&path, &entries)?
         }
+        "zcoder" => merge_zcode_models(&path, cfg, pairs)?,
         _ => unreachable!("format checked above"),
     };
     if added.is_empty() {
@@ -4031,6 +4044,11 @@ fn cmd_config_update(
 
 /// Merge `entries` into an existing models.json-style file (keyed by `id`),
 /// keeping every existing entry; returns the model ids that were added.
+///
+/// Two shapes are accepted: the codebuddy object shape
+/// `{"models":[...],"availableModels":[...]}` and the workbuddy array shape
+/// `[...]` where the root array itself is the model list (no
+/// `availableModels` is maintained for the array shape).
 fn merge_json_models(path: &Path, entries: &[Value]) -> Result<Vec<String>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("cannot read {}", path.display()))?;
@@ -4038,36 +4056,50 @@ fn merge_json_models(path: &Path, entries: &[Value]) -> Result<Vec<String>> {
     let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
     let mut root: Value = serde_json::from_str(content)
         .with_context(|| format!("{} is not valid JSON", path.display()))?;
-    let root_obj = root
-        .as_object_mut()
-        .with_context(|| format!("{} is not a JSON object", path.display()))?;
-    let models = root_obj
-        .entry("models".to_string())
-        .or_insert_with(|| json!([]));
-    let models = models
-        .as_array_mut()
-        .with_context(|| format!("{} `models` is not an array", path.display()))?;
     let mut added: Vec<String> = Vec::new();
-    for e in entries {
-        let id = e["id"].as_str().unwrap_or_default();
-        if id.is_empty() || models.iter().any(|m| m["id"].as_str() == Some(id)) {
-            continue;
+    if let Some(arr) = root.as_array_mut() {
+        // workbuddy shape: the root array is the model list.
+        for e in entries {
+            let id = e["id"].as_str().unwrap_or_default();
+            if id.is_empty() || arr.iter().any(|m| m["id"].as_str() == Some(id)) {
+                continue;
+            }
+            arr.push(e.clone());
+            added.push(id.to_string());
         }
-        models.push(e.clone());
-        added.push(id.to_string());
+    } else {
+        let root_obj = root
+            .as_object_mut()
+            .with_context(|| format!("{} is not a JSON object or array", path.display()))?;
+        let models = root_obj
+            .entry("models".to_string())
+            .or_insert_with(|| json!([]));
+        let models = models
+            .as_array_mut()
+            .with_context(|| format!("{} `models` is not an array", path.display()))?;
+        for e in entries {
+            let id = e["id"].as_str().unwrap_or_default();
+            if id.is_empty() || models.iter().any(|m| m["id"].as_str() == Some(id)) {
+                continue;
+            }
+            models.push(e.clone());
+            added.push(id.to_string());
+        }
+        if !added.is_empty() {
+            let mut avail: Vec<String> = root_obj
+                .get("availableModels")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            for id in &added {
+                if !avail.iter().any(|a| a == id) {
+                    avail.push(id.clone());
+                }
+            }
+            root_obj.insert("availableModels".to_string(), json!(avail));
+        }
     }
     if !added.is_empty() {
-        let mut avail: Vec<String> = root_obj
-            .get("availableModels")
-            .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-            .unwrap_or_default();
-        for id in &added {
-            if !avail.iter().any(|a| a == id) {
-                avail.push(id.clone());
-            }
-        }
-        root_obj.insert("availableModels".to_string(), json!(avail));
         let text = serde_json::to_string_pretty(&root)?;
         std::fs::write(path, text + "\n")
             .with_context(|| format!("cannot write {}", path.display()))?;
@@ -4118,6 +4150,148 @@ fn merge_trae_models(path: &Path, entries: &[Value]) -> Result<Vec<String>> {
     Ok(added)
 }
 
+/// ZCode (`zcoder`) config: `%USERPROFILE%\.zcode\cli\config.json`. Every sys
+/// provider becomes a `provider.<id>` block (id = sanitized provider name)
+/// with `kind` / `options.baseURL` + `options.apiKey` / `models` (an object
+/// keyed by model id); `model.main` / `model.lite` point at a selected model.
+fn zcode_provider_id(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        let ch = ch.to_ascii_lowercase();
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+            out.push(ch);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    if out.is_empty() {
+        "provider".to_string()
+    } else {
+        out
+    }
+}
+
+/// ZCode provider kind for a sys provider (`openai`/anything else defaults to
+/// an OpenAI-compatible endpoint; anthropic stays anthropic).
+fn zcode_kind(kind: &str) -> &'static str {
+    if kind.eq_ignore_ascii_case("anthropic") {
+        "anthropic"
+    } else {
+        "openai-compatible"
+    }
+}
+
+/// A `provider.<id>` entry with the provider's endpoint, key and model map.
+fn zcode_provider_entry(p: &chat::Provider) -> Value {
+    let mut options = serde_json::Map::new();
+    if p.api_key.is_empty() {
+        options.insert("apiKeyRequired".to_string(), json!(false));
+    } else {
+        options.insert("apiKeyRequired".to_string(), json!(true));
+        options.insert("apiKey".to_string(), json!(p.api_key));
+    }
+    options.insert("baseURL".to_string(), json!(p.api_base));
+    json!({
+        "kind": zcode_kind(&p.kind),
+        "name": p.name,
+        "options": options,
+        "headers": {},
+        "models": {}
+    })
+}
+
+/// Provider blocks for `sys ai config zcoder`, keyed by sanitized provider
+/// name; models are deduped by model id within each provider.
+fn zcode_providers(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Value {
+    let mut map = serde_json::Map::new();
+    for (pi, mi) in pairs {
+        let p = &cfg.providers[*pi];
+        let m = &p.models[*mi];
+        let entry = map
+            .entry(zcode_provider_id(&p.name))
+            .or_insert_with(|| zcode_provider_entry(p));
+        let models = entry["models"].as_object_mut().expect("models is an object");
+        if !models.contains_key(&m.name) {
+            models.insert(m.name.clone(), json!({ "name": m.name }));
+        }
+    }
+    Value::Object(map)
+}
+
+fn export_zcoder(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<String> {
+    let providers = zcode_providers(cfg, pairs);
+    let (pi, mi) = pairs[0];
+    let main = format!(
+        "{}/{}",
+        zcode_provider_id(&cfg.providers[pi].name),
+        cfg.providers[pi].models[mi].name
+    );
+    Ok(serde_json::to_string_pretty(&json!({ "provider": providers, "model": { "main": main, "lite": main } }))?
+        + "\n")
+}
+
+/// Merge the selected models into an existing ZCode config.json: each
+/// provider block is created when missing (existing blocks are left
+/// untouched), missing model ids are added to `provider.<id>.models`, and
+/// `model.main` / `model.lite` are filled only when absent. All other
+/// top-level keys are preserved. Returns the added `provider/model` refs.
+fn merge_zcode_models(
+    path: &Path,
+    cfg: &chat::Config,
+    pairs: &[(usize, usize)],
+) -> Result<Vec<String>> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+    let mut root: Value = if content.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(content)
+            .with_context(|| format!("{} is not valid JSON", path.display()))?
+    };
+    let root_obj = root
+        .as_object_mut()
+        .with_context(|| format!("{} is not a JSON object", path.display()))?;
+    let providers = root_obj
+        .entry("provider".to_string())
+        .or_insert_with(|| json!({}));
+    let providers = providers
+        .as_object_mut()
+        .with_context(|| format!("{} `provider` is not an object", path.display()))?;
+    let mut added: Vec<String> = Vec::new();
+    for (pi, mi) in pairs {
+        let p = &cfg.providers[*pi];
+        let m = &p.models[*mi];
+        let id = zcode_provider_id(&p.name);
+        let entry = providers
+            .entry(id.clone())
+            .or_insert_with(|| zcode_provider_entry(p));
+        let models = entry["models"].as_object_mut().with_context(|| {
+            format!("{} provider `{id}` `models` is not an object", path.display())
+        })?;
+        if !models.contains_key(&m.name) {
+            models.insert(m.name.clone(), json!({ "name": m.name }));
+            added.push(format!("{id}/{}", m.name));
+        }
+    }
+    if !added.is_empty() {
+        let first = added[0].clone();
+        if let Some(model_obj) = root_obj.entry("model".to_string()).or_insert_with(|| json!({})).as_object_mut()
+        {
+            model_obj
+                .entry("main".to_string())
+                .or_insert_with(|| json!(first.clone()));
+            model_obj
+                .entry("lite".to_string())
+                .or_insert_with(|| json!(first));
+        }
+        let text = serde_json::to_string_pretty(&root)?;
+        std::fs::write(path, text + "\n")
+            .with_context(|| format!("cannot write {}", path.display()))?;
+    }
+    Ok(added)
+}
+
 /// Default config file of the target software for `ai config` exports.
 /// Paths are the tools' usual conventions; `-f FILE` always overrides them.
 fn software_config_path(format: &str) -> Option<PathBuf> {
@@ -4143,6 +4317,8 @@ fn software_config_path_in(home: &Path, format: &str) -> Option<PathBuf> {
         "litellm" => Some(home.join(".litellm").join("config.yaml")),
         "codebuddy" => Some(home.join(".codebuddy").join("models.json")),
         "workbuddy" => Some(home.join(".workbuddy").join("models.json")),
+        "zcoder" => Some(home.join(".zcode").join("cli").join("config.json")),
+        "qoder" => Some(home.join(".qoder").join("settings.json")),
         "trae" => {
             #[cfg(windows)]
             {
@@ -5394,6 +5570,122 @@ mod tests {
     }
 
     #[test]
+    fn config_workbuddy_export_is_plain_array() {
+        // workbuddy's real models.json is a top-level array, not the
+        // codebuddy `{"models":[...],"availableModels":[...]}` wrapper
+        let cfg = sample_cfg();
+        let all = all_pairs(&cfg);
+        let s = export_workbuddy(&cfg, &all).unwrap();
+        let v: Value = serde_json::from_str(&s).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0]["id"], "agn-1");
+        assert_eq!(arr[0]["vendor"], "agnes");
+        assert_eq!(arr[0]["url"], "https://api.agnes.example/v1/chat/completions");
+        assert_eq!(arr[0]["apiKey"], "sk-agn");
+        assert!(v.get("models").is_none() && v.get("availableModels").is_none());
+    }
+
+    #[test]
+    fn config_update_merges_array_root_models_json() {
+        // merge must accept a plain top-level array (real workbuddy shape)
+        let dir = std::env::temp_dir().join(format!("sysenv-cfg-arr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("models.json");
+        std::fs::write(
+            &path,
+            r#"[{"id":"keep-me","name":"keep-me","vendor":"x","url":"u","apiKey":"k"}]"#,
+        )
+        .unwrap();
+        let cfg = sample_cfg();
+        let all = all_pairs(&cfg);
+        let added = merge_json_models(&path, &codebuddy_entries(&cfg, &all)).unwrap();
+        assert_eq!(added, vec!["agn-1", "agn-2", "mm-1"]);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 4);
+        assert_eq!(arr[0]["id"], "keep-me");
+        assert_eq!(arr[1]["id"], "agn-1");
+        // stays an array; no availableModels wrapper appears
+        assert!(v.get("availableModels").is_none());
+        // a second merge adds nothing and does not rewrite the file
+        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let added2 = merge_json_models(&path, &codebuddy_entries(&cfg, &all)).unwrap();
+        assert!(added2.is_empty());
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), mtime);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_zcode_export_shape() {
+        let cfg = sample_cfg();
+        let all = all_pairs(&cfg);
+        let s = export_zcoder(&cfg, &all).unwrap();
+        let v: Value = serde_json::from_str(&s).unwrap();
+        let providers = v["provider"].as_object().unwrap();
+        assert_eq!(providers.len(), 2);
+        let agnes = &providers["agnes"];
+        assert_eq!(agnes["kind"], "openai-compatible");
+        assert_eq!(agnes["options"]["baseURL"], "https://api.agnes.example/v1");
+        assert_eq!(agnes["options"]["apiKey"], "sk-agn");
+        assert_eq!(agnes["options"]["apiKeyRequired"], true);
+        assert_eq!(agnes["models"].as_object().unwrap().len(), 2);
+        assert_eq!(agnes["models"]["agn-1"]["name"], "agn-1");
+        let mm = &providers["minimax"];
+        assert_eq!(mm["models"].as_object().unwrap().len(), 1);
+        assert_eq!(v["model"]["main"], "agnes/agn-1");
+        assert_eq!(v["model"]["lite"], "agnes/agn-1");
+    }
+
+    #[test]
+    fn config_zcode_update_merge() {
+        let dir = std::env::temp_dir().join(format!("sysenv-cfg-zc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"provider":{"zai":{"kind":"anthropic","options":{"baseURL":"https://api.z.ai/api/anthropic"},"models":{"glm-5.2":{"name":"GLM-5.2"}}}},"model":{"main":"zai/glm-5.2","lite":"zai/glm-5.1"},"permission":{"mode":"build"}}"#,
+        )
+        .unwrap();
+        let cfg = sample_cfg();
+        let all = all_pairs(&cfg);
+        let added = merge_zcode_models(&path, &cfg, &all).unwrap();
+        assert_eq!(added.len(), 3);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // existing zai provider untouched, agnes/minimax added
+        assert_eq!(v["provider"]["zai"]["kind"], "anthropic");
+        assert_eq!(v["provider"]["zai"]["models"]["glm-5.2"]["name"], "GLM-5.2");
+        assert_eq!(v["provider"]["agnes"]["models"].as_object().unwrap().len(), 2);
+        assert_eq!(v["provider"]["minimax"]["models"].as_object().unwrap().len(), 1);
+        // model.main/lite already set -> untouched
+        assert_eq!(v["model"]["main"], "zai/glm-5.2");
+        assert_eq!(v["model"]["lite"], "zai/glm-5.1");
+        // other top-level keys preserved
+        assert_eq!(v["permission"]["mode"], "build");
+        // second merge adds nothing
+        let added2 = merge_zcode_models(&path, &cfg, &all).unwrap();
+        assert!(added2.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_zcode_update_fills_missing_main() {
+        let dir = std::env::temp_dir().join(format!("sysenv-cfg-zc2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"provider":{},"mcp":{"servers":{}}}"#).unwrap();
+        let cfg = sample_cfg();
+        let all = all_pairs(&cfg);
+        let added = merge_zcode_models(&path, &cfg, &all).unwrap();
+        assert_eq!(added.len(), 3);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["model"]["main"], "agnes/agn-1");
+        assert_eq!(v["model"]["lite"], "agnes/agn-1");
+        assert_eq!(v["mcp"]["servers"], json!({}));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn config_update_models_json_accepts_bom() {
         let dir = std::env::temp_dir().join(format!("sysenv-cfg-bom-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -5494,6 +5786,14 @@ mod tests {
         assert_eq!(
             software_config_path_in(&home, "workbuddy"),
             Some(home.join(".workbuddy").join("models.json"))
+        );
+        assert_eq!(
+            software_config_path_in(&home, "zcoder"),
+            Some(home.join(".zcode").join("cli").join("config.json"))
+        );
+        assert_eq!(
+            software_config_path_in(&home, "qoder"),
+            Some(home.join(".qoder").join("settings.json"))
         );
         #[cfg(windows)]
         assert_eq!(
