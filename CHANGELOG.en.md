@@ -2,6 +2,17 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.2 (2026-10-19)
+
+### Added
+- **Bare comparison predicates auto-filter csv/table**: with `-i csv` / `-i table`, an expression containing a comparison operator (`== != > >= < <=`, outside quotes) or `!` is treated as a filter over the root array — `ps | sys data -i table 'Id==7360'` works directly (equivalent to `[*].filter(Id==7360)`); only csv/table trigger it, other formats and assignment / function expressions keep their behaviour
+
+### Changed
+- version 0.6.1 -> 0.6.2; README (zh / en) data row notes the bare-predicate example
+- `cargo test --bin sys` 321 -> 323 all green
+
+---
+
 ## v0.6.1 (2026-10-19)
 
 ### Changed

@@ -573,6 +573,39 @@ struct FunctionCall {
     args: String,
 }
 
+/// A bare comparison predicate (e.g. `Id==7360`, `age >= 18`,
+/// `!has("x")`): when the expression contains a comparison operator or a
+/// leading negation, csv / table documents auto-filter the root array instead
+/// of treating the whole string as a literal selector key.
+fn looks_like_bare_predicate(expr: &str) -> bool {
+    let chars: Vec<char> = expr.chars().collect();
+    let mut in_quote: Option<char> = None;
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        match in_quote {
+            Some(q) if c == q => in_quote = None,
+            Some(_) => {}
+            None => {
+                if c == '"' || c == '\'' {
+                    in_quote = Some(c);
+                } else if c == '>' || c == '<' {
+                    return true;
+                } else if c == '!' {
+                    // `!=` or a logical-not predicate (`!has(...)`, `!(a==1)`,
+                    // `!x`); a bare `!` outside quotes almost never appears in
+                    // a csv/table key, so treat it as a predicate signal.
+                    return true;
+                } else if c == '=' && i + 1 < chars.len() && chars[i + 1] == '=' {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Parse `[path.]func(args)`. Returns `None` when the expression does not end
 /// in a balanced function call; `Some(Err)` when the shape looks like a call
 /// but the function name or parentheses are invalid.
@@ -1448,6 +1481,17 @@ pub fn cmd_data(
                 None => serialize_output(&v, out_f, compact)?, // deleted: print the doc
             }
         };
+    } else if looks_like_bare_predicate(expr)
+        && matches!(in_f, DataFormat::Csv | DataFormat::Table)
+    {
+        // Bare comparison predicate on csv / table input: auto-filter the
+        // root array (e.g. `sys data -i table 'Id==7360'`).
+        let fc = FunctionCall {
+            path: Some("[*]".to_string()),
+            name: "filter".to_string(),
+            args: expr.to_string(),
+        };
+        result_string = apply_filter(&v, &fc, out_f, compact)?;
     } else {
         // Plain selector.
         let steps = parse_selector(expr)?;
@@ -1930,6 +1974,37 @@ mod tests {
         // Non-array targets error.
         let fc = parse_function_expr("sites[0].filter(x)").unwrap().unwrap();
         assert!(apply_filter(&v, &fc, DataFormat::Json, false).is_err());
+    }
+
+    #[test]
+    fn bare_predicate_detection() {
+        assert!(looks_like_bare_predicate("Id==7360"));
+        assert!(looks_like_bare_predicate("Id == 7360"));
+        assert!(looks_like_bare_predicate("age>=18 && name.contains(\"web\")"));
+        assert!(looks_like_bare_predicate("!has(\"x\")"));
+        assert!(looks_like_bare_predicate("!(a==1)"));
+        assert!(looks_like_bare_predicate("a!=b"));
+        assert!(!looks_like_bare_predicate("Id"));
+        assert!(!looks_like_bare_predicate("a.b[0]"));
+        assert!(!looks_like_bare_predicate("m[\"中文键\"]"));
+        assert!(!looks_like_bare_predicate(r#""a==b""#)); // 纯引号内容忽略
+        assert!(looks_like_bare_predicate(r#"name == "a==b""#)); // 引号外 == 触发
+        assert!(!looks_like_bare_predicate("Id=7360")); // 单 = 赋值，走 split_expression
+    }
+
+    #[test]
+    fn bare_predicate_on_csv_auto_filters() {
+        // table/csv 根数组 + 裸谓词 = 自动 filter（等价于 [*].filter(...)）。
+        let v = parse_input("Id Name\n1 a\n2 b\n3 c\n", DataFormat::Table, None).unwrap();
+        let fc = FunctionCall {
+            path: Some("[*]".to_string()),
+            name: "filter".to_string(),
+            args: "Id==2".to_string(),
+        };
+        let out = apply_filter(&v, &fc, DataFormat::Json, false).unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(got.as_array().unwrap().len(), 1);
+        assert_eq!(got[0]["Name"], "b");
     }
 
     #[test]

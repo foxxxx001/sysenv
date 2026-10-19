@@ -2,6 +2,18 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.2（2026-10-19）
+
+### 新增
+- **csv / table 裸比较表达式自动 filter**：`-i csv` / `-i table` 下，表达式含比较运算符（`==` / `!=` / `>` / `>=` / `<` / `<=`，引号外）或 `!`（逻辑非）时，自动当作对整个根数组的 `filter` 执行——`ps | sys data -i table 'Id==7360'` 直接可用，等价于 `[*].filter(Id==7360)`
+- 仅 csv / table 触发；json/yaml/toml/md 保持原语义（裸比较仍按选择器报 matched nothing）；赋值（单 `=`）与函数表达式（`filter(...)` 等）不受影响
+- 新增 `looks_like_bare_predicate` 检测（跳过引号内容）
+
+### 测试
+- `cargo test --bin sys` 321 -> 323 项全绿（新增 `bare_predicate_detection` + `bare_predicate_on_csv_auto_filters`）
+
+---
+
 ## v0.6.1（2026-10-19）
 
 ### 变更
