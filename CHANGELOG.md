@@ -2,6 +2,15 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.10（2026-10-19）
+
+### 变更
+- **`ai config --list` 只列出存在的配置文件**：从「列出全部 8 个格式 + 默认路径」改为只显示默认配置文件**实际存在**的格式（`config_existing_list` 按 `path.exists()` 过滤）；全部不存在时 stderr 提示 `no existing config files found`；freellmapi 的 cwd 相对路径同样按存在性过滤（当前目录没有 `freellmapi.config.json` 就不显示）
+- 版本 0.6.9 -> 0.6.10；README（中 / 英）`ai config` 段落与特性行、CHANGELOG（中 / 英）、requirements.md 同步
+- `cargo test --bin sys` 354 -> 355 项全绿（新增 1 项：`config_existing_list` 只返回真实存在的路径、且是完整列表按同序的子集）
+
+---
+
 ## v0.6.9（2026-10-19）
 
 ### 新增

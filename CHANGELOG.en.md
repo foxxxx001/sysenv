@@ -2,6 +2,15 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.10 (2026-10-19)
+
+### Changed
+- **`ai config --list` lists only existing config files**: instead of printing all 8 formats plus their default paths, only formats whose default config file **actually exists** are shown (`config_existing_list` filters on `path.exists()`); when none exist it prints `no existing config files found` to stderr; the cwd-relative freellmapi path is filtered the same way (hidden when the current directory has no `freellmapi.config.json`)
+- version 0.6.9 -> 0.6.10; README (zh / en) `ai config` section and feature row, CHANGELOG (zh / en), requirements.md updated
+- `cargo test --bin sys` 354 -> 355 all green (1 new test: `config_existing_list` returns only real paths, an in-order subset of the full list)
+
+---
+
 ## v0.6.9 (2026-10-19)
 
 ### Added

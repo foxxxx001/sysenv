@@ -3931,6 +3931,15 @@ fn config_format_list() -> Vec<(&'static str, Option<PathBuf>)> {
         .collect()
 }
 
+/// Every format whose default config file actually exists on this machine
+/// (used by `--list`: only existing configs are shown).
+fn config_existing_list() -> Vec<(&'static str, PathBuf)> {
+    config_format_list()
+        .into_iter()
+        .filter_map(|(name, path)| path.filter(|p| p.exists()).map(|p| (name, p)))
+        .collect()
+}
+
 pub fn cmd_config(
     format: Option<&str>,
     selector: Option<&str>,
@@ -3943,13 +3952,15 @@ pub fn cmd_config(
     import_mode: bool,
 ) -> Result<()> {
     if list {
-        // `sys ai config --list`: enumerate every supported format and the
-        // config file each one would target by default (same paths as --show).
-        for (name, path) in config_format_list() {
-            match path {
-                Some(p) => println!("{name:<12} {}", p.display()),
-                None => println!("{name:<12} <no default path; use -f FILE>"),
-            }
+        // `sys ai config --list`: show only the formats whose default config
+        // file actually exists on this machine (missing ones are filtered out).
+        let existing = config_existing_list();
+        if existing.is_empty() {
+            eprintln!("sys: no existing config files found");
+            return Ok(());
+        }
+        for (name, path) in existing {
+            println!("{name:<12} {}", path.display());
         }
         return Ok(());
     }
@@ -6502,6 +6513,32 @@ mod tests {
             list.iter().find(|(n, _)| *n == "zcoder").unwrap().1,
             Some(home.join(".zcode").join("cli").join("config.json"))
         );
+    }
+
+    #[test]
+    fn config_existing_list_filters_missing_files() {
+        // every returned path must actually exist and be a subset of the full
+        // list (same names, same order); what is filtered depends on the host
+        let full = config_format_list();
+        let existing = config_existing_list();
+        assert!(existing.len() <= full.len());
+        let full_names: Vec<&str> = full.iter().map(|(n, _)| *n).collect();
+        let existing_names: Vec<&str> = existing.iter().map(|(n, _)| *n).collect();
+        // subset in the same relative order
+        let mut it = full_names.iter();
+        for name in &existing_names {
+            assert!(it.any(|n| n == name), "{name} missing from full list");
+        }
+        for (name, path) in &existing {
+            assert!(path.exists(), "{name} default path should exist: {}", path.display());
+        }
+        // the paths are exactly the existing entries of the full list
+        for (name, path) in &existing {
+            assert_eq!(
+                full.iter().find(|(n, _)| n == name).unwrap().1.as_deref(),
+                Some(path.as_path())
+            );
+        }
     }
 
     #[test]
