@@ -2,6 +2,17 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.5.13 (2026-10-19)
+
+### Added
+- **Root-array function expressions**: a bare `[*]` addresses the array itself when the root is an array, so `sys data -i table '[*].filter(Id==7360)'` / `'[*].search(...)'` filter / search the whole table (filter / search share `resolve_single`, both fixed)
+
+### Changed
+- version 0.5.12 -> 0.5.13; README (zh / en) data row notes root-array `[*].filter(...)`
+- `cargo test --bin sys` 314 -> 315 all green
+
+---
+
 ## v0.5.12 (2026-10-19)
 
 ### Added

@@ -1129,10 +1129,19 @@ fn resolve_single<'v>(root: &'v Value, path: &str, fn_name: &str) -> Result<&'v 
     match got.len() {
         1 => Ok(got[0]),
         0 => bail!("`{fn_name}` path `{path}` matched nothing"),
-        _ => bail!(
-            "`{fn_name}` path `{path}` matched {} values (expected exactly one)",
-            got.len()
-        ),
+        _ => {
+            // Root-array special case: a bare `[*]` on a root array addresses
+            // the array itself, so `[*].filter(pred)` / `[*].search(pred)`
+            // run over the whole document instead of erroring on the expanded
+            // elements.
+            if root.is_array() && steps.len() == 1 && matches!(steps[0], Step::Index(None)) {
+                return Ok(root);
+            }
+            bail!(
+                "`{fn_name}` path `{path}` matched {} values (expected exactly one)",
+                got.len()
+            )
+        }
     }
 }
 
@@ -1921,6 +1930,32 @@ mod tests {
         // Non-array targets error.
         let fc = parse_function_expr("sites[0].filter(x)").unwrap().unwrap();
         assert!(apply_filter(&v, &fc, DataFormat::Json, false).is_err());
+    }
+
+    #[test]
+    fn filter_on_root_array_via_wildcard() {
+        // `ps | sys data -i table '[*].filter(Id==7360)'` — a bare `[*]` on a
+        // root array addresses the array itself.
+        let v = parse_input("Id Name\n1 a\n2 b\n3 c\n", DataFormat::Table, None).unwrap();
+        let fc = parse_function_expr("[*].filter(Id >= 2)").unwrap().unwrap();
+        assert_eq!(fc.path.as_deref(), Some("[*]"));
+        let out = apply_filter(&v, &fc, DataFormat::Json, false).unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(got.as_array().unwrap().len(), 2);
+        assert_eq!(got[0]["Id"], json!(2));
+        assert_eq!(got[0]["Name"], json!("b"));
+        // search works the same way over the root array.
+        let fc = parse_function_expr("[*].search(Id == 1)").unwrap().unwrap();
+        let out = apply_search(&v, &fc, DataFormat::Json, false).unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        let arr = got.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["Name"], json!("a"));
+        // Nested arrays under a key keep the previous behaviour (expanded
+        // elements still error — no root special case).
+        let o = json!({"sites": [{"n": 1}, {"n": 2}]});
+        let fc = parse_function_expr("sites[*].filter(n==1)").unwrap().unwrap();
+        assert!(apply_filter(&o, &fc, DataFormat::Json, false).is_err());
     }
 
     #[test]

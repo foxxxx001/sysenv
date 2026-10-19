@@ -2,6 +2,18 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.5.13（2026-10-19）
+
+### 新增
+- **根数组函数表达式**：`resolve_single` 增加根数组特例——路径为裸 `[*]` 且根是数组时，寻址数组本身而非展开全部元素。`sys data -i table '[*].filter(Id==7360)'` / `'[*].search(...)'` 可直接对整张表过滤 / 搜索（此前报 `matched N values (expected exactly one)`）
+- 示例：`ps | sys data -i table '[*].filter(Id==7360)'`——PowerShell 表格化输出中的 `------` 分隔线行（Id 为字符串 `--`）会被谓词自然排除
+
+### 变更
+- 版本 0.5.12 -> 0.5.13；README（中 / 英）data 特性行补充根数组 `[*].filter(...)` 说明
+- `cargo test --bin sys` 314 -> 315 项全绿（新增 `filter_on_root_array_via_wildcard`）
+
+---
+
 ## v0.5.12（2026-10-19）
 
 ### 新增
