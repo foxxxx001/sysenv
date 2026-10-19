@@ -2,6 +2,21 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.9 (2026-10-19)
+
+### Added
+- **`ai config --import` reverse import** (`sys ai config <format> --import [-f source] [-c target]`): reads provider/model params from a third-party config file and merges them back into the local config `~/.sysenv/config.yaml` (backed up to `.bak-*` before writing). First supported for **codebuddy / workbuddy / zcoder** (any other format errors with `--import is not supported`); `-f FILE` names the source file (defaults to the format's default path; a missing source errors out), `-c` picks the sysenv target config
+- **models.json reverse parse** (shared by codebuddy / workbuddy; both the array root and the `{"models":[...]}` object root are accepted): entry `id` → model name; `url` minus the trailing `/chat/completions` → `api_base`; `apiKey` → `api_key`; `maxInputTokens` / `maxOutputTokens` / `supportsImages` map to `max_input_tokens` / `max_tokens` / `type`; a meaningful `vendor` (non-empty, not `Custom`) becomes the provider name, otherwise the `api_base` host is used (real workbuddy hand-added entries always say `Custom`); entries group by (provider name, api_base), same-name groups with different bases get `-2`-style suffixes
+- **ZCode config.json reverse parse** (zcoder): each `provider.<id>` block → one provider (the block's `name` field wins), `options.baseURL` / `options.apiKey` / `models` (object keys → model ids, `models.*.name` preferred) map to sysenv fields, `kind: anthropic` → `type: anthropic`
+- **Merge policy: add-new-first, keep existing** (line-level insertion; untouched lines keep their exact bytes): a provider missing locally gets a full 2/4/6-indent block appended at the end of the `clients` list (before other top-level keys; a missing `clients:` key is created); an existing provider only receives locally missing model entries (inserted after the whole model zone, sub-fields included); matching models are kept locally and reported `skipped`; entries missing `id` / `url` / `apiKey` (or a zcoder block without a key / without models) are skipped and reported; when everything is already present it prints `nothing to import` and writes / backs up nothing
+- Reports: `backed up ...` / `added N model(s) in M provider(s): ...` / `skipped (already present): ...` / `skipped N incomplete entry/entries: ...`
+
+### Changed
+- version 0.6.8 -> 0.6.9; `AiConfigArgs` gains `--import` (mutually exclusive with `--show` / `--update` / `--list`); README (zh / en) `ai config` section and feature row, CHANGELOG (zh / en), requirements.md updated
+- `cargo test --bin sys` 345 -> 354 all green (9 new tests: workbuddy array-root parse, codebuddy object-root parse, zcoder parse, same-name/different-base dedup suffix, new-provider block placement and backup, existing-provider append / same-name skipped / idempotent no-rewrite, `clients:` creation when missing, `models:` list creation for a provider without one, unsupported-format rejection)
+
+---
+
 ## v0.6.8 (2026-10-19)
 
 ### Added

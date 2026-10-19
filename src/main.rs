@@ -368,6 +368,12 @@ struct AiConfigArgs {
     /// (codebuddy / workbuddy / trae / zcoder; -f FILE overrides the default path)
     #[arg(long, conflicts_with_all = ["show", "list"])]
     update: bool,
+    /// Import mode: read provider/model params from the software's config file
+    /// (or -f FILE as the source) and merge them into ~/.sysenv/config.yaml
+    /// (backed up first; providers/models already present are kept).
+    /// Only codebuddy / workbuddy / zcoder can be imported
+    #[arg(long, conflicts_with_all = ["show", "list", "update"])]
+    import: bool,
     /// List every supported format and its default config file path
     #[arg(long)]
     list: bool,
@@ -1057,6 +1063,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             g.models.as_deref(),
             g.update,
             g.list,
+            g.import,
         ),
     }
 }

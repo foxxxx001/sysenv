@@ -3940,6 +3940,7 @@ pub fn cmd_config(
     models: Option<&str>,
     update: bool,
     list: bool,
+    import_mode: bool,
 ) -> Result<()> {
     if list {
         // `sys ai config --list`: enumerate every supported format and the
@@ -3953,7 +3954,6 @@ pub fn cmd_config(
         return Ok(());
     }
     let format = format.context("missing FORMAT")?;
-    let (cfg, _) = chat::load_config(config)?;
     let format_lc = format.to_ascii_lowercase();
     let supported = matches!(
         format_lc.as_str(),
@@ -3972,6 +3972,14 @@ pub fn cmd_config(
             "unknown format `{format}` (supported: codex, opencode, litellm, freellmapi, codebuddy, workbuddy, trae, zcoder)"
         );
     }
+    if import_mode {
+        // Import: reverse direction — read the third-party config (default
+        // path or -f FILE) and merge its providers/models into the sysenv
+        // config, backing up first. Only codebuddy / workbuddy / zcoder can
+        // be imported; the local cfg is not needed for selection here.
+        return cmd_config_import(&format_lc, out_file, config);
+    }
+    let (cfg, _) = chat::load_config(config)?;
     let sel = models.or(selector);
     let pairs = select_models(&cfg, sel)?;
     if pairs.is_empty() {
@@ -4084,6 +4092,596 @@ fn cmd_config_update(
         eprintln!("sys: nothing to add; selected model(s) already present");
     } else {
         eprintln!("sys: added {} model(s): {}", added.len(), added.join(", "));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `--import`: reverse of the exports. A third-party config file (codebuddy /
+// workbuddy `models.json` or the ZCode `config.json`) is parsed back into
+// provider/model entries, which are merged into `~/.sysenv/config.yaml`
+// (backed up first). Providers already present are kept; missing models are
+// appended to the matching provider, brand-new providers get a full block.
+// ---------------------------------------------------------------------------
+
+/// One model parsed back from a third-party config.
+#[derive(Debug, Clone)]
+struct ImportedModel {
+    name: String,
+    max_tokens: Option<u64>,
+    max_input_tokens: Option<u64>,
+    model_type: Option<String>,
+}
+
+/// One provider parsed back from a third-party config, ready to be written
+/// into the sysenv config as a `clients:` entry.
+#[derive(Debug, Clone)]
+struct ImportedProvider {
+    name: String,
+    kind: String,
+    api_base: String,
+    api_key: String,
+    models: Vec<ImportedModel>,
+}
+
+/// What an import actually changed in the sysenv config.
+struct ImportReport {
+    providers_added: Vec<String>,
+    models_added: Vec<String>,
+    models_skipped: Vec<String>,
+}
+
+/// Recover the API base from a models.json `url`: the exports store
+/// `{base}/chat/completions`, the real workbuddy entries do the same, but a
+/// plain base URL is accepted too.
+fn api_base_from_url(url: &str) -> Option<String> {
+    let mut s = url.trim().trim_end_matches(['/', ' ']);
+    let lower = s.to_ascii_lowercase();
+    if let Some(pos) = lower.rfind("/chat/completions") {
+        if lower[pos..].eq_ignore_ascii_case("/chat/completions") {
+            s = s[..pos].trim_end_matches('/');
+        }
+    }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+/// Host part of an API base (`https://api-inference.modelscope.cn/v1` ->
+/// `api-inference.modelscope.cn`), used as the provider name when the file
+/// carries no useful vendor name.
+fn host_of_api_base(base: &str) -> String {
+    let after_scheme = base
+        .trim_end_matches('/')
+        .split_once("://")
+        .map(|(_, r)| r)
+        .unwrap_or_else(|| base.trim_end_matches('/'));
+    after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme)
+        .to_string()
+}
+
+/// Provider name for a models.json entry: the `vendor` field when it carries
+/// real information, otherwise the API base host (workbuddy writes a useless
+/// `Custom` vendor for hand-added models).
+fn provider_name_from_vendor(vendor: Option<&str>, api_base: &str) -> String {
+    match vendor.map(str::trim).filter(|v| {
+        !v.is_empty() && !v.eq_ignore_ascii_case("custom") && !v.eq_ignore_ascii_case("none")
+    }) {
+        Some(v) => v.to_string(),
+        None => host_of_api_base(api_base),
+    }
+}
+
+/// Parse a codebuddy / workbuddy `models.json` back into providers. Both the
+/// codebuddy object shape (`{"models":[...]}`) and the workbuddy array shape
+/// (root array) are accepted. Entries are grouped by (provider name, API
+/// base); entries missing `id` / `url` / `apiKey` are skipped and reported.
+fn parse_models_json(path: &Path) -> Result<(Vec<ImportedProvider>, Vec<String>)> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+    let root: Value = serde_json::from_str(content)
+        .with_context(|| format!("{} is not valid JSON", path.display()))?;
+    let entries: Vec<&Value> = if let Some(arr) = root.as_array() {
+        arr.iter().collect()
+    } else if let Some(models) = root.get("models").and_then(|m| m.as_array()) {
+        models.iter().collect()
+    } else {
+        bail!(
+            "{} has neither a top-level array nor a `models` array",
+            path.display()
+        );
+    };
+
+    let mut providers: Vec<ImportedProvider> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for e in &entries {
+        let id = e["id"].as_str().unwrap_or_default().trim().to_string();
+        if id.is_empty() {
+            skipped.push("entry without `id`".to_string());
+            continue;
+        }
+        let url = e["url"].as_str().unwrap_or_default().trim();
+        if url.is_empty() {
+            skipped.push(format!("`{id}` without `url`"));
+            continue;
+        }
+        let api_key = e["apiKey"].as_str().unwrap_or_default().trim().to_string();
+        if api_key.is_empty() {
+            skipped.push(format!("`{id}` without `apiKey`"));
+            continue;
+        }
+        let Some(api_base) = api_base_from_url(url) else {
+            skipped.push(format!("`{id}` with an unusable `url`"));
+            continue;
+        };
+        let name = provider_name_from_vendor(e["vendor"].as_str(), &api_base);
+        let model = ImportedModel {
+            name: id,
+            max_tokens: e["maxOutputTokens"].as_u64(),
+            max_input_tokens: e["maxInputTokens"].as_u64(),
+            model_type: match e["supportsImages"].as_bool() {
+                Some(true) => Some("text,image".to_string()),
+                _ => None,
+            },
+        };
+        let slot = providers.iter_mut().find(|p| {
+            p.name.eq_ignore_ascii_case(&name) && p.api_base == api_base
+        });
+        match slot {
+            Some(p) => p.models.push(model),
+            None => providers.push(ImportedProvider {
+                name,
+                kind: "openai".to_string(),
+                api_base,
+                api_key,
+                models: vec![model],
+            }),
+        }
+    }
+
+    // Two groups with the same provider name but different API bases must not
+    // collapse into one block; keep the first name, suffix the later ones.
+    let mut used: Vec<String> = Vec::new();
+    for p in &mut providers {
+        if used.iter().any(|u| u.eq_ignore_ascii_case(&p.name)) {
+            let mut n = 2;
+            loop {
+                let cand = format!("{}-{}", p.name, n);
+                if !used.iter().any(|u| u.eq_ignore_ascii_case(&cand)) {
+                    p.name = cand;
+                    break;
+                }
+                n += 1;
+            }
+        }
+        used.push(p.name.clone());
+    }
+    Ok((providers, skipped))
+}
+
+/// Parse a ZCode `config.json` back into providers. Every `provider.<id>`
+/// block becomes one provider: `options.baseURL` / `options.apiKey` supply the
+/// endpoint and key, the `models` object keys are the model ids (`models.*.name`
+/// wins when present). Blocks without a key or without models are skipped.
+fn parse_zcoder_config(path: &Path) -> Result<(Vec<ImportedProvider>, Vec<String>)> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+    let root: Value = serde_json::from_str(content)
+        .with_context(|| format!("{} is not valid JSON", path.display()))?;
+    let providers_obj = root
+        .get("provider")
+        .and_then(|p| p.as_object())
+        .with_context(|| format!("{} has no `provider` object", path.display()))?;
+
+    let mut providers: Vec<ImportedProvider> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for (id, entry) in providers_obj {
+        let name = entry["name"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| id.clone());
+        let options = entry.get("options").unwrap_or(&Value::Null);
+        let Some(api_base) = options["baseURL"].as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+            skipped.push(format!("provider `{id}` without `options.baseURL`"));
+            continue;
+        };
+        let Some(api_key) = options["apiKey"].as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+            skipped.push(format!("provider `{id}` without `options.apiKey`"));
+            continue;
+        };
+        let kind = match entry["kind"].as_str() {
+            Some(k) if k.eq_ignore_ascii_case("anthropic") => "anthropic".to_string(),
+            _ => "openai".to_string(),
+        };
+        let mut models: Vec<ImportedModel> = Vec::new();
+        if let Some(models_obj) = entry["models"].as_object() {
+            for (mid, mv) in models_obj {
+                let mname = mv["name"]
+                    .as_str()
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|| mid.clone());
+                models.push(ImportedModel {
+                    name: mname,
+                    max_tokens: None,
+                    max_input_tokens: None,
+                    model_type: None,
+                });
+            }
+        }
+        if models.is_empty() {
+            skipped.push(format!("provider `{id}` without models"));
+            continue;
+        }
+        providers.push(ImportedProvider {
+            name,
+            kind,
+            api_base: api_base.to_string(),
+            api_key: api_key.to_string(),
+            models,
+        });
+    }
+    Ok((providers, skipped))
+}
+
+/// `(indent, trimmed content)` of one config line (space indentation; the
+/// sysenv config is written with plain spaces).
+fn yaml_line_parts(s: &str) -> (usize, &str) {
+    let trimmed = s.trim_start();
+    (s.len() - trimmed.len(), trimmed)
+}
+
+/// Strip one pair of surrounding single/double quotes.
+fn yaml_unquote(v: &str) -> String {
+    let v = v.trim();
+    if v.len() >= 2 && v.starts_with('"') && v.ends_with('"') {
+        v[1..v.len() - 1].replace("\\\"", "\"").replace("\\\\", "\\")
+    } else if v.len() >= 2 && v.starts_with('\'') && v.ends_with('\'') {
+        v[1..v.len() - 1].to_string()
+    } else {
+        v.to_string()
+    }
+}
+
+/// Quote a YAML scalar when it would change meaning unquoted; otherwise keep
+/// it plain (matching the existing config's style — URLs with `https://` stay
+/// unquoted because only a `:` followed by whitespace is ambiguous).
+fn yaml_scalar(v: &str) -> String {
+    let trimmed = v.trim();
+    let needs = v.is_empty()
+        || trimmed != v
+        || v.contains(": ")
+        || v.ends_with(':')
+        || v.starts_with(['-', '?', ':', '"', '\'', '&', '*', '!', '|', '>', '%', '@', '`', '#', '{', '['])
+        || v.contains(['"', '\'', '{', '}', '[', ']', ','])
+        || v.contains('\n');
+    if needs {
+        format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        v.to_string()
+    }
+}
+
+/// A provider block found in the sysenv config: its line range, name, the
+/// provider entry indent, the `models:` key indent (when present), the end of
+/// the model zone (first line after the last model entry / its sub-fields)
+/// and the model entry lines inside it.
+struct CfgBlock {
+    start: usize,
+    end: usize,
+    name: String,
+    entry_indent: usize,
+    models_indent: Option<usize>,
+    model_end: Option<usize>,
+    models: Vec<(usize, String)>,
+}
+
+/// One insertion into the sysenv config, applied after backing up. `at` is
+/// the line index the text is inserted before; `text` already ends with `\n`.
+enum CfgInsert {
+    /// A full new `clients:` provider block.
+    Provider { at: usize, text: String },
+    /// One `- name:` model entry appended inside an existing provider block.
+    Model { at: usize, text: String },
+}
+
+/// Quote-free model line for an existing block's `models:` list.
+fn model_line(indent: usize, m: &ImportedModel) -> String {
+    let mut s = format!("{}- name: {}\n", " ".repeat(indent), yaml_scalar(&m.name));
+    if let Some(n) = m.max_tokens {
+        s.push_str(&format!("{}max_tokens: {}\n", " ".repeat(indent + 2), n));
+    }
+    if let Some(n) = m.max_input_tokens {
+        s.push_str(&format!("{}max_input_tokens: {}\n", " ".repeat(indent + 2), n));
+    }
+    if let Some(t) = &m.model_type {
+        s.push_str(&format!("{}type: {}\n", " ".repeat(indent + 2), yaml_scalar(t)));
+    }
+    s
+}
+
+/// Full `clients:` entry for a brand-new provider (2/4/6-space layout, the
+/// same as the real config).
+fn provider_block(p: &ImportedProvider) -> String {
+    let mut s = format!("  - type: {}\n", yaml_scalar(&p.kind));
+    s.push_str(&format!("    name: {}\n", yaml_scalar(&p.name)));
+    s.push_str(&format!("    api_base: {}\n", yaml_scalar(&p.api_base)));
+    s.push_str(&format!("    api_key: {}\n", yaml_scalar(&p.api_key)));
+    s.push_str("    models:\n");
+    for m in &p.models {
+        s.push_str(&model_line(6, m));
+    }
+    s
+}
+
+/// Merge the imported providers into the sysenv config at `path` (line-level:
+/// every untouched line keeps its exact bytes). Existing providers are kept
+/// whole; their missing models are appended, brand-new providers get a full
+/// block. The file is backed up only when something is actually written.
+fn import_into_config(path: &Path, imports: &[ImportedProvider]) -> Result<ImportReport> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+    let lines: Vec<String> = content.split('\n').map(str::to_string).collect();
+    let eof = lines.len();
+
+    // Locate the `clients:` top-level key and parse every provider block under
+    // it (blocks end where a shallower/equal `- ` entry or a top-level key
+    // begins).
+    let mut clients_idx: Option<usize> = None;
+    let mut blocks: Vec<CfgBlock> = Vec::new();
+    let mut provider_indent: Option<usize> = None;
+    let mut cur: Option<CfgBlock> = None;
+    for (i, raw) in lines.iter().enumerate() {
+        let (ind, content) = yaml_line_parts(raw);
+        if content.is_empty() {
+            continue;
+        }
+        if ind == 0 && !content.starts_with('-') {
+            if let Some(k) = content.split(':').next() {
+                if k == "clients" {
+                    clients_idx = Some(i);
+                }
+            }
+            // any top-level key closes the clients list
+            if let Some(mut c) = cur.take() {
+                c.end = i;
+                blocks.push(c);
+            }
+            provider_indent = None;
+            continue;
+        }
+        if ind == 0 && content.starts_with('-') {
+            // top-level list (not expected); treat as a block boundary
+            if let Some(mut c) = cur.take() {
+                c.end = i;
+                blocks.push(c);
+            }
+            provider_indent = None;
+            continue;
+        }
+        let is_entry = content.starts_with('-');
+        if let Some(pi) = provider_indent {
+            if is_entry && ind == pi {
+                if let Some(mut c) = cur.take() {
+                    c.end = i;
+                    blocks.push(c);
+                }
+            }
+        } else if is_entry {
+            provider_indent = Some(ind);
+        }
+        if is_entry && cur.is_none() && provider_indent == Some(ind) {
+            cur = Some(CfgBlock {
+                start: i,
+                end: eof,
+                name: String::new(),
+                entry_indent: ind,
+                models_indent: None,
+                model_end: None,
+                models: Vec::new(),
+            });
+        }
+        if let Some(c) = cur.as_mut() {
+            if let Some(pi) = provider_indent {
+                if ind == pi + 2 {
+                    let rest = content.strip_prefix('-').map(str::trim_start).unwrap_or(content);
+                    if let Some(name) = rest.strip_prefix("name:").map(str::trim) {
+                        c.name = yaml_unquote(name);
+                    }
+                }
+                if ind == pi + 2 {
+                    if let Some(_rest) = content.strip_prefix("models:").map(str::trim_start) {
+                        c.models_indent = Some(ind);
+                        c.models.clear();
+                        // scan the model entries (indent pi+4) and their
+                        // sub-fields until the block ends; `zone_end` is the
+                        // first line after the whole model zone
+                        let mut j = i + 1;
+                        let mut zone_end = i + 1;
+                        while j < lines.len() {
+                            let (nj, nc) = yaml_line_parts(&lines[j]);
+                            if nj <= pi || (nj == pi && nc.starts_with('-')) {
+                                break;
+                            }
+                            if nj > pi + 2 {
+                                zone_end = j + 1;
+                            }
+                            if nj == pi + 4 {
+                                if let Some(mrest) = nc.strip_prefix('-').map(str::trim_start) {
+                                    if let Some(mname) = mrest.strip_prefix("name:").map(str::trim) {
+                                        c.models.push((j, yaml_unquote(mname)));
+                                    }
+                                }
+                            }
+                            j += 1;
+                        }
+                        c.model_end = Some(zone_end);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(mut c) = cur.take() {
+        c.end = eof;
+        blocks.push(c);
+    }
+
+    let mut report = ImportReport {
+        providers_added: Vec::new(),
+        models_added: Vec::new(),
+        models_skipped: Vec::new(),
+    };
+    let mut inserts: Vec<CfgInsert> = Vec::new();
+    for p in imports {
+        let local = blocks
+            .iter()
+            .find(|b| b.name.eq_ignore_ascii_case(&p.name));
+        match local {
+            None => {
+                // brand-new provider -> a full block at the end of the
+                // clients list (before the next top-level key / EOF)
+                let at = blocks
+                    .last()
+                    .map(|b| b.end)
+                    .unwrap_or_else(|| clients_idx.map(|i| i + 1).unwrap_or(0));
+                let mut text = provider_block(p);
+                if clients_idx.is_none() {
+                    text = "clients:\n".to_string() + &text;
+                }
+                inserts.push(CfgInsert::Provider { at, text });
+                report.providers_added.push(p.name.clone());
+                for m in &p.models {
+                    report.models_added.push(format!("{}/{}", p.name, m.name));
+                }
+            }
+            Some(b) => {
+                // existing provider -> append only missing models
+                let model_indent = b.models_indent.map(|mi| mi + 2).unwrap_or(b.entry_indent + 4);
+                for m in &p.models {
+                    let present = b
+                        .models
+                        .iter()
+                        .any(|(_, n)| n.eq_ignore_ascii_case(&m.name));
+                    if present {
+                        report.models_skipped.push(format!("{}/{}", p.name, m.name));
+                        continue;
+                    }
+                    // insert after the block's whole model zone (sub-fields
+                    // included), or at the block end when it has no `models:`
+                    let at = b.model_end.unwrap_or(b.end);
+                    let mut text = model_line(model_indent, m);
+                    if b.models_indent.is_none() {
+                        // the block has no `models:` list yet; open one
+                        text = format!("{}models:\n", " ".repeat(b.entry_indent + 2)) + &text;
+                    }
+                    inserts.push(CfgInsert::Model { at, text });
+                    report.models_added.push(format!("{}/{}", p.name, m.name));
+                }
+            }
+        }
+    }
+
+    if inserts.is_empty() {
+        return Ok(report);
+    }
+
+    let backup = backup_file(path)?;
+    eprintln!("sys: backed up {} to {}", path.display(), backup.display());
+
+    // Apply from the bottom up so earlier line indices stay valid.
+    let mut out = lines.clone();
+    inserts.sort_by_key(|ins| match ins {
+        CfgInsert::Provider { at, .. } => *at,
+        CfgInsert::Model { at, .. } => *at,
+    });
+    inserts.reverse();
+    for ins in inserts {
+        let (at, text) = match ins {
+            CfgInsert::Provider { at, text } => (at, text),
+            CfgInsert::Model { at, text } => (at, text),
+        };
+        let at = at.min(out.len());
+        out.insert(at, text.trim_end_matches('\n').to_string());
+    }
+    let mut text = out.join("\n");
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
+    Ok(report)
+}
+
+/// `--import` mode: read the target software's config file (or the `-f`
+/// override) and merge its provider/model entries into the sysenv config
+/// (`-c` override or the default `~/.sysenv/config.yaml`), backing up first.
+fn cmd_config_import(
+    format: &str,
+    source: Option<&Path>,
+    config: Option<&Path>,
+) -> Result<()> {
+    if !matches!(format, "codebuddy" | "workbuddy" | "zcoder") {
+        bail!(
+            "`--import` is not supported for `{format}` (only codebuddy, workbuddy, zcoder)"
+        );
+    }
+    let src = match source {
+        Some(p) => p.to_path_buf(),
+        None => software_config_path(format)
+            .ok_or_else(|| anyhow::anyhow!("no default config path for `{format}`; use -f FILE"))?,
+    };
+    if !src.exists() {
+        bail!("source file not found at {} (nothing to import)", src.display());
+    }
+    let (providers, skipped) = match format {
+        "codebuddy" | "workbuddy" => parse_models_json(&src)?,
+        "zcoder" => parse_zcoder_config(&src)?,
+        _ => unreachable!("format checked above"),
+    };
+    if providers.is_empty() {
+        bail!(
+            "nothing importable from {} ({} incomplete entry/entries skipped)",
+            src.display(),
+            skipped.len()
+        );
+    }
+    // The target sysenv config must exist and parse, so we never write a
+    // half-broken file.
+    let (_, cfg_path) = chat::load_config(config)?;
+    let report = import_into_config(&cfg_path, &providers)?;
+    if report.providers_added.is_empty() && report.models_added.is_empty() {
+        eprintln!(
+            "sys: nothing to import; all provider/model(s) already present in {}",
+            cfg_path.display()
+        );
+        return Ok(());
+    }
+    eprintln!(
+        "sys: added {} model(s) in {} provider(s): {}",
+        report.models_added.len(),
+        report.providers_added.len(),
+        report.models_added.join(", ")
+    );
+    if !report.models_skipped.is_empty() {
+        eprintln!(
+            "sys: skipped (already present): {}",
+            report.models_skipped.join(", ")
+        );
+    }
+    if !skipped.is_empty() {
+        eprintln!(
+            "sys: skipped {} incomplete entry/entries: {}",
+            skipped.len(),
+            skipped.join("; ")
+        );
     }
     Ok(())
 }
@@ -5930,5 +6528,246 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&backup2).unwrap(), "model_list: []\n");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- --import (reverse of the exports) -----------------------------------
+
+    fn import_model(name: &str) -> ImportedModel {
+        ImportedModel {
+            name: name.to_string(),
+            max_tokens: None,
+            max_input_tokens: None,
+            model_type: None,
+        }
+    }
+
+    fn import_provider(name: &str, base: &str, key: &str, models: &[&str]) -> ImportedProvider {
+        ImportedProvider {
+            name: name.to_string(),
+            kind: "openai".to_string(),
+            api_base: base.to_string(),
+            api_key: key.to_string(),
+            models: models.iter().map(|m| import_model(m)).collect(),
+        }
+    }
+
+    #[test]
+    fn import_parse_workbuddy_array_shape() {
+        let dir = std::env::temp_dir().join(format!("sysenv-imp-wb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("models.json");
+        std::fs::write(
+            &path,
+            r#"[
+              {"id":"Qwen/Qwen3.8-Flash-Next","name":"Qwen/Qwen3.8-Flash-Next","vendor":"Custom","url":"https://api-inference.modelscope.cn/v1/chat/completions","apiKey":"ms-key","supportsImages":false,"maxOutputTokens":4096,"maxInputTokens":131072},
+              {"id":"deepseek-v4-flash","vendor":"Custom","url":"https://token.sensenova.cn/v1/chat/completions","apiKey":"sk-key","supportsImages":true},
+              {"id":"no-key","vendor":"Custom","url":"https://x.example/v1","supportsImages":false}
+            ]"#,
+        )
+        .unwrap();
+        let (ps, skipped) = parse_models_json(&path).unwrap();
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].contains("no-key"));
+        assert_eq!(ps.len(), 2);
+        // vendor "Custom" carries no info -> api-base host becomes the name
+        assert_eq!(ps[0].name, "api-inference.modelscope.cn");
+        assert_eq!(ps[0].api_base, "https://api-inference.modelscope.cn/v1");
+        assert_eq!(ps[0].api_key, "ms-key");
+        assert_eq!(ps[0].models.len(), 1);
+        assert_eq!(ps[0].models[0].name, "Qwen/Qwen3.8-Flash-Next");
+        assert_eq!(ps[0].models[0].max_tokens, Some(4096));
+        assert_eq!(ps[0].models[0].max_input_tokens, Some(131072));
+        assert_eq!(ps[0].models[0].model_type, None); // supportsImages false
+        assert_eq!(ps[1].name, "token.sensenova.cn");
+        assert_eq!(ps[1].models[0].model_type.as_deref(), Some("text,image"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn import_parse_codebuddy_object_shape() {
+        // codebuddy object root; a real vendor name is kept as-is and same
+        // (vendor, base) entries collapse into one provider
+        let dir = std::env::temp_dir().join(format!("sysenv-imp-cb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("models.json");
+        std::fs::write(
+            &path,
+            r#"{"models":[{"id":"agn-1","name":"agn-1","vendor":"agnes","url":"https://api.agnes.example/v1/chat/completions","apiKey":"sk-agn"},{"id":"agn-2","vendor":"agnes","url":"https://api.agnes.example/v1/chat/completions","apiKey":"sk-agn"}],"availableModels":["agn-1","agn-2"]}"#,
+        )
+        .unwrap();
+        let (ps, skipped) = parse_models_json(&path).unwrap();
+        assert!(skipped.is_empty());
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].name, "agnes");
+        assert_eq!(ps[0].models.len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn import_parse_zcoder_config() {
+        let dir = std::env::temp_dir().join(format!("sysenv-imp-zc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"provider":{"zai":{"kind":"anthropic","name":"zai","options":{"baseURL":"https://api.z.ai/api/anthropic","apiKey":"sk-z","apiKeyRequired":true},"models":{"glm-5.2":{"name":"GLM-5.2"},"glm-5.1":{"name":"GLM-5.1"}}},"nokey":{"kind":"openai-compatible","options":{"baseURL":"https://x.example/v1","apiKeyRequired":false},"models":{"m1":{}}}},"model":{"main":"zai/glm-5.2","lite":"zai/glm-5.1"}}"#,
+        )
+        .unwrap();
+        let (ps, skipped) = parse_zcoder_config(&path).unwrap();
+        assert_eq!(skipped.len(), 1); // nokey has no apiKey
+        assert!(skipped[0].contains("nokey"));
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].name, "zai");
+        assert_eq!(ps[0].kind, "anthropic");
+        assert_eq!(ps[0].api_base, "https://api.z.ai/api/anthropic");
+        assert_eq!(ps[0].api_key, "sk-z");
+        assert_eq!(ps[0].models.len(), 2);
+        assert_eq!(ps[0].models[0].name, "GLM-5.2");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn import_dedups_provider_names_with_same_name_different_base() {
+        let dir = std::env::temp_dir().join(format!("sysenv-imp-dd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("models.json");
+        std::fs::write(
+            &path,
+            r#"[
+              {"id":"m1","vendor":"multi","url":"https://a.example/v1/chat/completions","apiKey":"k1"},
+              {"id":"m2","vendor":"multi","url":"https://b.example/v1/chat/completions","apiKey":"k2"}
+            ]"#,
+        )
+        .unwrap();
+        let (ps, _) = parse_models_json(&path).unwrap();
+        assert_eq!(ps.len(), 2);
+        assert_eq!(ps[0].name, "multi");
+        assert_eq!(ps[1].name, "multi-2");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The sysenv-style config used by the merge tests (2/4/6-space layout).
+    fn import_sample_config() -> &'static str {
+        "model: agnes:agn-1\nclients:\n  - type: openai\n    name: agnes\n    api_base: https://api.agnes.example/v1\n    api_key: sk-agn\n    models:\n      - name: agn-1\n        type: text,image\n  - type: openai\n    name: minimax\n    api_base: https://api.minimax.example/v1\n    api_key: sk-mm\n    models:\n      - name: mm-1\nstream: true\n"
+    }
+
+    #[test]
+    fn import_merges_new_provider_block_before_trailing_keys() {
+        let dir = std::env::temp_dir().join(format!("sysenv-imp-m1-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+        std::fs::write(&path, import_sample_config()).unwrap();
+        let ps = vec![import_provider(
+            "newco",
+            "https://api.newco.example/v1",
+            "sk-new",
+            &["nm-1", "nm-2"],
+        )];
+        let report = import_into_config(&path, &ps).unwrap();
+        assert_eq!(report.providers_added, vec!["newco"]);
+        assert_eq!(report.models_added, vec!["newco/nm-1", "newco/nm-2"]);
+        assert!(report.models_skipped.is_empty());
+        let text = std::fs::read_to_string(&path).unwrap();
+        // the new block sits between the clients list and `stream: true`
+        let stream_pos = text.find("stream: true").unwrap();
+        let newco_pos = text.find("name: newco").unwrap();
+        assert!(newco_pos < stream_pos);
+        assert!(text.contains("api_base: https://api.newco.example/v1"));
+        // existing entries keep their exact bytes
+        assert!(text.contains("name: agnes\n    api_base: https://api.agnes.example/v1"));
+        assert!(text.contains("type: text,image"));
+        // and the merged file parses with the real loader
+        let (cfg, _) = chat::load_config(Some(&path)).unwrap();
+        assert_eq!(cfg.providers.len(), 3);
+        assert_eq!(cfg.providers[2].name, "newco");
+        assert_eq!(cfg.providers[2].models.len(), 2);
+        // a backup was made
+        let bak = std::fs::read_dir(&dir).unwrap().count();
+        assert_eq!(bak, 2); // config.yaml + one .bak
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn import_appends_missing_models_and_keeps_present() {
+        let dir = std::env::temp_dir().join(format!("sysenv-imp-m2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+        std::fs::write(&path, import_sample_config()).unwrap();
+        // agn-1 already present (with a sub-field); agn-9 and agn-10 are new
+        let ps = vec![import_provider(
+            "agnes",
+            "https://api.agnes.example/v1",
+            "sk-agn",
+            &["agn-1", "agn-9", "agn-10"],
+        )];
+        let report = import_into_config(&path, &ps).unwrap();
+        assert!(report.providers_added.is_empty());
+        assert_eq!(report.models_added, vec!["agnes/agn-9", "agnes/agn-10"]);
+        assert_eq!(report.models_skipped, vec!["agnes/agn-1"]);
+        let text = std::fs::read_to_string(&path).unwrap();
+        // new models go after the existing model zone (sub-field included)
+        let agn1 = text.find("- name: agn-1").unwrap();
+        let agn9 = text.find("- name: agn-9").unwrap();
+        let typ = text.find("type: text,image").unwrap();
+        assert!(agn1 < typ && typ < agn9, "new model must follow the model zone");
+        let (cfg, _) = chat::load_config(Some(&path)).unwrap();
+        let agnes = cfg.providers.iter().find(|p| p.name == "agnes").unwrap();
+        assert_eq!(agnes.models.len(), 3);
+        // second import with the same models: nothing new, no rewrite, no backup
+        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let r2 = import_into_config(&path, &ps).unwrap();
+        assert!(r2.models_added.is_empty());
+        assert_eq!(r2.models_skipped.len(), 3);
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), mtime);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2); // still one .bak
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn import_creates_clients_when_missing() {
+        let dir = std::env::temp_dir().join(format!("sysenv-imp-m3-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+        std::fs::write(&path, "model: agnes:agn-1\nstream: true\n").unwrap();
+        let ps = vec![import_provider("newco", "https://api.newco.example/v1", "sk-new", &["nm-1"])];
+        import_into_config(&path, &ps).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("clients:"));
+        assert!(text.contains("name: newco"));
+        let (cfg, _) = chat::load_config(Some(&path)).unwrap();
+        assert_eq!(cfg.providers.len(), 1);
+        assert_eq!(cfg.providers[0].name, "newco");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn import_opens_models_list_when_provider_has_none() {
+        let dir = std::env::temp_dir().join(format!("sysenv-imp-m4-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yaml");
+        std::fs::write(
+            &path,
+            "model: agnes:agn-1\nclients:\n  - type: openai\n    name: agnes\n    api_base: https://api.agnes.example/v1\n    api_key: sk-agn\nstream: true\n",
+        )
+        .unwrap();
+        let ps = vec![import_provider(
+            "agnes",
+            "https://api.agnes.example/v1",
+            "sk-agn",
+            &["agn-9"],
+        )];
+        let report = import_into_config(&path, &ps).unwrap();
+        assert_eq!(report.models_added, vec!["agnes/agn-9"]);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("    models:\n      - name: agn-9"));
+        let (cfg, _) = chat::load_config(Some(&path)).unwrap();
+        assert_eq!(cfg.providers[0].models.len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn import_unsupported_format_rejected() {
+        assert!(cmd_config_import("codex", None, None).is_err());
+        assert!(cmd_config_import("trae", None, None).is_err());
     }
 }

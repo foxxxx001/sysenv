@@ -2,6 +2,21 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.9（2026-10-19）
+
+### 新增
+- **`ai config --import` 反向导入**（`sys ai config <format> --import [-f 源头] [-c 目标]`）：从第三方工具配置文件读取 Provider / 模型参数，合并写回本地配置 `~/.sysenv/config.yaml`（写入前自动备份 `.bak-*`）。先支持 **codebuddy / workbuddy / zcoder** 三种格式（其余格式报 `--import is not supported`）；`-f FILE` 指定源头文件（缺省该格式默认路径，源文件不存在报错），`-c` 指定 sysenv 目标配置
+- **models.json 反向解析**（codebuddy / workbuddy 共用，数组根与 `{"models":[...]}` 对象根均可）：`id` → 模型名；`url` 去掉尾部 `/chat/completions` 还原 `api_base`；`apiKey` → `api_key`；`maxInputTokens` / `maxOutputTokens` / `supportsImages` 映射 `max_input_tokens` / `max_tokens` / `type`；`vendor` 有真实名（非空且非 `Custom`）作 Provider 名，否则取 `api_base` 主机名（真实 workbuddy 手加条目 vendor 恒为 `Custom`）；同 (Provider 名, api_base) 归组，同名不同 api_base 的组名追加 `-2` 等后缀
+- **ZCode config.json 反向解析**（zcoder）：`provider.<id>` 块 → Provider（`name` 优先取块的 `name` 字段），`options.baseURL` / `options.apiKey` / `models`（对象键 → 模型名，`models.*.name` 优先）映射到 sysenv 字段，`kind: anthropic` → `type: anthropic`
+- **合并策略：新增优先，同名保留本地**（行级插入，未触及行保持原字节）：本地没有的 Provider 追加完整块（2/4/6 缩进，插在 `clients` 列表末尾 / 其它顶层键之前；`clients:` 缺失时创建）；已有 Provider 只追加本地缺失的模型条目（插在模型区之后，含子字段）；同名模型保留本地并报告 `skipped`；缺 `id` / `url` / `apiKey`（或 zcoder 缺 key / 无模型）的条目跳过并提示；全部已存在时提示 `nothing to import` 且不备份不写文件
+- 报告：`backed up ...` / `added N model(s) in M provider(s): ...` / `skipped (already present): ...` / `skipped N incomplete entry/entries: ...`
+
+### 变更
+- 版本 0.6.8 -> 0.6.9；`AiConfigArgs` 增加 `--import`（与 `--show` / `--update` / `--list` 互斥）；README（中 / 英）`ai config` 段落与特性行、CHANGELOG（中 / 英）、requirements.md 同步
+- `cargo test --bin sys` 345 -> 354 项全绿（新增 9 项：workbuddy 数组根解析、codebuddy 对象根解析、zcoder 解析、同名不同 api_base 去重后缀、新 Provider 块插入位置与备份、已有 Provider 追加模型 / 同名 skipped / 幂等不重写、`clients:` 缺失创建、无 `models:` 的 Provider 补建列表、不支持格式拒绝）
+
+---
+
 ## v0.6.8（2026-10-19）
 
 ### 新增
