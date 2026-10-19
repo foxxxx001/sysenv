@@ -2,6 +2,18 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.4（2026-10-19）
+
+### 修复
+- **非 UTF-8 输入不再报错**：`sys data` 读取文件 / stdin 改为字节级解码，按 UTF-8（BOM 剥离声明）→ UTF-16（BOM）→ GBK（Windows ANSI 936）→ GB18030 → 宽松降级（U+FFFD）的顺序解码；并处理 GBK 字节对恰好是合法 UTF-8 的摩斯码陷阱（UTF-8 视图无汉字而 GBK 视图含汉字时取 GBK）——`sys data -f xxx.log`（GBK 设备日志）不再报 `stream did not contain valid UTF-8`
+- 新增依赖 `encoding_rs`（纯 Rust，跨平台）
+
+### 变更
+- 版本 0.6.3 -> 0.6.4；README（中 / 英）data 特性行补充解码说明
+- `cargo test --bin sys` 326 -> 329 项全绿（新增解码 3 项：UTF-8/BOM、GBK-恰似-UTF-8、GBK 非法 UTF-8 + UTF-16 + 宽松降级）
+
+---
+
 ## v0.6.3（2026-10-19）
 
 ### 新增

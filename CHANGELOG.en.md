@@ -2,6 +2,18 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.4 (2026-10-19)
+
+### Fixed
+- **Non-UTF-8 input no longer errors**: `sys data` reads files / stdin as bytes and decodes them — UTF-8 (BOM-stripped declaration) -> UTF-16 (BOM) -> GBK (Windows ANSI 936) -> GB18030 -> lossy fallback (U+FFFD); also handles the mojibake trap where GBK byte pairs happen to be valid UTF-8 (GBK wins when its view contains real CJK while the UTF-8 view has none) — `sys data -f xxx.log` (GBK device log) no longer fails with `stream did not contain valid UTF-8`
+- new dependency `encoding_rs` (pure Rust, cross-platform)
+
+### Changed
+- version 0.6.3 -> 0.6.4; README (zh / en) data row notes the decoding
+- `cargo test --bin sys` 326 -> 329 all green (3 new decode tests: UTF-8/BOM, GBK-lookalike-UTF-8, GBK-invalid-UTF-8 + UTF-16 + lossy)
+
+---
+
 ## v0.6.3 (2026-10-19)
 
 ### Added

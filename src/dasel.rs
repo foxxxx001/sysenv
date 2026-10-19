@@ -37,6 +37,10 @@
 //! (csv / table input parses to an array of rows), e.g.
 //! `sys data -i table --limit 3` prints the first 3 rows (header included).
 //! Applied to the whole document before the expression.
+//!
+//! Files and stdin are read as bytes and decoded tolerantly: UTF-8 (BOM
+//! stripped), UTF-16 (BOM), GBK, GB18030, then a lossy fallback — so legacy
+//! Windows logs (e.g. GBK device logs) can be read directly.
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -1402,6 +1406,62 @@ pub(crate) fn apply_limit(v: &mut Value, limit: usize) -> Result<()> {
     }
 }
 
+/// Decode raw input bytes into text, tolerating the legacy encodings found in
+/// Windows-produced files (e.g. GBK device logs). Order:
+/// 1. a UTF-8 BOM is an explicit declaration — strip it and decode as UTF-8;
+/// 2. a UTF-16 LE/BE BOM selects that encoding;
+/// 3. UTF-8 strict; when it succeeds it is still cross-checked against GBK —
+///    legacy GBK byte pairs are often *also* valid UTF-8 (e.g. `专业` = D7 A8
+///    D2 B5 decodes to Hebrew/Cyrillic), so GBK wins when it cleanly decodes
+///    to real CJK while the UTF-8 view has none;
+/// 4. GBK (Windows ANSI 936), then GB18030 (its superset, covers CJK
+///    Extension A);
+/// 5. lossy UTF-8 as a last resort (invalid bytes become U+FFFD).
+fn decode_text(bytes: &[u8]) -> String {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8_lossy(&bytes[3..]).into_owned();
+    }
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        if let Some(s) = decode_clean(encoding_rs::UTF_16LE, &bytes[2..]) {
+            return s;
+        }
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        if let Some(s) = decode_clean(encoding_rs::UTF_16BE, &bytes[2..]) {
+            return s;
+        }
+    }
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        if !has_cjk(s) {
+            if let Some(g) = decode_clean(encoding_rs::GBK, bytes) {
+                if has_cjk(&g) {
+                    return g;
+                }
+            }
+        }
+        return s.to_string();
+    }
+    if let Some(s) = decode_clean(encoding_rs::GBK, bytes) {
+        return s;
+    }
+    if let Some(s) = decode_clean(encoding_rs::GB18030, bytes) {
+        return s;
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Decode with the given encoding; `None` when the decoder reports errors,
+/// i.e. the byte stream is not a clean instance of that encoding.
+fn decode_clean(enc: &'static encoding_rs::Encoding, bytes: &[u8]) -> Option<String> {
+    let (s, _used, had_errors) = enc.decode(bytes);
+    if had_errors { None } else { Some(s.into_owned()) }
+}
+
+/// Any CJK ideograph in the text (used to disambiguate GBK vs UTF-8).
+fn has_cjk(s: &str) -> bool {
+    s.chars().any(|c| matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF))
+}
+
 /// Run `sys data`.
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_data(
@@ -1423,8 +1483,8 @@ pub fn cmd_data(
     // 1. Read the input: -f FILE, else -u URL (GET), else stdin.
     let (text, source_fmt) = match (file, url) {
         (Some(p), _) => {
-            let t = std::fs::read_to_string(p).with_context(|| format!("cannot read {p}"))?;
-            (t, format_from_ext(Path::new(p)))
+            let b = std::fs::read(p).with_context(|| format!("cannot read {p}"))?;
+            (decode_text(&b), format_from_ext(Path::new(p)))
         }
         (None, Some(u)) => (fetch_url(u)?, Some(DataFormat::Json)),
         (None, None) => {
@@ -1432,9 +1492,9 @@ pub fn cmd_data(
             if is_stdin_tty() && expr.is_none() {
                 bail!("nothing to do: pass an expression, or pipe input via stdin / use -f FILE / -u URL");
             }
-            let mut buf = String::new();
-            io::stdin().read_to_string(&mut buf).context("cannot read stdin")?;
-            (buf, None)
+            let mut buf = Vec::new();
+            io::stdin().read_to_end(&mut buf).context("cannot read stdin")?;
+            (decode_text(&buf), None)
         }
     };
     if text.trim().is_empty() {
@@ -2196,5 +2256,39 @@ mod tests {
         let mut v = parse_input("1 2\n3 4\n5 6\n", DataFormat::Table, Some(false)).unwrap();
         apply_limit(&mut v, 1).unwrap();
         assert_eq!(serialize_output(&v, DataFormat::Table, false).unwrap(), "col1 col2\n1    2   \n");
+    }
+
+    // ------------------------------------------------------------------
+    // Non-UTF-8 input decoding (GBK / UTF-16 / lossy fallback)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn decode_text_utf8_and_bom() {
+        assert_eq!(decode_text(b"abc"), "abc");
+        assert_eq!(decode_text("中文".as_bytes()), "中文");
+        // A UTF-8 BOM is an explicit declaration and is stripped.
+        let mut bom = vec![0xEF, 0xBB, 0xBF];
+        bom.extend_from_slice("中文".as_bytes());
+        assert_eq!(decode_text(&bom), "中文");
+    }
+
+    #[test]
+    fn decode_text_gbk_wins_over_lookalike_utf8() {
+        // GBK `专业` = D7 A8 D2 B5 is *also* valid UTF-8 (Hebrew + Cyrillic);
+        // GBK must win because the UTF-8 view has no CJK.
+        assert_eq!(decode_text(&[0xD7, 0xA8, 0xD2, 0xB5]), "专业");
+        // Mixed ASCII + GBK (real-world log line shape).
+        assert_eq!(decode_text(&[b'a', 0xD7, 0xA8, 0xD2, 0xB5, b'b']), "a专业b");
+    }
+
+    #[test]
+    fn decode_text_gbk_invalid_utf8_and_utf16() {
+        // A GBK byte stream that is not valid UTF-8 (0xB0 0xE6 = `版`).
+        assert_eq!(decode_text(&[0xD7, 0xA8, 0xD2, 0xB5, 0xB0, 0xE6]), "专业版");
+        // UTF-16LE with BOM (`你好` = U+4F60 U+597D).
+        assert_eq!(decode_text(&[0xFF, 0xFE, 0x60, 0x4F, 0x7D, 0x59]), "你好");
+        // Garbage that decodes under no encoding -> lossy U+FFFD, no panic.
+        let s = decode_text(&[0xFF, 0xFE, 0x01, 0x02, 0x03]);
+        assert!(s.chars().any(|c| c == '\u{FFFD}'));
     }
 }
