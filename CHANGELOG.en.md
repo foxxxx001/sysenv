@@ -2,6 +2,15 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.0 (2026-10-19)
+
+### Changed
+- **CSV / table column headers virtualised as object keys**: `-i csv` header handling now matches table — a first non-blank row with any non-numeric cell is the header (column titles become keys), an all-numeric first row is data and columns are auto-named `col1..colN`; `--header` / `--no-header` now apply to `-i csv` too; empty header cells fall back to `colN`
+- version 0.5.13 -> 0.6.0; README (zh / en) data row updated to the unified CSV/TABLE header description
+- `cargo test --bin sys` 315 -> 319 all green
+
+---
+
 ## v0.5.13 (2026-10-19)
 
 ### Added

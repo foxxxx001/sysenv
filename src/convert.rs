@@ -85,26 +85,52 @@ pub(crate) fn cell_to_value(s: String) -> Value {
     }
 }
 
-/// CSV rows -> array of objects (first row = header).
-pub(crate) fn csv_to_value(text: &str) -> Result<Value> {
+/// CSV rows -> array of objects.
+///
+/// Column headers are virtualised as object keys, mirroring `-i table`:
+/// * `header = Some(true)` — the first non-blank row is the column header.
+/// * `header = Some(false)` — every row is data; columns are named
+///   `col1..colN` (N = widest row).
+/// * `header = None` (auto) — the first non-blank row is the header iff it
+///   contains at least one non-numeric cell; an all-numeric first row is data.
+///
+/// Empty header cells fall back to `colN`. Blank rows are skipped; cell
+/// values are type-inferred (null / bool / int / float / string).
+pub(crate) fn csv_to_value(text: &str, header: Option<bool>) -> Result<Value> {
     let rows = parse_csv_rows(text)?;
     if rows.is_empty() {
         return Ok(Value::Array(Vec::new()));
     }
-    let header = &rows[0];
-    if header.iter().all(|h| h.is_empty()) {
-        bail!("CSV header row is empty");
-    }
-    let arr: Vec<Value> = rows[1..]
-        .iter()
-        .map(|row| {
+    let first = &rows[0];
+    let use_header = match header {
+        Some(h) => h,
+        None => first.iter().any(|c| !table_cell_is_numeric(c)),
+    };
+    let mut arr = Vec::new();
+    if use_header {
+        let keys: Vec<String> = first
+            .iter()
+            .enumerate()
+            .map(|(i, c)| if c.trim().is_empty() { format!("col{}", i + 1) } else { c.clone() })
+            .collect();
+        for row in &rows[1..] {
             let mut obj = Map::new();
-            for (i, h) in header.iter().enumerate() {
-                obj.insert(h.clone(), cell_to_value(row.get(i).cloned().unwrap_or_default()));
+            for (i, k) in keys.iter().enumerate() {
+                obj.insert(k.clone(), cell_to_value(row.get(i).cloned().unwrap_or_default()));
             }
-            Value::Object(obj)
-        })
-        .collect();
+            arr.push(Value::Object(obj));
+        }
+    } else {
+        let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+        let keys: Vec<String> = (1..=width).map(|i| format!("col{i}")).collect();
+        for row in &rows {
+            let mut obj = Map::new();
+            for (i, k) in keys.iter().enumerate() {
+                obj.insert(k.clone(), cell_to_value(row.get(i).cloned().unwrap_or_default()));
+            }
+            arr.push(Value::Object(obj));
+        }
+    }
     Ok(Value::Array(arr))
 }
 
@@ -466,7 +492,7 @@ mod tests {
 
     #[test]
     fn csv_to_value_types() {
-        let v = csv_to_value("name,age,score,active\nAlice,30,9.5,true\nBob,,\n").unwrap();
+        let v = csv_to_value("name,age,score,active\nAlice,30,9.5,true\nBob,,\n", None).unwrap();
         let arr = v.as_array().unwrap();
         assert_eq!(arr[0]["name"], "Alice");
         assert_eq!(arr[0]["age"], 30);
@@ -483,7 +509,7 @@ mod tests {
         .unwrap();
         let csv = value_to_csv(&j).unwrap();
         assert_eq!(csv, "name,age\nAlice,30\nBob,25\n");
-        let back = csv_to_value(&csv).unwrap();
+        let back = csv_to_value(&csv, None).unwrap();
         assert_eq!(back, j);
     }
 
@@ -567,6 +593,48 @@ gary         4567    123  0 10:20 pts/0    00:00:00 bash --norc
     #[test]
     fn table_force_header_overrides_numeric_first_row() {
         let v = table_to_value("1 2\n3 4\n", Some(true)).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr[0].as_object().unwrap().get("1"), Some(&Value::from(3)));
+        assert_eq!(arr[0].as_object().unwrap().get("2"), Some(&Value::from(4)));
+    }
+
+    #[test]
+    fn csv_auto_header_uses_text_first_row() {
+        let v = csv_to_value("name,age\nAlice,30\nBob,25\n", None).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr[0]["name"], "Alice");
+        assert_eq!(arr[0]["age"], 30);
+        assert_eq!(arr[1]["name"], "Bob");
+        // 空表头单元格回退为 colN。
+        let v = csv_to_value(",age\nAlice,30\n", None).unwrap();
+        assert_eq!(v[0]["col1"], "Alice");
+        assert_eq!(v[0]["age"], 30);
+    }
+
+    #[test]
+    fn csv_all_numeric_first_line_means_no_header() {
+        let v = csv_to_value("1,2,3\n4,5,6\n", None).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["col1"], 1);
+        assert_eq!(arr[0]["col2"], 2);
+        assert_eq!(arr[0]["col3"], 3);
+        assert_eq!(arr[1]["col1"], 4);
+        assert_eq!(arr[1]["col3"], 6);
+    }
+
+    #[test]
+    fn csv_force_no_header_overrides_text_first_row() {
+        let v = csv_to_value("alpha,beta\ngamma,delta\n", Some(false)).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr[0]["col1"], "alpha");
+        assert_eq!(arr[0]["col2"], "beta");
+        assert_eq!(arr[1]["col1"], "gamma");
+    }
+
+    #[test]
+    fn csv_force_header_overrides_numeric_first_row() {
+        let v = csv_to_value("1,2\n3,4\n", Some(true)).unwrap();
         let arr = v.as_array().unwrap();
         assert_eq!(arr[0].as_object().unwrap().get("1"), Some(&Value::from(3)));
         assert_eq!(arr[0].as_object().unwrap().get("2"), Some(&Value::from(4)));

@@ -91,7 +91,7 @@ pub fn parse_input(text: &str, fmt: DataFormat, table_header: Option<bool>) -> R
         DataFormat::Toml => {
             toml::from_str(text).context("invalid TOML input")
         }
-        DataFormat::Csv => crate::convert::csv_to_value(text),
+        DataFormat::Csv => crate::convert::csv_to_value(text, table_header),
         DataFormat::Md => crate::convert::md_to_value(text),
         DataFormat::Table => crate::convert::table_to_value(text, table_header),
     }

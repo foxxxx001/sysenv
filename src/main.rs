@@ -137,13 +137,13 @@ struct DataArgs {
     /// Output format (default: the input format)
     #[arg(short = 'o', long, value_name = "FMT")]
     output: Option<String>,
-    /// `-i table` only: treat the first non-blank line as the column header
-    /// (overrides auto-detection, which uses a header iff the first line has a
-    /// non-numeric cell)
+    /// `-i csv` / `-i table` only: treat the first non-blank line as the
+    /// column header (overrides auto-detection, which uses a header iff the
+    /// first line has a non-numeric cell)
     #[arg(long, conflicts_with = "no_header")]
     header: bool,
-    /// `-i table` only: treat every line as data and name the columns
-    /// col1..colN (overrides auto-detection)
+    /// `-i csv` / `-i table` only: treat every line as data and name the
+    /// columns col1..colN (overrides auto-detection)
     #[arg(long, conflicts_with = "header")]
     no_header: bool,
     /// Write the result back to FILE instead of stdout (with an expression the
