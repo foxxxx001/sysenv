@@ -45,8 +45,8 @@ Examples:
   sys ai price openai,anthropic
   sys ai price --src openrouter
   sys ai price deepseek --src openrouter
-  sys ai info balance minimax
-  sys ai info balance deepseek
+  sys ai balance minimax
+  sys ai balance deepseek
   sys ai info sale-price agnes
   sys ai info list-model agnes
   sys ai info models baidu
@@ -324,6 +324,8 @@ enum AiCmd {
     Provider(AiProviderArgs),
     /// Inspect the local config: providers (name/api_base/api_key), models ({provider}:{name}), model prices (models.dev)
     Info(AiInfoArgs),
+    /// Query a provider's official balance with its api_key (minimax / agnes / deepseek have API handlers; the rest point to their consoles)
+    Balance(AiBalanceArgs),
     /// Show model prices (models.dev by default; --src openrouter for openrouter.ai pricing)
     Price(AiPriceArgs),
     /// Chat with an LLM configured in ~/.sysenv/config.yaml (OpenAI / Anthropic compatible)
@@ -475,13 +477,12 @@ struct CnModelArgs {
 
 #[derive(Args)]
 struct AiInfoArgs {
-    /// What to show: provider | model | balance | sale-price | list-model | models (omitted: the configured providers and models together; prices moved to `sys ai price`)
+    /// What to show: provider | model | sale-price | list-model | models (omitted: the configured providers and models together; prices moved to `sys ai price`)
     #[arg(value_name = "FIELD")]
     field: Option<String>,
     /// provider KEYWORD: keep only providers whose name contains KEYWORD;
     /// model KEYWORD: keep only models of providers whose name contains KEYWORD
     /// (or `provider:model` / `provider:*` to select specific models);
-    /// balance PROVIDER: query the provider's official balance with its api_key;
     /// sale-price PROVIDER: scrape the provider's official pricing page;
     /// list-model / models PROVIDER: query the provider's own models API and
     /// list the models its configured api_key can use (same as
@@ -502,6 +503,18 @@ struct AiInfoArgs {
     /// text view (supported by `info provider`, `info model` and `info list-model`)
     #[arg(short = 'o', long = "output-format", value_name = "FORMAT", value_enum, conflicts_with = "json")]
     output: Option<OutFormat>,
+}
+
+#[derive(Args)]
+struct AiBalanceArgs {
+    /// Query the provider's official balance with its api_key:
+    /// minimax / agnes / deepseek have API handlers, the rest point to their
+    /// consoles (moved up from `sys ai info balance`)
+    #[arg(value_name = "PROVIDER")]
+    provider: String,
+    /// Config file path (default: ~/.sysenv/config.yaml)
+    #[arg(short = 'c', long, value_name = "FILE")]
+    config: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -1019,6 +1032,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             a.refresh,
         ),
         AiCmd::Info(i) => ai::cmd_info(i.field.as_deref(), &i.param, i.refresh, i.config.as_deref(), i.output, i.json),
+        AiCmd::Balance(b) => ai::cmd_balance(&b.provider, b.config.as_deref()),
         AiCmd::Price(p) => ai::cmd_price(
             &p.providers,
             Some(p.src.as_str()),

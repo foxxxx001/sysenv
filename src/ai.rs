@@ -2035,10 +2035,6 @@ fn md_provider_rows(rows: &[(String, Value)]) -> String {
 ///   KEYWORD keeps only the models of providers whose name contains it
 ///   (`provider:model` / `provider:*` select specific models; model-name
 ///   matching is used as a fallback when no provider matches).
-/// - `balance PROVIDER` — query the provider's official balance with its
-///   configured api_key (minimax / agnes / deepseek have API handlers; the
-///   rest point to their consoles because no API-key balance endpoint is
-///   exposed).
 /// - `sale-price PROVIDER` — scrape the provider's official pricing page and
 ///   print every model's sale price (agnes / minimax scraped; the rest point
 ///   to their official pricing pages). Pages are cached 24 h, `--refresh`
@@ -2051,6 +2047,9 @@ fn md_provider_rows(rows: &[(String, Value)]) -> String {
 /// - `-o json` / `-o csv` / `--json` — machine-readable output, supported by
 ///   `info provider`, `info model` and `info list-model` (JSON array or CSV
 ///   table).
+///
+/// Balance queries live in `sys ai balance PROVIDER` (moved up from
+/// `info balance`).
 pub fn cmd_info(
     field: Option<&str>,
     param: &[String],
@@ -2219,16 +2218,6 @@ pub fn cmd_info(
                 }
             }
         }
-        Some("balance") => {
-            if fmt.is_some() {
-                bail!("`info balance` does not support -o/--json (run without it for the balance view)");
-            }
-            let kw = keyword.ok_or_else(|| {
-                anyhow::anyhow!("`info balance` needs a provider name: `sys ai info balance agnes`")
-            })?;
-            let (cfg, _) = chat::load_config(config)?;
-            info_balance(&cfg, &kw)?;
-        }
         Some("sale-price") | Some("saleprice") | Some("sale_price") => {
             if fmt.is_some() {
                 bail!("`info sale-price` does not support -o/--json (run without it for the price view)");
@@ -2248,7 +2237,7 @@ pub fn cmd_info(
             let (cfg, _) = chat::load_config(config)?;
             info_model_list(&cfg, &kw, fmt)?;
         }
-        Some(other) => bail!("unknown `info` field `{other}` (expected: provider | model | balance | sale-price | list-model | models; prices moved to `sys ai price`)"),
+        Some(other) => bail!("unknown `info` field `{other}` (expected: provider | model | sale-price | list-model | models; prices moved to `sys ai price`, balances to `sys ai balance`)"),
     }
     Ok(())
 }
@@ -2286,7 +2275,7 @@ pub fn cmd_price(
 }
 
 // ---------------------------------------------------------------------------
-// `sys ai info balance` / `sys ai info sale-price` — per-provider
+// `sys ai balance` / `sys ai info sale-price` — per-provider
 // official queries (余额 / 官网销售价).
 //
 // balance:  用该 provider 的 api_key 到官方接口查询余额。仅部分平台开放
@@ -2294,7 +2283,8 @@ pub fn cmd_price(
 //           dashboard/billing、DeepSeek 的 user/balance）；其余平台余额只在
 //           登录控制台可见（tencent/TokenHub 管控面需 SecretId/SecretKey，
 //           与配置的 API Key 不同），命令会给出控制台地址。余额查询始终
-//           实时（不走缓存）。
+//           实时（不走缓存）。`sys ai balance` 是独立子命令（从
+//           `sys ai info balance` 提升上来）。
 // sale-price:抓取官网定价页（agnes wiki、minimax 开放平台）返回全部模型的
 //           销售价；未接入的平台给出官网定价页地址。定价页 24h 缓存，
 //           `--refresh` 强制重抓。
@@ -2478,10 +2468,11 @@ fn info_model_list(cfg: &chat::Config, keyword: &str, fmt: Option<OutFormat>) ->
     Ok(())
 }
 
-/// `sys ai info balance PROVIDER` — query the provider's official balance
-/// with its configured api_key.
-fn info_balance(cfg: &chat::Config, keyword: &str) -> Result<()> {
-    let p = find_provider(cfg, keyword)?;
+/// `sys ai balance PROVIDER` — query the provider's official balance with
+/// its configured api_key (moved up from `sys ai info balance`).
+pub fn cmd_balance(provider: &str, config: Option<&Path>) -> Result<()> {
+    let (cfg, _) = chat::load_config(config)?;
+    let p = find_provider(&cfg, provider)?;
     println!("== {} 余额 ==", p.name);
     match p.name.to_ascii_lowercase().as_str() {
         "minimax" => balance_minimax(p),
