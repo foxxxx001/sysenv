@@ -46,6 +46,7 @@ Examples:
   sys ai price --src openrouter
   sys ai price deepseek --src openrouter
   sys ai info balance minimax
+  sys ai info balance deepseek
   sys ai info sale-price agnes
   sys ai info list-model agnes
   sys ai info models baidu

@@ -2036,8 +2036,9 @@ fn md_provider_rows(rows: &[(String, Value)]) -> String {
 ///   (`provider:model` / `provider:*` select specific models; model-name
 ///   matching is used as a fallback when no provider matches).
 /// - `balance PROVIDER` — query the provider's official balance with its
-///   configured api_key (minimax / agnes have API handlers; the rest point to
-///   their consoles because no API-key balance endpoint is exposed).
+///   configured api_key (minimax / agnes / deepseek have API handlers; the
+///   rest point to their consoles because no API-key balance endpoint is
+///   exposed).
 /// - `sale-price PROVIDER` — scrape the provider's official pricing page and
 ///   print every model's sale price (agnes / minimax scraped; the rest point
 ///   to their official pricing pages). Pages are cached 24 h, `--refresh`
@@ -2290,8 +2291,10 @@ pub fn cmd_price(
 //
 // balance:  用该 provider 的 api_key 到官方接口查询余额。仅部分平台开放
 //           API Key 余额接口（minimax 的 token_plan/remains、OpenAI 兼容的
-//           dashboard/billing）；其余平台余额只在登录控制台可见，命令会给出
-//           控制台地址。余额查询始终实时（不走缓存）。
+//           dashboard/billing、DeepSeek 的 user/balance）；其余平台余额只在
+//           登录控制台可见（tencent/TokenHub 管控面需 SecretId/SecretKey，
+//           与配置的 API Key 不同），命令会给出控制台地址。余额查询始终
+//           实时（不走缓存）。
 // sale-price:抓取官网定价页（agnes wiki、minimax 开放平台）返回全部模型的
 //           销售价；未接入的平台给出官网定价页地址。定价页 24h 缓存，
 //           `--refresh` 强制重抓。
@@ -2483,6 +2486,8 @@ fn info_balance(cfg: &chat::Config, keyword: &str) -> Result<()> {
     match p.name.to_ascii_lowercase().as_str() {
         "minimax" => balance_minimax(p),
         "agnes" => balance_openai_billing(p),
+        "deepseek" => balance_deepseek(p),
+        "tencent" | "tencentmaas" | "tokenhub" => balance_tencent(p),
         "alibaba-cn" | "alibaba" | "dashscope" | "bailian" => balance_alibaba(p),
         "modelscope" => balance_console_only(p, "https://modelscope.cn（控制台 / 阿里云费用中心）"),
         "sensenova" => balance_console_only(p, "https://console.sensecore.cn（费用中心）"),
@@ -2692,6 +2697,73 @@ fn balance_openai_billing(p: &chat::Provider) -> Result<()> {
         println!("提示：官方接口未返回余额字段；余额请在 https://agnes-ai.cn 控制台（Usage / Billing）查看。");
     }
     Ok(())
+}
+
+/// DeepSeek 官方余额接口：GET {api_base}/user/balance（Bearer api_key）。
+/// 返回 is_available（账户是否有可用余额）与 balance_infos[]（currency /
+/// total_balance / granted_balance / topped_up_balance，均为字符串）。
+fn balance_deepseek(p: &chat::Provider) -> Result<()> {
+    let base = p.api_base.trim_end_matches('/');
+    let url = format!("{base}/user/balance");
+    let resp = reqwest::blocking::Client::new()
+        .get(&url)
+        .header(AUTHORIZATION, format!("Bearer {}", p.api_key))
+        .header("Accept", "application/json")
+        .timeout(Duration::from_secs(20))
+        .send()
+        .with_context(|| format!("cannot query DeepSeek balance at {url}"))?;
+    if !resp.status().is_success() {
+        bail!("DeepSeek balance API returned HTTP {} at {url}", resp.status());
+    }
+    let v: Value = serde_json::from_str(&resp.text().context("cannot read DeepSeek balance response")?)
+        .context("invalid JSON from DeepSeek balance API")?;
+    let (available, rows) = deepseek_balance_rows(&v);
+    println!(
+        "账户可用: {}",
+        if available { "是" } else { "否（余额不足，可能无法调用）" }
+    );
+    if rows.is_empty() {
+        println!("  （接口未返回余额明细）");
+    } else {
+        for (currency, total, granted, topped) in rows {
+            println!("  {currency}: 总额 {total}（赠送 {granted}，充值 {topped}）");
+        }
+    }
+    println!("余额 / 充值记录也可在 https://platform.deepseek.com 控制台查看。");
+    Ok(())
+}
+
+/// Parse the DeepSeek balance response into (is_available, rows of
+/// (currency, total_balance, granted_balance, topped_up_balance)); pure and
+/// unit-testable.
+fn deepseek_balance_rows(v: &Value) -> (bool, Vec<(String, String, String, String)>) {
+    let available = v.get("is_available").and_then(|x| x.as_bool()).unwrap_or(false);
+    let rows = v
+        .get("balance_infos")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|b| {
+            let currency = b.get("currency").and_then(|x| x.as_str()).unwrap_or("?").to_string();
+            let total = b.get("total_balance").and_then(|x| x.as_str()).unwrap_or("?").to_string();
+            let granted = b.get("granted_balance").and_then(|x| x.as_str()).unwrap_or("?").to_string();
+            let topped = b.get("topped_up_balance").and_then(|x| x.as_str()).unwrap_or("?").to_string();
+            Some((currency, total, granted, topped))
+        })
+        .collect();
+    (available, rows)
+}
+
+/// 腾讯云 TokenHub（tokenhub.tencentmaas.com）：数据面仅提供 OpenAI/Anthropic
+/// 协议的模型调用接口，无 API Key 余额/额度查询端点；管控面
+/// （tokenhub.tencentcloudapi.com 的 DescribeApiKey / DescribeTokenPlanApiKey）
+/// 需要腾讯云 SecretId/SecretKey 签名，与配置的 API Key 不同，故仅给出控制台指引。
+fn balance_tencent(p: &chat::Provider) -> Result<()> {
+    balance_console_only(
+        p,
+        "https://console.cloud.tencent.com/tokenhub（TokenHub 控制台 > API Key 额度 / 用量统计；账单见腾讯云费用中心）",
+    )
 }
 
 /// `sys ai info sale-price PROVIDER` — scrape the provider's official
@@ -5831,6 +5903,52 @@ mod tests {
             ("https://docs.bigmodel.cn".to_string(), "https://bigmodel.cn/console".to_string())
         );
         assert_eq!(provider_links("some-future-provider"), (String::new(), String::new()));
+    }
+
+    #[test]
+    fn deepseek_balance_rows_parses_official_shape() {
+        let v: Value = serde_json::from_str(
+            r#"{
+                "is_available": true,
+                "balance_infos": [
+                    {"currency": "CNY", "total_balance": "110.00",
+                     "granted_balance": "10.00", "topped_up_balance": "100.00"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let (avail, rows) = deepseek_balance_rows(&v);
+        assert!(avail);
+        assert_eq!(
+            rows,
+            vec![(
+                "CNY".to_string(),
+                "110.00".to_string(),
+                "10.00".to_string(),
+                "100.00".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn deepseek_balance_rows_tolerates_unavailable_and_empty() {
+        let v: Value =
+            serde_json::from_str(r#"{"is_available": false, "balance_infos": []}"#).unwrap();
+        let (avail, rows) = deepseek_balance_rows(&v);
+        assert!(!avail);
+        assert!(rows.is_empty());
+        // Unexpected / partial shapes degrade without panicking.
+        let v2: Value = serde_json::from_str("{}").unwrap();
+        let (avail2, rows2) = deepseek_balance_rows(&v2);
+        assert!(!avail2);
+        assert!(rows2.is_empty());
+        let v3: Value = serde_json::from_str(
+            r#"{"is_available": true, "balance_infos": [{"currency": "USD"}]}"#,
+        )
+        .unwrap();
+        let (avail3, rows3) = deepseek_balance_rows(&v3);
+        assert!(avail3);
+        assert_eq!(rows3, vec![("USD".to_string(), "?".to_string(), "?".to_string(), "?".to_string())]);
     }
 
     #[test]
