@@ -2,6 +2,17 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.18 (2026-10-20)
+
+### Added
+- **`sys net -t url`: extract every valid http(s) URL from a file offline** (src/net.rs: new `NetType::Url` + `cmd_url`): no network probing at all (`cmd_net_t` returns before building the HTTP client) — the same input convention applies (`#` comment / empty lines skipped, several addresses per line, trailing punctuation trimmed, scheme normalized to lowercase with the host validated); duplicate addresses are skipped and reported as `[DUP]`, each unique URL is printed once per line in first-seen order; `-o FILE` writes the extracted unique URL list (one per line); a file with no URLs is not an error (summary 0, `-o` gets an empty file); `-x` / `--sort` are ignored with a warning
+
+### Changed
+- Version 0.6.17 -> 0.6.18; README (zh / en) `net` section + example lines, CHANGELOG (zh / en), requirements.md updated
+- `cargo test --bin sys`: 366 -> 370 passed (4 new tests: extraction order & dedup / comment & pseudo-URL rejection / scheme normalization + `-x`, `--sort` ignored / empty result is not an error)
+
+---
+
 ## v0.6.15 (2026-10-20)
 
 ### Fixed

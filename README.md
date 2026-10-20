@@ -752,6 +752,8 @@ sys short --temporary  # 不持久化 PATH，只打印可粘贴的片段
 
 * `-t file`：对每个地址发起 GET，响应体必须是**普通文本**（UTF-8 非二进制，且不是 JSON）才算通过
 
+* `-t url`：**离线提取**文件中的所有合法 http(s) URL，不做任何网络探测——沿用统一的输入约定（`#` 注释 / 空行跳过、每行可含多个地址、行尾标点修剪、scheme 统一小写并校验 host）；重复地址（host 大小写 / 默认端口视为相同）跳过并打印 `[DUP]`，每个唯一 URL 按首次出现顺序打印一行；`-o FILE` 写入提取出的唯一 URL 列表（一行一个）；文件不含 URL 时不报错（汇总 `0`，`-o` 写出空文件）
+
 * `-t tvs`：继承 `-t tv` 全部功能，并**额外支持聚合型 JSON**（如 `{"urls":[{"url":"...","name":"..."}, ...]}`）。每个地址的响应体可为两种格式：
   * **单仓**：tv JSON（`sites` 非空数组、每元素含 `name`）→ 按 `--sort` 规则统计排序（count / name / speed，默认 count, name），`# count= name= speed=` 测试信息行
   * **多仓**：只有 `urls` 数组 → 只统计 `urls` 节点数（`# count=N`），按节点数 **desc** 排序
@@ -792,6 +794,7 @@ sys net -i urls.txt -t domain              # 3 次探测取平均，按平均响
 sys net -i urls.txt -t tv -o ok.json.txt   # JSON 统计排序输出（--sort count name），通过地址 + # 测试信息写入文件
 sys net -i urls.txt -t tvs -o ok.groups.txt # 兼容 tv/聚合两种 JSON：单仓(.sites)/多仓(.urls) 分组输出，多仓按节点数降序
 sys net -i urls.txt -t file -o ok.txt      # 只把返回普通文本的可用地址写入文件
+sys net -i any.txt -t url -o urls.txt      # 离线提取文件中的全部合法 http(s) URL（去重），不发起任何探测
 sys net -i urls.txt -t test -o clean.txt   # 探测可访问性，不可访问打印错误并从源文件删除，结果写入 clean.txt
 sys net -i urls.txt -t tv --timeout 5      # 单次请求超时 5 秒
 sys net -i urls.txt -t tv --thread 8        # tv/tvs 模式并行探测 8 个地址（默认 CPU 内核数）

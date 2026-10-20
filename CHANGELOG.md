@@ -2,6 +2,17 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.18（2026-10-20）
+
+### 新增
+- **`sys net -t url`：从文件中离线提取合法 http(s) URL**（src/net.rs 新增 `NetType::Url` + `cmd_url`）：不做任何网络探测（`cmd_net_t` 在构建 HTTP client 前提前返回）——沿用统一输入约定（`#` 注释 / 空行跳过、每行多地址、行尾标点修剪、scheme 小写并校验 host）；重复地址跳过并打印 `[DUP]`，每个唯一 URL 按首次出现顺序打印一行；`-o FILE` 写入提取出的唯一 URL 列表（一行一个）；文件不含 URL 时不报错（汇总 0、`-o` 空文件）；`-x` / `--sort` 忽略并 warning
+
+### 变更
+- 版本 0.6.17 -> 0.6.18；README（中 / 英）`net` 段落 + 示例行、CHANGELOG（中 / 英）、requirements.md 同步
+- `cargo test --bin sys`：366 -> 370 项全绿（新增 4 项：提取顺序与去重 / 注释与伪 URL 剔除 / scheme 规范化 + `-x`、`--sort` 忽略 / 无 URL 不报错）
+
+---
+
 ## v0.6.15（2026-10-20）
 
 ### 修复

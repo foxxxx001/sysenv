@@ -27,7 +27,7 @@ use std::process::ExitCode;
     name = "sys",
     version = concat!(env!("CARGO_PKG_VERSION"), " (Made by Gary-china)"),
     about = "System PATH & environment manager + httpie-compatible HTTP client (Windows / Ubuntu)",
-    long_about = "sys manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, probes domains / URLs read from a file (`sys net`, response-time / JSON / plain-text checks), installs command shims (spath/senv/slink/shttp/sai/stask/sfile), and ships an httpie-compatible HTTP client.
+    long_about = "sys manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, probes domains / URLs read from a file or extracts the valid URLs from it (`sys net`, response-time / JSON / plain-text / URL-extraction checks), installs command shims (spath/senv/slink/shttp/sai/stask/sfile), and ships an httpie-compatible HTTP client.
 
 Examples:
   sys path list
@@ -100,7 +100,7 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     Http(HttpArgs),
     /// Query AI model info (DataLearner), provider info (models.dev), inspect the config (info), chat with configured providers
     Ai(AiArgs),
-    /// Probe domains / URLs read from a file: -i FILE [-t domain|tv|file|test] [-o FILE] [--timeout SECONDS]
+    /// Probe domains / URLs read from a file, or extract the valid URLs from it: -i FILE [-t domain|tv|tvs|file|url|test|info] [-o FILE] [--timeout SECONDS]
     Net(NetArgs),
     /// Query and kill processes (list PID/name/path; kill by PID or name; no args lists all)
     Task(TaskArgs),
@@ -687,10 +687,10 @@ struct NetArgs {
     /// Input file containing http(s) addresses (lines starting with # are skipped; each line may hold several addresses); not used in -t info mode
     #[arg(short = 'i', long, value_name = "FILE")]
     input: Option<PathBuf>,
-    /// Detection type: domain (default, 3 probes averaged) | tv (body must be JSON, analyzed with --sort; old name json) | file (body must be plain text) | test (probe reachability, delete unreachable lines, -o writes the cleaned source) | info (query domain registration info via RDAP for each -n DOMAIN)
+    /// Detection type: domain (default, 3 probes averaged) | tv (body must be JSON, analyzed with --sort; old name json) | file (body must be plain text) | test (probe reachability, delete unreachable lines, -o writes the cleaned source) | url (extract every valid http(s) URL from the file, offline, deduplicated; -o writes the extracted URLs) | info (query domain registration info via RDAP for each -n DOMAIN)
     #[arg(short = 't', long, value_name = "TYPE", value_enum, default_value_t = net::NetType::Domain)]
     kind: net::NetType,
-    /// Write the passed (reachable + format-matched) URLs, or the cleaned source lines in test mode, to this file
+    /// Write the passed (reachable + format-matched) URLs, the extracted URL list in url mode, or the cleaned source lines in test mode, to this file
     #[arg(short = 'o', long, value_name = "FILE")]
     output: Option<PathBuf>,
     /// Per-request timeout in seconds (default 10)

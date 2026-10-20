@@ -545,6 +545,7 @@ Reads http(s) addresses from a file and probes each one for reachability and res
   - `--sort` is repeatable (e.g. `--sort count name`), applied in order for multi-key sorting; **defaults to `count, name` when omitted**
   - each passed address prints its url, followed by a `# count=<N> 4k=<N> speed=<speed or failure reason>` test-info line (the `4k` label is the `--words` keyword itself, e.g. `hd=<N>` with `--words hd`); **screen and `-o` share the same format** (url + `#` line); unreachable / non-JSON addresses are still reported as `[NO]` / `[FMT]` and not written to `-o`
 - `-t file`: GET each address; the body must be **plain text** (valid UTF-8, non-binary, and not JSON) to pass
+- `-t url`: **extracts offline** every valid http(s) URL from the file — no network probing at all; the same input convention applies (`#` comment / empty lines skipped, several addresses per line, trailing punctuation trimmed, scheme normalized to lowercase and the host validated); duplicate addresses (host case / default ports normalized) are skipped and reported as `[DUP]`, each unique URL is printed once per line in first-seen order; `-o FILE` writes the extracted unique URL list (one per line); a file with no URLs is not an error (summary `0`, `-o` gets an empty file)
 - `-t tvs`: inherits every `-t tv` feature and additionally accepts **aggregator JSON** (e.g. `{"urls":[{"url":"...","name":"..."}, ...]}`). Each body may be one of two formats:
   - **single warehouse**: tv JSON (`sites` non-empty, every element has `name`) — analyzed with the tv `--sort` rules (count / name / speed, default `count name`), info line `# count= name= speed=`
   - **multi warehouse**: a `.urls` array only — only the node count is computed (`# count=N`), sorted by count **desc**
@@ -578,6 +579,7 @@ sys net -i urls.txt -t domain              # 3 probes averaged, sorted by averag
 sys net -i urls.txt -t tv -o ok.json.txt    # JSON analyzed + sorted (--sort count name), passed urls with # info lines written
 sys net -i urls.txt -t tvs -o ok.groups.txt # accepts tv + aggregator JSON: single (.sites) / multi (.urls) groups, multi sorted by node count desc
 sys net -i urls.txt -t file -o ok.txt      # write reachable plain-text urls to a file
+sys net -i any.txt -t url -o urls.txt      # extract all valid http(s) URLs from the file offline (deduplicated), no probing
 sys net -i urls.txt -t test -o clean.txt   # probe reachability, remove unreachable lines, write the cleaned source to clean.txt
 sys net -i urls.txt -t tv --timeout 5      # 5 s per-request timeout
 sys net -i urls.txt -t tv --thread 8        # tv/tvs parallel probing with 8 concurrent addresses (default: CPU cores)

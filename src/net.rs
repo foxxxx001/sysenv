@@ -13,6 +13,10 @@
 //!   `.spider` download speed) and sorted with `--sort`;
 //! - `file`: GET each address; the body must be plain text (UTF-8, not JSON,
 //!   not binary) — per-address reporting as each probe finishes;
+//! - `url`: extract every valid http(s) URL from the input file — purely
+//!   offline, nothing is probed; duplicate addresses are skipped and each
+//!   unique URL is printed once per line, with the same `-o` write as the
+//!   other file modes;
 //! - `test`: GET each address and probe reachability only; unreachable
 //!   addresses are reported on screen and removed from the source lines, then
 //!   the cleaned source (kept lines verbatim) is written to `-o`.
@@ -46,6 +50,11 @@ pub enum NetType {
     /// The response body must be plain text (not JSON, not binary)
     #[value(name = "file")]
     File,
+    /// Extract every valid http(s) URL from the file (offline, nothing is
+    /// probed); duplicate addresses are skipped, each unique URL printed
+    /// once per line, and `-o` writes the extracted URLs
+    #[value(name = "url")]
+    Url,
     /// Probe reachability; unreachable addresses are reported, removed from
     /// the source lines, and the cleaned result is written to `-o`
     #[value(name = "test")]
@@ -1135,6 +1144,65 @@ fn cmd_file_probe(
 }
 
 // ---------------------------------------------------------------------------
+// url mode
+// ---------------------------------------------------------------------------
+
+/// `sys net -i FILE -t url [-o FILE]` — extract every valid http(s) URL from
+/// the file. Purely offline: nothing is probed. The same input convention as
+/// the other modes applies (`#` comment / empty lines are skipped, each line
+/// may hold several addresses); duplicate addresses (host case / default port
+/// normalized, like every other mode) are skipped and reported as `[DUP]`;
+/// each unique URL is printed once per line, in first-seen order, and written
+/// to `-o` when given. A file with no URLs is not an error: the summary
+/// reports 0 extracted and `-o` receives an empty file.
+fn cmd_url(input: &Path, output: Option<&Path>) -> Result<()> {
+    let raw = std::fs::read(input).with_context(|| format!("cannot read {}", input.display()))?;
+    let text = String::from_utf8_lossy(&raw);
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text.as_ref());
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut urls: Vec<String> = Vec::new();
+    let mut n_dup = 0usize;
+    let mut n_lines = 0usize;
+    for line in text.lines() {
+        n_lines += 1;
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') || trimmed.is_empty() {
+            continue;
+        }
+        for span in extract_address_spans(line) {
+            if seen.insert(dup_key(&span.url)) {
+                urls.push(span.url);
+            } else {
+                n_dup += 1;
+                println!("[DUP] {}  duplicate (already checked), skipped", span.url);
+            }
+        }
+    }
+    for u in &urls {
+        println!("{u}");
+    }
+    let dup_part = if n_dup > 0 {
+        format!(", {n_dup} duplicate")
+    } else {
+        String::new()
+    };
+    println!(
+        "--- extracted {} URL(s) from {n_lines} line(s){dup_part} ---",
+        urls.len()
+    );
+    if let Some(out) = output {
+        let mut s = String::new();
+        for u in &urls {
+            s.push_str(u);
+            s.push('\n');
+        }
+        std::fs::write(out, s).with_context(|| format!("cannot write {}", out.display()))?;
+        println!("wrote {} URL(s) to {}", urls.len(), out.display());
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // test mode
 // ---------------------------------------------------------------------------
 
@@ -1318,6 +1386,16 @@ pub fn cmd_net_t(
         .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
         .filter(|e| !e.is_empty())
         .collect();
+    // `-t url` is purely offline: no HTTP client is needed.
+    if kind == NetType::Url {
+        if !excludes.is_empty() {
+            eprintln!("warning: -x/--exclude applies to `-t test` only; ignored");
+        }
+        if !sort.is_empty() {
+            eprintln!("warning: --sort applies to `-t tv|tvs` only; ignored");
+        }
+        return cmd_url(input, output);
+    }
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs_f64(timeout_secs))
         .build()
@@ -1327,7 +1405,7 @@ pub fn cmd_net_t(
         NetType::Domain => {
             if let Some(out) = output {
                 eprintln!(
-                    "warning: -o/--output applies to `-t tv|file|test` only; ignored ({})",
+                    "warning: -o/--output applies to `-t tv|tvs|file|test|url` only; ignored ({})",
                     out.display()
                 );
             }
@@ -1368,6 +1446,8 @@ pub fn cmd_net_t(
             }
             cmd_test(&client, input, output, &excludes)
         }
+        // Handled before the HTTP client is built (offline mode).
+        NetType::Url => unreachable!(),
         NetType::Info => {
             bail!("`-t info` reads -n DOMAIN, not -i; use `sys net -t info -n example.com`")
         }
@@ -2297,6 +2377,90 @@ mod tests {
         .unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
+    }
+
+    // --- -t url ---
+
+    /// Extract every valid http(s) URL in first-seen order; `#` comment /
+    /// empty lines are skipped; non-http or invalid addresses are ignored.
+    #[test]
+    fn url_mode_extracts_unique_valid_urls_in_order() {
+        let input = temp_file("url-in1");
+        let out = temp_file("url-out1");
+        std::fs::write(
+            &input,
+            "# comment https://skip.example/x\n\
+             \n\
+             see http://a.com/x and https://b.com/y! now\n\
+             next https://c.example/path?a=1&b=2#frag more\n\
+             ftp://d.com/ignored https-not-a-url http://\n",
+        )
+        .unwrap();
+        cmd_net(&input, NetType::Url, Some(&out), 10.0, &[], &[]).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(
+            lines,
+            vec![
+                "http://a.com/x",
+                "https://b.com/y",
+                "https://c.example/path?a=1&b=2#frag"
+            ],
+            "{content:?}"
+        );
+    }
+
+    /// The same URL appearing twice (also in one line) is skipped and never
+    /// written twice; both occurrences keep the first.
+    #[test]
+    fn url_mode_skips_duplicates() {
+        let input = temp_file("url-in2");
+        let out = temp_file("url-out2");
+        std::fs::write(&input, "http://a.com/x\nhttp://a.com/x\nhttps://b.com/y\n").unwrap();
+        cmd_net(&input, NetType::Url, Some(&out), 10.0, &[], &[]).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines, vec!["http://a.com/x", "https://b.com/y"], "{content:?}");
+    }
+
+    /// The scheme is normalized to lowercase (host case preserved); `-x` and
+    /// `--sort` are ignored with a warning, not an error.
+    #[test]
+    fn url_mode_normalizes_scheme_and_ignores_exclude_sort() {
+        let input = temp_file("url-in3");
+        let out = temp_file("url-out3");
+        std::fs::write(&input, "HTTP://Example.COM/x\nplain text line\n").unwrap();
+        cmd_net(
+            &input,
+            NetType::Url,
+            Some(&out),
+            10.0,
+            &["m3u".to_string()],
+            &["count".to_string()],
+        )
+        .unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(content.trim(), "http://Example.COM/x", "{content:?}");
+    }
+
+    /// A file with no URLs is not an error: the summary reports 0 extracted
+    /// and `-o` receives an empty file.
+    #[test]
+    fn url_mode_empty_result_is_not_an_error() {
+        let input = temp_file("url-in4");
+        let out = temp_file("url-out4");
+        std::fs::write(&input, "# nothing here\nplain text\n").unwrap();
+        cmd_net(&input, NetType::Url, Some(&out), 10.0, &[], &[]).unwrap();
+        let content = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&out);
+        assert!(content.is_empty(), "{content:?}");
     }
 
     #[test]
