@@ -23,12 +23,23 @@
 //! Expressions:
 //!   PATH            print the value at PATH
 //!   PATH = VALUE    set (JSON literals or plain text; `= null` deletes)
+//!   PATH = @FILE    set from a file (format by extension, else JSON / YAML,
+//!                   else the file text verbatim)
+//!   PATH = strenv(NAME)  set from an environment variable (string; an unset
+//!                   variable is an error)
 //!   PATH += VALUE / -= / *= / /=    numeric (or string append for +=)
 //!   list.filter(predicate)          keep matching array elements
 //!   list.remove(predicate)          delete matching array elements
 //!   search(predicate)               recursively collect matching nodes
 //!   name.endsWith("x")              string / key functions
+//!   data[*]|{id,name}               jq-style key projection (pipes a
+//!                                   selector or filter / search result onto
+//!                                   the listed keys; missing keys -> null)
 //!
+//! On csv / table / jsonl input (root = row array), a bare method predicate
+//! (`Name.contains("x")`, `has("k")`, …) auto-filters the root array, the
+//! same as `[*].filter(...)`; on an object-root document it stays a scalar
+//! string function.
 //! Predicate language (dasel-compatible): `$this` / `$key`, field paths
 //! (`name`, `a.b[0]`), literals, `== != > >= < <= && || !`, and
 //! `contains("x")` / `startsWith("x")` / `endsWith("x")` / `indexOf("x")` /
@@ -216,6 +227,121 @@ pub fn serialize_output(v: &Value, fmt: DataFormat, compact: bool) -> Result<Str
         DataFormat::Md => crate::convert::value_to_md(v),
         DataFormat::Table => crate::convert::value_to_table(v),
     }
+}
+
+// --- Screen colorization (jq-like: keys blue, scalar values green) ----------
+// Applied only to stdout on a TTY; file writes (`-w`) and piped output stay
+// plain. NO_COLOR disables it, matching the common convention.
+const ANSI_BLUE: &str = "\x1b[34m";
+const ANSI_GREEN: &str = "\x1b[32m";
+const ANSI_RESET: &str = "\x1b[0m";
+
+fn color_enabled() -> bool {
+    let color_wanted = std::env::var("NO_COLOR")
+        .map(|v| v.is_empty())
+        .unwrap_or(true);
+    color_wanted && std::io::IsTerminal::is_terminal(&std::io::stdout())
+}
+
+/// Colorize a rendered JSON / YAML body for the screen; other formats and
+/// disabled colors return the text unchanged.
+fn colorize_screen(text: &str, fmt: DataFormat) -> String {
+    if !color_enabled() {
+        return text.to_string();
+    }
+    match fmt {
+        DataFormat::Json => text
+            .lines()
+            .map(colorize_json_line)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+        DataFormat::Yaml => text
+            .lines()
+            .map(colorize_yaml_line)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+        _ => text.to_string(),
+    }
+}
+
+/// Span `(start, end)` of a quoted `"..."` key inside a head segment.
+fn quoted_key_span(head: &str) -> Option<(usize, usize)> {
+    let start = head.find('"')?;
+    let end = head[start + 1..].find('"')? + start + 1;
+    Some((start, end + 1))
+}
+
+/// Colorize one pretty-JSON line: `"key"` blue, scalar values green.
+fn colorize_json_line(line: &str) -> String {
+    let indent_len = line.chars().take_while(|c| c.is_whitespace()).count();
+    let indent: String = line.chars().take(indent_len).collect();
+    let rest = &line[indent_len..];
+
+    // Object entry: `"key": <value>` (checked before the array-element branch
+    // so a quoted key is not mistaken for a string item).
+    if let Some(colon) = rest.find(':') {
+        let (head, after_colon) = rest.split_at(colon);
+        if let Some((ks, ke)) = quoted_key_span(head) {
+            let (before, key, after) = (&head[..ks], &head[ks..ke], &head[ke..]);
+            let value_part = after_colon[1..].trim_start();
+            let (val, tail) = color_json_scalar(value_part);
+            return format!("{indent}{before}{ANSI_BLUE}{key}{ANSI_RESET}{after}:{val}{tail}");
+        }
+    }
+
+    // Array element: `"str",` or a bare scalar `123,` at line start.
+    if let Some(open) = rest.strip_prefix('"') {
+        if let Some(rel) = open.find('"') {
+            let (elem, tail) = rest.split_at(rel + 2);
+            return format!("{indent}{ANSI_GREEN}{elem}{ANSI_RESET}{tail}");
+        }
+    }
+    line.to_string()
+}
+
+/// Wrap a leading scalar (string / number / true / false / null) in green;
+/// structural starts (`[`, `{`) are returned untouched.
+fn color_json_scalar(s: &str) -> (String, &str) {
+    if let Some(open) = s.strip_prefix('"') {
+        if let Some(rel) = open.find('"') {
+            let (elem, tail) = s.split_at(rel + 2);
+            return (format!("{ANSI_GREEN}{elem}{ANSI_RESET}"), tail);
+        }
+        return (String::new(), s);
+    }
+    let token = s.split(',').next().unwrap_or(s);
+    if token.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == 'e' || c == 'E')
+        || matches!(token, "true" | "false" | "null")
+    {
+        (
+            format!("{ANSI_GREEN}{token}{ANSI_RESET}"),
+            &s[token.len()..],
+        )
+    } else {
+        (String::new(), s)
+    }
+}
+
+/// Colorize one YAML line: `key:` blue, scalar value green; list item green.
+fn colorize_yaml_line(line: &str) -> String {
+    let indent_len = line.chars().take_while(|c| c.is_whitespace()).count();
+    let indent: String = line.chars().take(indent_len).collect();
+    let rest = &line[indent_len..];
+
+    if let Some(item) = rest.strip_prefix("- ") {
+        return format!("{indent}- {ANSI_GREEN}{item}{ANSI_RESET}");
+    }
+    if let Some(colon) = rest.find(':') {
+        let (k, v) = rest.split_at(colon);
+        let v = v[1..].trim_start();
+        if v.is_empty() {
+            return format!("{indent}{ANSI_BLUE}{k}{ANSI_RESET}:");
+        }
+        return format!("{indent}{ANSI_BLUE}{k}{ANSI_RESET}: {ANSI_GREEN}{v}{ANSI_RESET}");
+    }
+    line.to_string()
 }
 
 fn type_name(v: &Value) -> &'static str {
@@ -417,9 +543,12 @@ const OPS: [&str; 5] = ["+=", "-=", "*=", "/=", "="];
 
 /// Split an expression into (path, op, value).
 fn split_expression(expr: &str) -> Result<(String, &'static str, String)> {
-    // Find the operator outside quotes.
+    // Find the operator outside quotes and outside nested brackets /
+    // parentheses (a `=` inside `filter(...)` / `strenv(...)` arguments is
+    // part of the expression, not an assignment).
     let chars: Vec<char> = expr.chars().collect();
     let mut in_quote: Option<char> = None;
+    let mut depth = 0i32;
     let mut best: Option<(usize, &'static str)> = None;
     let mut i = 0usize;
     while i < chars.len() {
@@ -438,14 +567,20 @@ fn split_expression(expr: &str) -> Result<(String, &'static str, String)> {
                         && ((i > 0 && matches!(chars[i - 1], '=' | '!' | '>' | '<'))
                             || (i + 1 < chars.len() && chars[i + 1] == '='));
                     if !part_of_compare {
-                        for op in OPS {
-                            let op_chars: Vec<char> = op.chars().collect();
-                            if i + op_chars.len() <= chars.len()
-                                && chars[i..i + op_chars.len()] == op_chars[..]
-                            {
-                                // Prefer the longest match found first (+= before =).
-                                best = Some((i, op));
-                                break;
+                        if matches!(c, '(' | '[' | '{') {
+                            depth += 1;
+                        } else if matches!(c, ')' | ']' | '}') {
+                            depth -= 1;
+                        } else if depth == 0 {
+                            for op in OPS {
+                                let op_chars: Vec<char> = op.chars().collect();
+                                if i + op_chars.len() <= chars.len()
+                                    && chars[i..i + op_chars.len()] == op_chars[..]
+                                {
+                                    // Prefer the longest match found first (+= before =).
+                                    best = Some((i, op));
+                                    break;
+                                }
                             }
                         }
                         if best.is_some() {
@@ -476,6 +611,73 @@ fn parse_value(raw: &str) -> Value {
         return v;
     }
     Value::String(t.to_string())
+}
+
+/// `@PATH` on the right side of an assignment: load a value from a file.
+/// The format comes from the file extension (json / jsonl / yaml / toml /
+/// csv / md); with an unknown extension the content is tried as JSON, then
+/// YAML, and undetectable text falls back to a plain string (like
+/// `parse_value`'s raw-text path). Returns `None` when `raw` is not an
+/// unquoted `@PATH` (so quoted `"@x"` literals are unaffected).
+fn load_file_value(raw: &str, table_header: Option<bool>) -> Option<Result<Value>> {
+    let t = raw.trim();
+    let p = t.strip_prefix('@')?;
+    if p.is_empty() {
+        return Some(Err(anyhow::anyhow!(
+            "`@` needs a file path (e.g. `PATH = @file.json`)"
+        )));
+    }
+    Some((|| {
+        let path = Path::new(p);
+        let bytes =
+            std::fs::read(path).with_context(|| format!("cannot read value file {p}"))?;
+        let text = decode_text(&bytes);
+        match format_from_ext(path) {
+            Some(f) => parse_input(&text, f, table_header),
+            None => {
+                // Unknown extension: try the structured formats most useful as
+                // values, then fall back to the whole text as a string.
+                for f in [DataFormat::Json, DataFormat::Yaml] {
+                    if let Ok(v) = parse_input(&text, f, table_header) {
+                        return Ok(v);
+                    }
+                }
+                Ok(Value::String(text.trim_end().to_string()))
+            }
+        }
+    })())
+}
+
+/// `strenv(NAME)` on the right side of an assignment: read the environment
+/// variable `NAME` and use its value as a string. An unset variable is an
+/// explicit error (deterministic — never a silent empty string). Returns
+/// `None` when `raw` is not a `strenv(...)` call.
+fn parse_env_value(raw: &str) -> Option<Result<Value>> {
+    let t = raw.trim();
+    let rest = t.strip_prefix("strenv(")?;
+    let name = rest.strip_suffix(")")?;
+    if name.contains('(') || name.contains(')') {
+        return Some(Err(anyhow::anyhow!(
+            "invalid `strenv(...)` expression `{t}` (expected `strenv(NAME)`)"
+        )));
+    }
+    let name = name.trim();
+    if name.is_empty() {
+        return Some(Err(anyhow::anyhow!(
+            "`strenv(...)` needs an environment variable name (e.g. `strenv(ROOT)`)"
+        )));
+    }
+    Some(match std::env::var_os(name) {
+        Some(os) => match os.to_str() {
+            Some(s) => Ok(Value::String(s.to_string())),
+            None => Err(anyhow::anyhow!(
+                "environment variable `{name}` is not valid UTF-8"
+            )),
+        },
+        None => Err(anyhow::anyhow!(
+            "environment variable `{name}` is not set"
+        )),
+    })
 }
 
 /// Apply `op` to the value found at `old` (may be missing => None).
@@ -591,6 +793,20 @@ fn set_value(root: &mut Value, steps: &[Step], new: Value, delete: bool) -> Resu
 //   search(has("name"))             recursively collect matching nodes
 //   name.endsWith("x")              string / key functions on a selector
 //
+// jq-style key projection pipelines (this file):
+//   data[*]|{id,name}               project each match onto the listed keys
+//   clients.filter(name=="x")|{id}  filter result array spreads into the
+//                                   projection (jq `.[]|select|{...}`)
+//   data[0]|{id}                    single match emits an object, not an array
+//
+// File-valued assignments (this file):
+//   PATH = @FILE                    value loaded & parsed from FILE (extension
+//                                   decides the format; else JSON / YAML /
+//                                   plain text), e.g. `wallpaper=@file.json`
+//   PATH = strenv(NAME)             value read from the environment variable
+//                                   NAME as a string (unset -> error), e.g.
+//                                   `wallpaper=strenv(ROOT)`
+//
 // Predicate mini-language (used by filter / search / remove):
 //   $this / $key    current node / current key or index
 //   field.path      a.b[0], m["中文键"]   (relative to $this)
@@ -705,6 +921,111 @@ fn parse_function_expr(expr: &str) -> Option<Result<FunctionCall>> {
         name,
         args: args.trim().to_string(),
     }))
+}
+
+// ---------------------------------------------------------------------------
+// jq-style pipelines: `path | {key1, key2, ...}` key projection
+// ---------------------------------------------------------------------------
+
+/// Split `left | right` at the first top-level pipe. Pipes inside quotes,
+/// brackets, braces or parentheses are ignored, and `||` never splits.
+fn split_pipeline(expr: &str) -> Option<(String, String)> {
+    let chars: Vec<char> = expr.trim().chars().collect();
+    let mut depth = 0i32;
+    let mut in_quote: Option<char> = None;
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        match in_quote {
+            Some(q) if c == q => in_quote = None,
+            Some(_) => {}
+            None => match c {
+                '"' | '\'' => in_quote = Some(c),
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                '|' if depth == 0 && chars.get(i + 1) != Some(&'|') => {
+                    let left: String = chars[..i].iter().collect();
+                    let right: String = chars[i + 1..].iter().collect();
+                    if !left.trim().is_empty() && !right.trim().is_empty() {
+                        return Some((left.trim().to_string(), right.trim().to_string()));
+                    }
+                    // A lone `|` with an empty side is not a pipeline; keep
+                    // scanning so the whole expression falls through.
+                }
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Parse a key projection `{key1, key2, ...}` into the ordered key list.
+/// Empty slots (e.g. a trailing comma) are skipped; nested key paths
+/// (`{a.b}` / `{a[0]}`) and aliases (`{x: y}`) are rejected for now.
+fn parse_projection(s: &str) -> Result<Vec<String>> {
+    let s = s.trim();
+    if !(s.starts_with('{') && s.ends_with('}')) || s.len() < 2 {
+        bail!("projection must look like `{{k1, k2, ...}}` (got `{s}`)");
+    }
+    let inner = &s[1..s.len() - 1];
+    let mut keys = Vec::new();
+    for part in inner.split(',') {
+        let k = part.trim();
+        if k.is_empty() {
+            continue;
+        }
+        if k.chars().any(|c| matches!(c, '{' | '}' | '[' | ']' | '.' | ':' | '"' | '\'')) {
+            bail!("projection key `{k}` is not a plain field name (nested paths / aliases are not supported yet)");
+        }
+        keys.push(k.to_string());
+    }
+    if keys.is_empty() {
+        bail!("projection needs at least one key (got `{s}`)");
+    }
+    Ok(keys)
+}
+
+/// Project each node onto the given keys (missing keys become null, jq-style);
+/// a single projected value is emitted as-is, several as an array.
+fn project_values(
+    nodes: Vec<Value>,
+    keys: &[String],
+    out_f: DataFormat,
+    compact: bool,
+) -> Result<String> {
+    let out: Vec<Value> = nodes
+        .into_iter()
+        .map(|node| {
+            let mut obj = serde_json::Map::new();
+            for k in keys {
+                obj.insert(k.clone(), lookup_key(&node, k));
+            }
+            Value::Object(obj)
+        })
+        .collect();
+    let value = if out.len() == 1 {
+        out.into_iter().next().unwrap()
+    } else {
+        Value::Array(out)
+    };
+    serialize_output(&value, out_f, compact)
+}
+
+/// `path | {k1, k2}`: resolve a plain selector and project every match.
+fn apply_projection_path(
+    v: &Value,
+    path: &str,
+    keys: &[String],
+    out_f: DataFormat,
+    compact: bool,
+) -> Result<String> {
+    let steps = parse_selector(path).with_context(|| format!("invalid projection path `{path}`"))?;
+    let got = get_values(v, &steps);
+    if got.is_empty() {
+        bail!("projection path `{path}` matched nothing");
+    }
+    project_values(got.into_iter().cloned().collect(), keys, out_f, compact)
 }
 
 // --- Predicate mini-language -----------------------------------------------
@@ -1225,8 +1546,9 @@ fn resolve_single<'v>(root: &'v Value, path: &str, fn_name: &str) -> Result<&'v 
     }
 }
 
-/// `path.filter(predicate)`: keep the matching array elements (read-only).
-fn apply_filter(v: &Value, call: &FunctionCall, out_f: DataFormat, compact: bool) -> Result<String> {
+/// `path.filter(predicate)`: keep the matching array elements (read-only),
+/// returned as a value so pipelines can project it (`filter(...)|{...}`).
+fn apply_filter_value(v: &Value, call: &FunctionCall) -> Result<Value> {
     let path = call.path.as_deref().ok_or_else(|| {
         anyhow::anyhow!("`filter` needs an array path (e.g. `list.filter(...)`)")
     })?;
@@ -1241,7 +1563,12 @@ fn apply_filter(v: &Value, call: &FunctionCall, out_f: DataFormat, compact: bool
             kept.push(e.clone());
         }
     }
-    serialize_output(&Value::Array(kept), out_f, compact)
+    Ok(Value::Array(kept))
+}
+
+/// `path.filter(predicate)`: keep the matching array elements (read-only).
+fn apply_filter(v: &Value, call: &FunctionCall, out_f: DataFormat, compact: bool) -> Result<String> {
+    serialize_output(&apply_filter_value(v, call)?, out_f, compact)
 }
 
 /// `path.remove(predicate)`: delete the matching array elements in place
@@ -1278,15 +1605,22 @@ fn apply_remove(
 }
 
 /// `search(predicate)` / `path.search(predicate)`: recursively collect every
-/// node matching the predicate ($this = the node, $key = its key / index).
-fn apply_search(v: &Value, call: &FunctionCall, out_f: DataFormat, compact: bool) -> Result<String> {
+/// node matching the predicate ($this = the node, $key = its key / index),
+/// returned as a value so pipelines can project it (`search(...)|{...}`).
+fn apply_search_value(v: &Value, call: &FunctionCall) -> Result<Value> {
     let start = match &call.path {
         Some(p) => resolve_single(v, p, "search")?,
         None => v,
     };
     let mut found = Vec::new();
     search_collect(start, None, &call.args, &mut found)?;
-    serialize_output(&Value::Array(found), out_f, compact)
+    Ok(Value::Array(found))
+}
+
+/// `search(predicate)` / `path.search(predicate)`: recursively collect every
+/// node matching the predicate ($this = the node, $key = its key / index).
+fn apply_search(v: &Value, call: &FunctionCall, out_f: DataFormat, compact: bool) -> Result<String> {
+    serialize_output(&apply_search_value(v, call)?, out_f, compact)
 }
 
 fn search_collect(node: &Value, key: Option<Value>, pred: &str, found: &mut Vec<Value>) -> Result<()> {
@@ -1583,23 +1917,31 @@ pub fn cmd_data(
     if expr.is_empty() {
         // Format conversion only.
         result_string = serialize_output(&v, out_f, compact)?;
-    } else if let Some(fc) = parse_function_expr(expr) {
-        // Function expression: filter / search / remove / string functions.
-        let fc = fc?;
-        result_string = match fc.name.as_str() {
-            "filter" => apply_filter(&v, &fc, out_f, compact)?,
-            "search" => apply_search(&v, &fc, out_f, compact)?,
-            "remove" => apply_remove(&mut v, &fc, out_f, compact, root)?,
-            _ => apply_string_fn(&v, &fc, out_f, compact)?,
-        };
     } else if let Ok((path, op, raw)) = split_expression(expr) {
-        // Assignment / delete.
+        // Assignment / delete. The right side may be a literal, `@FILE`
+        // (read & parse a file) or `strenv(NAME)` (read an environment
+        // variable as a string); neither `@` nor `strenv` is a delete.
+        // Checked before function expressions so `PATH = strenv(X)` and
+        // `PATH = foo(y)` are assignments, not unknown-function calls.
         let steps = parse_selector(&path)?;
-        let delete = matches!(parse_value(&raw), Value::Null) && op == "=";
+        let file_value = load_file_value(&raw, table_header);
+        let env_value = if file_value.is_none() {
+            parse_env_value(&raw)
+        } else {
+            None
+        };
+        let delete = file_value.is_none()
+            && env_value.is_none()
+            && matches!(parse_value(&raw), Value::Null)
+            && op == "=";
         if delete {
             set_value(&mut v, &steps, Value::Null, true)?;
         } else {
-            let rhs = parse_value(&raw);
+            let rhs = match (file_value, env_value) {
+                (Some(res), _) => res?,
+                (None, Some(res)) => res?,
+                (None, None) => parse_value(&raw),
+            };
             if op == "=" {
                 set_value(&mut v, &steps, rhs, false)?;
             } else {
@@ -1618,6 +1960,63 @@ pub fn cmd_data(
                 Some(x) => render_get(x, out_f, compact)?,
                 None => serialize_output(&v, out_f, compact)?, // deleted: print the doc
             }
+        };
+    } else if let Some(fc) = parse_function_expr(expr) {
+        // Function expression: filter / search / remove / string functions.
+        let fc = fc?;
+        result_string = match fc.name.as_str() {
+            "filter" => apply_filter(&v, &fc, out_f, compact)?,
+            "search" => apply_search(&v, &fc, out_f, compact)?,
+            "remove" => apply_remove(&mut v, &fc, out_f, compact, root)?,
+            // 裸方法谓词（`NAME.contains("x")` / `has("k")` 等）在
+            // csv / table / jsonl 的根数组上自动按 `[*].filter(...)` 过滤；
+            // 对象根文档仍走标量字符串函数（apply_string_fn）。
+            n if matches!(n, "contains" | "startsWith" | "endsWith" | "has")
+                && v.is_array()
+                && matches!(in_f, DataFormat::Csv | DataFormat::Table | DataFormat::Jsonl) =>
+            {
+                // 完整原表达式作为逐行谓词（不能只传 fc.args，否则丢掉
+                // 字段路径，如 Name.contains('ph') 只剩字面量 'ph'）。
+                let auto = FunctionCall {
+                    path: Some("[*]".to_string()),
+                    name: "filter".to_string(),
+                    args: expr.to_string(),
+                };
+                apply_filter(&v, &auto, out_f, compact)?
+            }
+            _ => apply_string_fn(&v, &fc, out_f, compact)?,
+        };
+    } else if let Some((left, right)) = split_pipeline(expr) {
+        // jq-style key projection: `path | {k1, k2}`. The left side is a
+        // plain selector or a filter / search call; the projection applies to
+        // each matched node (function results spread their array, like jq's
+        // `.[] | select(...) | {...}`).
+        let keys =
+            parse_projection(&right).with_context(|| format!("invalid projection in `{expr}`"))?;
+        result_string = match parse_function_expr(&left) {
+            Some(Ok(fc)) => match fc.name.as_str() {
+                "filter" => {
+                    let arr = apply_filter_value(&v, &fc)?;
+                    project_values(
+                        arr.as_array().cloned().unwrap_or_default(),
+                        &keys,
+                        out_f,
+                        compact,
+                    )?
+                }
+                "search" => {
+                    let arr = apply_search_value(&v, &fc)?;
+                    project_values(
+                        arr.as_array().cloned().unwrap_or_default(),
+                        &keys,
+                        out_f,
+                        compact,
+                    )?
+                }
+                other => bail!("cannot pipe `{other}(...)` into a projection"),
+            },
+            Some(Err(e)) => return Err(e),
+            None => apply_projection_path(&v, &left, &keys, out_f, compact)?,
         };
     } else if looks_like_bare_predicate(expr)
         && matches!(in_f, DataFormat::Csv | DataFormat::Table | DataFormat::Jsonl)
@@ -1658,13 +2057,13 @@ pub fn cmd_data(
         if !root {
             use std::io::Write;
             let mut h = io::stdout().lock();
-            h.write_all(result_string.as_bytes())?;
+            h.write_all(colorize_screen(&result_string, out_f).as_bytes())?;
             h.flush()?;
         }
     } else {
         use std::io::Write;
         let mut h = io::stdout().lock();
-        h.write_all(result_string.as_bytes())?;
+        h.write_all(colorize_screen(&result_string, out_f).as_bytes())?;
         h.flush()?;
     }
     Ok(())
@@ -1770,11 +2169,15 @@ fn detect_format(text: &str) -> Result<DataFormat> {
             return Ok(DataFormat::Md);
         }
     }
-    if lines.first().map(|l| l.contains(',')).unwrap_or(false) && lines.len() >= 2 {
-        return Ok(DataFormat::Csv);
-    }
+    // Block YAML (`key:` / `- item`) that parses must win over the comma-CSV
+    // heuristic: a `model: a,b,c` selector line or values with commas must not
+    // be misread as CSV. Plain comma tables have no `key:`/`-` structure and
+    // still fall through to CSV below.
     if looks_like_yaml(&text) && parse_yaml_tolerant(text).is_ok() {
         return Ok(DataFormat::Yaml);
+    }
+    if lines.first().map(|l| l.contains(',')).unwrap_or(false) && lines.len() >= 2 {
+        return Ok(DataFormat::Csv);
     }
     if lines.len() > 1 {
         return Ok(DataFormat::Csv);
@@ -1860,6 +2263,17 @@ mod tests {
             split_expression(r#"a["x=y"] = 2"#).unwrap(),
             (r#"a["x=y"]"#.into(), "=", "2".into())
         );
+        // Operators inside nested brackets / parens are not assignments:
+        // `PATH = strenv(X)` / `PATH = foo(y)` split at the depth-0 `=`.
+        assert_eq!(
+            split_expression("wallpaper=strenv(ROOT)").unwrap(),
+            ("wallpaper".into(), "=", "strenv(ROOT)".into())
+        );
+        assert_eq!(
+            split_expression("a.b = foo(y)").unwrap(),
+            ("a.b".into(), "=", "foo(y)".into())
+        );
+        assert!(split_expression("list.filter(a = b)").is_err()); // predicate, not assignment
         assert!(split_expression("a.b").is_err()); // no operator -> selector
         assert!(split_expression(" = 1").is_err());
     }
@@ -1893,6 +2307,33 @@ mod tests {
     fn normalise_tabs_preserves_inline_tabs() {
         let s = normalise_yaml_tabs("a:\n\tb: \"x\ty\"\n");
         assert!(s.starts_with("a:\n    b: \"x\ty\"\n"), "got: {s:?}");
+    }
+
+    #[test]
+    fn json_line_colorization_keys_and_values() {
+        // 对象条目：key 蓝，字符串 / 数字值绿
+        let out = colorize_json_line("  \"name\": \"web-server\",");
+        assert!(out.contains(&format!("{ANSI_BLUE}\"name\"{ANSI_RESET}")));
+        assert!(out.contains(&format!("{ANSI_GREEN}\"web-server\"{ANSI_RESET}")));
+        let out = colorize_json_line("  \"type\": 1,");
+        assert!(out.contains(&format!("{ANSI_GREEN}1{ANSI_RESET}")));
+        // 数组元素字符串绿
+        let out = colorize_json_line("    \"a\",");
+        assert!(out.starts_with("    "));
+        assert!(out.contains(&format!("{ANSI_GREEN}\"a\"{ANSI_RESET}")));
+        // 结构符行不变
+        assert_eq!(colorize_json_line("["), "[");
+    }
+
+    #[test]
+    fn yaml_line_colorization() {
+        let out = colorize_yaml_line("name: web-server");
+        assert!(out.contains(&format!("{ANSI_BLUE}name{ANSI_RESET}")));
+        assert!(out.contains(&format!("{ANSI_GREEN}web-server{ANSI_RESET}")));
+        let out = colorize_yaml_line("tags:");
+        assert!(out.contains(&format!("{ANSI_BLUE}tags{ANSI_RESET}:")));
+        let out = colorize_yaml_line("  - apple");
+        assert!(out.contains(&format!("{ANSI_GREEN}apple{ANSI_RESET}")));
     }
 
     #[test]
@@ -1992,6 +2433,13 @@ mod tests {
         assert_eq!(detect_format("a:\n\tb: 1\n").unwrap(), DataFormat::Yaml);
         assert_eq!(detect_format("name = \"x\"\nport = 1\n").unwrap(), DataFormat::Toml);
         assert_eq!(detect_format("a,b\n1,2\n").unwrap(), DataFormat::Csv);
+        // A comma inside a YAML scalar line must not flip detection to CSV.
+        assert_eq!(
+            detect_format("model: a,b,c\nclients:\n  - type: openai\n").unwrap(),
+            DataFormat::Yaml
+        );
+        // A plain comma table without `key:`/`-` structure stays CSV.
+        assert_eq!(detect_format("name,age\ngary,30\n").unwrap(), DataFormat::Csv);
     }
 
     #[test]
@@ -2165,6 +2613,29 @@ mod tests {
         let got: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(got.as_array().unwrap().len(), 1);
         assert_eq!(got[0]["Name"], "b");
+    }
+
+    #[test]
+    fn bare_method_predicate_auto_filters_root_array() {
+        // `Name.contains("a")` / `has("Id")` 等裸方法谓词在 table/csv/jsonl
+        // 根数组上等价于 `[*].filter(...)`（自动过滤分支构造同一合成 fc）。
+        let v = parse_input("Id Name\n1 alpha\n2 beta\n3 gamma\n", DataFormat::Table, None).unwrap();
+        let cases = [
+            ("Name.contains(\"ph\")", 1),    // 仅 alpha 含 ph
+            ("Name.startsWith(\"ga\")", 1),   // 仅 gamma
+            ("Name.endsWith(\"ma\")", 1),    // 仅 gamma
+            ("has(\"Id\")", 3),              // 每行都有 Id 键
+        ];
+        for (pred, want) in cases {
+            let auto = FunctionCall {
+                path: Some("[*]".to_string()),
+                name: "filter".to_string(),
+                args: pred.to_string(),
+            };
+            let out = apply_filter(&v, &auto, DataFormat::Json, false).unwrap();
+            let got: Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(got.as_array().unwrap().len(), want, "predicate {pred}");
+        }
     }
 
     #[test]
@@ -2418,5 +2889,226 @@ mod tests {
         ).unwrap();
         apply_limit(&mut v, 2).unwrap();
         assert_eq!(serialize_output(&v, DataFormat::Jsonl, false).unwrap(), "{\"a\":1}\n{\"a\":2}\n");
+    }
+
+    // ------------------------------------------------------------------
+    // jq-style key projection: `path | {k1, k2}`
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn projection_on_wildcard_keeps_only_listed_keys() {
+        let v = json!({"data": [
+            {"id": 1, "name": "a", "pricing": 9.9, "extra": true},
+            {"id": 2, "name": "b", "pricing": 19.9, "extra": false},
+        ]});
+        let keys = parse_projection("{id, name, pricing}").unwrap();
+        assert_eq!(keys, vec!["id", "name", "pricing"]);
+        let out = apply_projection_path(&v, "data[*]", &keys, DataFormat::Json, false).unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(got.as_array().unwrap().len(), 2);
+        assert_eq!(got[0], json!({"id": 1, "name": "a", "pricing": 9.9}));
+        assert_eq!(got[1], json!({"id": 2, "name": "b", "pricing": 19.9}));
+        assert!(got[0].get("extra").is_none(), "unlisted key leaked: {got}");
+    }
+
+    #[test]
+    fn projection_single_match_emits_object_not_array() {
+        let v = json!({"data": [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]});
+        let keys = parse_projection("{id, name}").unwrap();
+        let out = apply_projection_path(&v, "data[1]", &keys, DataFormat::Json, false).unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        assert!(got.is_object(), "single match must be an object: {out}");
+        assert_eq!(got, json!({"id": 2, "name": "b"}));
+    }
+
+    #[test]
+    fn projection_missing_key_becomes_null() {
+        let v = json!({"data": [{"id": 1}, {"id": 2, "pricing": 5.0}]});
+        let keys = parse_projection("{id, pricing}").unwrap();
+        let out = apply_projection_path(&v, "data[*]", &keys, DataFormat::Json, false).unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(got[0], json!({"id": 1, "pricing": null}));
+        assert_eq!(got[1], json!({"id": 2, "pricing": 5.0}));
+    }
+
+    #[test]
+    fn projection_after_filter_spreads_result_array() {
+        // `data.filter(id>=2)|{id,name}`: the filter result array is spread so
+        // the projection applies per element (jq `.[]|select(...)|{...}`).
+        let v = json!({"data": [
+            {"id": 1, "name": "a", "pricing": 9.9},
+            {"id": 2, "name": "b", "pricing": 19.9},
+        ]});
+        let fc = parse_function_expr("data.filter(id>=2)").unwrap().unwrap();
+        let arr = apply_filter_value(&v, &fc).unwrap();
+        let keys = parse_projection("{id, name}").unwrap();
+        let out = project_values(
+            arr.as_array().cloned().unwrap_or_default(),
+            &keys,
+            DataFormat::Json,
+            false,
+        )
+        .unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        // A single projected element is emitted as an object, not an array.
+        assert!(got.is_object(), "single projection must be an object: {out}");
+        assert_eq!(got, json!({"id": 2, "name": "b"}));
+        // filter matching nothing -> `[]`, not an error.
+        let fc = parse_function_expr("data.filter(id>=99)").unwrap().unwrap();
+        let arr = apply_filter_value(&v, &fc).unwrap();
+        let out = project_values(
+            arr.as_array().cloned().unwrap_or_default(),
+            &keys,
+            DataFormat::Json,
+            true,
+        )
+        .unwrap();
+        assert_eq!(out.trim(), "[]");
+    }
+
+    #[test]
+    fn projection_path_matched_nothing_errors() {
+        let v = json!({"data": [{"id": 1}]});
+        let keys = parse_projection("{id}").unwrap();
+        assert!(apply_projection_path(&v, "missing[*]", &keys, DataFormat::Json, false).is_err());
+        // Projecting a non-object node yields null values, not an error.
+        let v = json!({"data": [1, 2, 3]});
+        let out = apply_projection_path(&v, "data[*]", &keys, DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), "[{\"id\":null},{\"id\":null},{\"id\":null}]");
+    }
+
+    #[test]
+    fn parse_projection_validation() {
+        assert!(parse_projection("{a.b}").is_err());
+        assert!(parse_projection("{x: y}").is_err());
+        assert!(parse_projection("{a[0]}").is_err());
+        assert!(parse_projection("{}").is_err());
+        assert!(parse_projection("id").is_err());
+        assert_eq!(parse_projection("{id, name,}").unwrap(), vec!["id", "name"]);
+        assert_eq!(parse_projection("{ one , two }").unwrap(), vec!["one", "two"]);
+    }
+
+    #[test]
+    fn split_pipeline_ignores_inner_pipes() {
+        assert_eq!(
+            split_pipeline("data[*] | {id,name}"),
+            Some(("data[*]".to_string(), "{id,name}".to_string()))
+        );
+        assert_eq!(
+            split_pipeline("x|{a}"),
+            Some(("x".to_string(), "{a}".to_string()))
+        );
+        // `||` is never a split, nor pipes inside quotes / function args.
+        assert!(split_pipeline("data.filter(a || b)").is_none());
+        assert!(split_pipeline("m[\"a|b\"]").is_none());
+        assert!(split_pipeline("name.contains(\"a|b\")").is_none());
+        // An empty side is not a pipeline.
+        assert!(split_pipeline("data|").is_none());
+        assert!(split_pipeline("|{a}").is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // Assignment value files: `PATH = @FILE`
+    // ------------------------------------------------------------------
+
+    fn temp_value_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "sys_dasel_test_{}_{name}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn file_value_loads_json_by_extension() {
+        let p = temp_value_path("v.json");
+        std::fs::write(&p, r#"{"url": "https://a.example", "w": 3840}"#).unwrap();
+        let raw = format!("@{}", p.display());
+        let v = load_file_value(&raw, None).unwrap().unwrap();
+        assert_eq!(v, json!({"url": "https://a.example", "w": 3840}));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn file_value_loads_yaml_by_extension() {
+        let p = temp_value_path("v.yaml");
+        std::fs::write(&p, "a: 1\nb: text\n").unwrap();
+        let raw = format!("@{}", p.display());
+        let v = load_file_value(&raw, None).unwrap().unwrap();
+        assert_eq!(v, json!({"a": 1, "b": "text"}));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn file_value_unknown_extension_tries_json_then_yaml_then_text() {
+        // JSON content in a .txt file still parses as a value.
+        let p = temp_value_path("v.txt");
+        std::fs::write(&p, r#"{"a": 1}"#).unwrap();
+        let raw = format!("@{}", p.display());
+        let v = load_file_value(&raw, None).unwrap().unwrap();
+        assert_eq!(v, json!({"a": 1}));
+        // Plain text falls back to a string.
+        std::fs::write(&p, "hello world").unwrap();
+        let v = load_file_value(&raw, None).unwrap().unwrap();
+        assert_eq!(v, json!("hello world"));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn file_value_missing_file_and_bare_at_error() {
+        let p = temp_value_path("missing.json");
+        let raw = format!("@{}", p.display());
+        let err = load_file_value(&raw, None).unwrap().unwrap_err();
+        assert!(format!("{err:#}").contains("cannot read value file"), "got: {err:#}");
+        let err = load_file_value("@", None).unwrap().unwrap_err();
+        assert!(format!("{err:#}").contains("needs a file path"), "got: {err:#}");
+    }
+
+    #[test]
+    fn file_value_ignores_quoted_and_plain_values() {
+        // Quoted `"@x"` and non-`@` values are literals, not file references.
+        assert!(load_file_value(r#""@x""#, None).is_none());
+        assert!(load_file_value("42", None).is_none());
+        assert!(load_file_value("x", None).is_none());
+        assert!(load_file_value("", None).is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // Environment variable assignment values: `PATH = strenv(NAME)`
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn env_value_reads_set_variable() {
+        std::env::set_var("SYS_DASEL_TEST_ENV", "hello env");
+        let v = parse_env_value("strenv(SYS_DASEL_TEST_ENV)").unwrap().unwrap();
+        assert_eq!(v, json!("hello env"));
+        // Whitespace around the name is trimmed.
+        let v = parse_env_value("strenv( SYS_DASEL_TEST_ENV )").unwrap().unwrap();
+        assert_eq!(v, json!("hello env"));
+        std::env::remove_var("SYS_DASEL_TEST_ENV");
+    }
+
+    #[test]
+    fn env_value_missing_or_bad_name_errors() {
+        let err = parse_env_value("strenv(SYS_DASEL_TEST_ENV_NOT_SET)")
+            .unwrap()
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("is not set"), "got: {err:#}");
+        let err = parse_env_value("strenv()").unwrap().unwrap_err();
+        assert!(
+            format!("{err:#}").contains("needs an environment variable name"),
+            "got: {err:#}"
+        );
+        let err = parse_env_value("strenv(a(b))").unwrap().unwrap_err();
+        assert!(format!("{err:#}").contains("invalid `strenv"), "got: {err:#}");
+    }
+
+    #[test]
+    fn env_value_ignores_other_rhs_forms() {
+        assert!(parse_env_value("42").is_none());
+        assert!(parse_env_value("@file.json").is_none());
+        assert!(parse_env_value(r#""strenv(X)""#).is_none());
+        assert!(parse_env_value("strenv(ROOT").is_none()); // unbalanced -> literal
+        assert!(parse_env_value("x").is_none());
+        assert!(parse_env_value("").is_none());
     }
 }

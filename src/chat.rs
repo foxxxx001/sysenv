@@ -53,6 +53,9 @@ pub(crate) struct Config {
     pub(crate) model: Option<String>,
     pub(crate) stream: bool,
     pub(crate) providers: Vec<Provider>,
+    /// Built-in free-routers mode (--free or missing config): no config file,
+    /// weight rotation state is kept in memory and nothing is written back.
+    pub(crate) free: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +122,120 @@ pub(crate) fn load_config(path: Option<&Path>) -> Result<(Config, PathBuf)> {
     let y = parse_yaml(&text)?;
     let cfg = config_from_yaml(&y).with_context(|| format!("invalid config `{}`", path.display()))?;
     Ok((cfg, path))
+}
+
+// --- Built-in free routers (`--free`, or when config.yaml is absent) --------
+
+/// Kilo Gateway free auto-router (keyless / anonymous).
+const FREE_KILO_BASE: &str = "https://ai-gateway.kilo.ai/api/v1";
+/// OpenRouter free models router (needs OPENROUTER_API_KEY).
+const FREE_OPENROUTER_BASE: &str = "https://openrouter.ai/api/v1";
+
+fn free_model(name: &str) -> Model {
+    Model {
+        name: name.to_string(),
+        weight: 1,
+        max_tokens: None,
+        max_input_tokens: None,
+        model_type: None,
+        group: Vec::new(),
+    }
+}
+
+/// Free providers: `kilo-auto/free` always (anonymous); `openrouter/free` only
+/// when a non-empty OpenRouter key is supplied.
+fn free_providers(openrouter_key: Option<String>) -> Vec<Provider> {
+    let mut providers = vec![Provider {
+        kind: "openai".to_string(),
+        name: "kilo-auto".to_string(),
+        api_base: FREE_KILO_BASE.to_string(),
+        api_key: String::new(),
+        models: vec![free_model("kilo-auto/free")],
+    }];
+    if let Some(key) = openrouter_key.filter(|k| !k.trim().is_empty()) {
+        providers.push(Provider {
+            kind: "openai".to_string(),
+            name: "openrouter".to_string(),
+            api_base: FREE_OPENROUTER_BASE.to_string(),
+            api_key: key,
+            models: vec![free_model("openrouter/free")],
+        });
+    }
+    providers
+}
+
+/// In-memory free Config: kilo-auto/free always; openrouter/free only when
+/// `OPENROUTER_API_KEY` is set in the environment.
+pub(crate) fn builtin_free_config() -> Config {
+    let key = std::env::var("OPENROUTER_API_KEY").ok();
+    Config {
+        model: None,
+        stream: false,
+        providers: free_providers(key),
+        free: true,
+    }
+}
+
+/// Parse a `--free[=ROUTER]` selector to the matching built-in provider name.
+/// Accepts kilo / kilo-auto / kilo-auto/free and openrouter / openrouter/free
+/// (case-insensitive); unknown values are rejected.
+pub(crate) fn parse_free_router(s: &str) -> Result<&'static str> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "kilo" | "kilo-auto" | "kilo-auto/free" => Ok("kilo-auto"),
+        "openrouter" | "openrouter/free" => Ok("openrouter"),
+        other => bail!("unknown free router `{other}` (use kilo or openrouter)"),
+    }
+}
+
+/// Apply a `--free[=router]` selector to an already-built free provider
+/// list. `None` (or `"all"`) keeps every router; a named router filters the
+/// list to it and bails when it is unavailable (openrouter needs
+/// `OPENROUTER_API_KEY`).
+fn filter_free_selector(providers: Vec<Provider>, selector: Option<&str>) -> Result<Config> {
+    let mut cfg = Config {
+        model: None,
+        stream: false,
+        providers,
+        free: true,
+    };
+    let Some(sel) = selector.map(str::trim).filter(|s| !s.is_empty() && *s != "all") else {
+        return Ok(cfg);
+    };
+    let want = parse_free_router(sel)?;
+    cfg.providers.retain(|p| p.name == want);
+    if cfg.providers.is_empty() {
+        bail!(
+            "free router `{want}` is unavailable: {}",
+            if want == "openrouter" {
+                "set OPENROUTER_API_KEY"
+            } else {
+                "internal error"
+            }
+        );
+    }
+    cfg.model = Some(cfg.providers[0].models[0].name.clone());
+    Ok(cfg)
+}
+
+/// Build the free Config from the environment, optionally pinned to one
+/// router (`kilo` | `openrouter`).
+pub(crate) fn free_config(selector: Option<&str>) -> Result<Config> {
+    let key = std::env::var("OPENROUTER_API_KEY").ok();
+    filter_free_selector(free_providers(key), selector)
+}
+
+/// Does the default `~/.sysenv/config.yaml` exist? Used to fall back to the
+/// free routers when no config file is present.
+fn default_config_exists() -> bool {
+    home_dir()
+        .map(|h| h.join(".sysenv").join("config.yaml").exists())
+        .unwrap_or(false)
+}
+
+/// Free mode on either trigger: `--free` forces it, OR the default
+/// config.yaml was not found (when no explicit `-c` file was named).
+fn use_free_mode(free_flag: bool, explicit_config: bool, default_exists: bool) -> bool {
+    free_flag || (!explicit_config && !default_exists)
 }
 
 // --- minimal block-YAML parser (scalars / lists / maps, tab-tolerant) ------
@@ -414,7 +531,7 @@ fn config_from_yaml(y: &YVal) -> Result<Config> {
             providers.push(p);
         }
     }
-    Ok(Config { model, stream, providers })
+    Ok(Config { model, stream, providers, free: false })
 }
 
 // ---------------------------------------------------------------------------
@@ -1763,7 +1880,7 @@ fn chat_once(
             Ok(text) => {
                 // A model that succeeded after a previous failure gets its
                 // weight bumped (max 9), persisted to the config file.
-                if had_failure && m.weight < 9 {
+                if had_failure && m.weight < 9 && !cfg.free {
                     if let Err(e) = update_weight_in_config(path, &p.name, &m.name, m.weight + 1) {
                         eprintln!("sys: warning: failed to persist weight bump for {} / {}: {e:#}", p.name, m.name);
                     }
@@ -1774,7 +1891,7 @@ fn chat_once(
                 errors.push(format!("{} / {}: {e:#}", p.name, m.name));
                 // Failure decrements the weight (min 1), persisted to config,
                 // then the next model is tried automatically.
-                if m.weight > 1 {
+                if m.weight > 1 && !cfg.free {
                     if let Err(e2) = update_weight_in_config(path, &p.name, &m.name, m.weight - 1) {
                         eprintln!("sys: warning: failed to persist weight drop for {} / {}: {e2:#}", p.name, m.name);
                     }
@@ -2111,8 +2228,20 @@ pub fn cmd_chat(
     parallel: Option<usize>,
     remove: bool,
     query_model: Option<&str>,
+    free: Option<&str>,
 ) -> Result<()> {
-    let (mut cfg, path) = load_config(config)?;
+    // Free mode on either trigger: `--free[=router]`, or the default
+    // config.yaml being absent. An explicit `-c` always loads and validates
+    // the named file.
+    let (mut cfg, path) = if use_free_mode(free.is_some(), config.is_some(), default_config_exists())
+    {
+        let p = home_dir()
+            .map(|h| h.join(".sysenv").join("config.yaml"))
+            .unwrap_or_else(|| PathBuf::from("config.yaml"));
+        (free_config(free)?, p)
+    } else {
+        load_config(config)?
+    };
 
     if list_model || list_provider {
         if list_provider {
@@ -2125,6 +2254,10 @@ pub fn cmd_chat(
             print_models(&cfg);
         }
         return Ok(());
+    }
+
+    if cfg.free && (query_model.is_some() || test || update) {
+        bail!("free mode does not support --query-model, --test or --update");
     }
 
     if let Some(pname) = query_model {
@@ -2439,6 +2572,78 @@ stream: true
         let mut p = cfg.providers[1].clone();
         p.api_base = "https://api.anthropic.example.com/v1".to_string();
         assert_eq!(chat_url(&p), "https://api.anthropic.example.com/v1/messages");
+    }
+
+    #[test]
+    fn free_providers_without_openrouter_key_keeps_kilo_only() {
+        let provs = free_providers(None);
+        assert_eq!(provs.len(), 1);
+        assert_eq!(provs[0].name, "kilo-auto");
+        assert_eq!(provs[0].models[0].name, "kilo-auto/free");
+        assert!(provs[0].api_key.is_empty());
+        assert_eq!(
+            chat_url(&provs[0]),
+            "https://ai-gateway.kilo.ai/api/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn free_providers_with_openrouter_key_adds_router() {
+        let provs = free_providers(Some("sk-or-test".to_string()));
+        assert_eq!(provs.len(), 2);
+        let or = &provs[1];
+        assert_eq!(or.name, "openrouter");
+        assert_eq!(or.models[0].name, "openrouter/free");
+        assert_eq!(or.api_key, "sk-or-test");
+        assert_eq!(chat_url(or), "https://openrouter.ai/api/v1/chat/completions");
+        // A blank / whitespace key drops openrouter and keeps kilo only.
+        assert_eq!(free_providers(Some("  ".to_string())).len(), 1);
+    }
+
+    #[test]
+    fn free_mode_triggers_on_flag_or_missing_default() {
+        // --free forces free regardless of config presence.
+        assert!(use_free_mode(true, false, true));
+        assert!(use_free_mode(true, true, false));
+        // No flag: free when the default config is absent (and no -c named).
+        assert!(use_free_mode(false, false, false));
+        // Default present, no flag -> normal config load.
+        assert!(!use_free_mode(false, false, true));
+        // An explicit -c file is honored even when the default is missing.
+        assert!(!use_free_mode(false, true, false));
+    }
+
+    #[test]
+    fn parse_free_router_accepts_aliases_and_rejects_unknown() {
+        assert_eq!(parse_free_router("kilo").unwrap(), "kilo-auto");
+        assert_eq!(parse_free_router("KILO-AUTO").unwrap(), "kilo-auto");
+        assert_eq!(parse_free_router("kilo-auto/free").unwrap(), "kilo-auto");
+        assert_eq!(parse_free_router("openrouter").unwrap(), "openrouter");
+        assert_eq!(parse_free_router("openrouter/free").unwrap(), "openrouter");
+        assert!(parse_free_router("gemini").is_err());
+    }
+
+    #[test]
+    fn free_selector_pins_one_router_or_bails_on_missing() {
+        let both = free_providers(Some("sk-or-test".to_string()));
+        // None / "all" keeps every available router untouched.
+        let all = filter_free_selector(both.clone(), None).unwrap();
+        assert_eq!(all.providers.len(), 2);
+        let all = filter_free_selector(both.clone(), Some("all")).unwrap();
+        assert_eq!(all.providers.len(), 2);
+        // Pinning kilo keeps only the anonymous router and sets its model.
+        let k = filter_free_selector(both.clone(), Some("kilo")).unwrap();
+        assert_eq!(k.providers.len(), 1);
+        assert_eq!(k.providers[0].name, "kilo-auto");
+        assert_eq!(k.model.as_deref(), Some("kilo-auto/free"));
+        // Pinning openrouter keeps only that router and its model.
+        let o = filter_free_selector(both.clone(), Some("openrouter/free")).unwrap();
+        assert_eq!(o.providers.len(), 1);
+        assert_eq!(o.providers[0].name, "openrouter");
+        assert_eq!(o.model.as_deref(), Some("openrouter/free"));
+        // Pinning openrouter when it was never built (no key) bails with guidance.
+        let err = filter_free_selector(free_providers(None), Some("openrouter")).unwrap_err();
+        assert!(err.to_string().contains("OPENROUTER_API_KEY"), "got: {err}");
     }
 
     #[test]
@@ -2862,7 +3067,7 @@ clients:
       - name: m1
 "#,
         );
-        apply_test_removals(&Config { model: None, stream: false, providers: Vec::new() }, &p, &[]).unwrap();
+        apply_test_removals(&Config { model: None, stream: false, providers: Vec::new(), free: false }, &p, &[]).unwrap();
         let stem = std::path::Path::new(&p).file_stem().unwrap().to_string_lossy().to_string();
         let dir = std::path::Path::new(&p).parent().unwrap();
         let n = std::fs::read_dir(dir)
@@ -3208,6 +3413,7 @@ clients:
             model: None,
             stream: false,
             providers: vec![local_provider(1234)],
+            free: false,
         };
         let err = query_provider_models(&cfg, "nope").unwrap_err();
         let text = format!("{err:#}");

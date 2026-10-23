@@ -2057,6 +2057,7 @@ pub fn cmd_info(
     config: Option<&Path>,
     out: Option<OutFormat>,
     json: bool,
+    free: Option<&str>,
 ) -> Result<()> {
     let fmt = out.or(if json { Some(OutFormat::Json) } else { None });
     let keyword = {
@@ -2146,7 +2147,11 @@ pub fn cmd_info(
             }
         }
         Some("provider") | Some("providers") => {
-            let (cfg, _) = chat::load_config(config)?;
+            let cfg = if free.is_some() {
+                chat::free_config(free)?
+            } else {
+                chat::load_config(config)?.0
+            };
             let rows = info_provider_rows(&cfg, keyword.as_deref())?;
             match fmt {
                 Some(OutFormat::Json) => {
@@ -2229,6 +2234,51 @@ pub fn cmd_info(
             info_sale_price(&cfg, &kw, refresh)?;
         }
         Some("list-model") | Some("list-models") | Some("models") => {
+            if free.is_some() {
+                // --free[=router]: list the built-in free models instead of
+                // querying a provider's own models endpoint.
+                let cfg = chat::free_config(free)?;
+                let rows = info_model_rows(&cfg, None)?;
+                match fmt {
+                    Some(OutFormat::Json) => {
+                        let arr: Vec<Value> = rows
+                            .iter()
+                            .map(|r| {
+                                serde_json::json!({"provider": r.provider, "name": r.name, "groups": r.groups})
+                            })
+                            .collect();
+                        println!("{}", serde_json::to_string_pretty(&Value::Array(arr))?);
+                    }
+                    Some(OutFormat::Csv) => {
+                        println!("provider,name,groups");
+                        for r in &rows {
+                            println!("{},{},{}", r.provider, r.name, r.groups.join("|"));
+                        }
+                    }
+                    Some(OutFormat::Md) => {
+                        println!("{}", md_model_list(&rows));
+                    }
+                    Some(OutFormat::Yaml) => {
+                        let arr: Vec<Value> = rows
+                            .iter()
+                            .map(|r| {
+                                serde_json::json!({"provider": r.provider, "name": r.name, "groups": r.groups})
+                            })
+                            .collect();
+                        println!("{}", serde_yaml::to_string(&Value::Array(arr))?);
+                    }
+                    None => {
+                        for r in &rows {
+                            if r.groups.is_empty() {
+                                println!("{}:{}", r.provider, r.name);
+                            } else {
+                                println!("{}:{} (group: {})", r.provider, r.name, r.groups.join(", "));
+                            }
+                        }
+                    }
+                }
+                return Ok(());
+            }
             let kw = keyword.ok_or_else(|| {
                 anyhow::anyhow!(
                     "`info list-model` / `info models` needs a provider name: `sys ai info models agnes`"
@@ -5822,6 +5872,7 @@ mod tests {
         chat::Config {
             model: None,
             stream: false,
+            free: false,
             providers: vec![
                 chat::Provider {
                     kind: "openai".into(),
@@ -6057,7 +6108,7 @@ mod tests {
         // `info models` is the provider-models-API query (the function of
         // `--query-model`), not a duplicate of `info model`: without a provider
         // name it fails fast (before any config / network work)...
-        let err = cmd_info(Some("models"), &[], false, None, None, false).unwrap_err();
+        let err = cmd_info(Some("models"), &[], false, None, None, false, None).unwrap_err();
         let text = format!("{err:#}");
         assert!(text.contains("needs a provider name"), "got: {text}");
         // ...while `info model` without args stays the config model listing.
@@ -6359,6 +6410,7 @@ mod tests {
         chat::Config {
             model: Some("agnes:agn-1".to_string()),
             stream: false,
+            free: false,
             providers: vec![
                 chat::Provider {
                     kind: "openai".to_string(),

@@ -2,6 +2,57 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.23（2026-10-23）
+
+### 新增
+- **`sys data` 赋值读取环境变量 `PATH = strenv(NAME)`**（src/dasel.rs `parse_env_value`）：右值为 `strenv(NAME)` 时读取系统环境变量 `NAME` 的值作为**字符串**赋值（名称两侧空白忽略），如 `cat 4k.json | sys data 'wallpaper=strenv(ROOT)' --root`；**未设置报错**（`environment variable <NAME> is not set`，不静默填空串）、非 UTF-8 值报 not valid UTF-8、`strenv()` 空名报 needs an environment variable name、名称含括号报 invalid `strenv(...)`
+- **右值解析链**：`@FILE` → `strenv(NAME)` → 字面量，三者互斥且均不触发 `= null` 删除；`PATH += strenv(NAME)` 字符串拼接生效
+
+### 修复
+- **赋值表达式被误判为 unknown function**：`PATH = strenv(X)` / `PATH = foo(y)` 以 `)` 结尾会被 `parse_function_expr` 抢先当作函数调用报错。修复：`split_expression` 增加括号 / 方括号 / 花括号深度跟踪（括号内的 `=` 视为表达式内部、非赋值运算符，`list.filter(a = b)` 谓词不受影响），且 cmd_data 赋值分支提前到函数表达式分支之前
+
+### 变更
+- 版本 0.6.22 -> 0.6.23；README（中 / 英）data 特性行、main.rs `EXPR` 帮助文本、requirements.md 同步
+- `cargo test --bin sys`：391 -> 394 项全绿（新增 `parse_env_value` 相关 3 项；`expression_splitting` 增加括号深度断言）
+
+---
+
+## v0.6.22（2026-10-23）
+
+### 新增
+- **`sys data` 赋值读取文件 `PATH = @FILE`**（src/dasel.rs `load_file_value`）：右值以未加引号 `@` 开头时读取并解析文件作为赋值，如 `cat 4k.json | sys data 'wallpaper=@file.json' --root`；扩展名定格式（json / jsonl / yaml / toml / csv / md），未知扩展名依次尝试 JSON → YAML → 纯文本字符串
+- `@` 空报 `@` needs a file path；带引号 `"@x"` 与含 `@` 的多字面量不触发；`@` 值永不触发 `= null` 删除分支
+
+### 变更
+- 版本 0.6.21 -> 0.6.22；README（中 / 英）data 特性行、main.rs `EXPR` 帮助文本、requirements.md 同步
+- `cargo test --bin sys`：386 -> 391 项全绿（新增 `load_file_value` 相关 5 项）
+
+---
+
+## v0.6.21（2026-10-23）
+
+### 新增
+- **`sys data` jq 式键投影 `path | {k1,k2}`**（src/dasel.rs `split_pipeline` / `parse_projection` / `project_values`）：`cat 4k.json | sys data 'data[*]|{id,name,pricing}'` 对每个匹配节点投影指定字段——单匹配输出对象、多匹配输出数组、缺键 → null；`{a.b}` / `{a[0]}` / `{x:y}` 报"暂不支持"
+- **filter / search 后接投影**：`[*].filter(...)|{id,name}` 等价 jq 的 `.[] | select(...) | {...}`（函数结果数组展开逐元素投影；`apply_filter_value` / `apply_search_value` 拆出复用）；顶层 `|` 拆分跳过引号 / 括号 / `||`
+
+### 变更
+- 版本 0.6.20 -> 0.6.21；README（中 / 英）data 特性行、main.rs `EXPR` 帮助文本、requirements.md 同步
+- `cargo test --bin sys`：379 -> 386 项全绿（新增 projection 相关 7 项）
+
+---
+
+## v0.6.20（2026-10-22）
+
+### 新增
+- **`sys ai --free[=ROUTER]` 内置免费模型路由**（src/chat.rs `free_config` / `builtin_free_config` / `parse_free_router`，src/ai.rs `cmd_info`）：无配置文件也可使用内置免费模型——`kilo-auto/free` 匿名直连（Kilo Gateway，keyless），`OPENROUTER_API_KEY` 已设置时追加 `openrouter/free`；`--free` 与 `--free=ROUTER`（kilo | openrouter，大小写不敏感，接受 `kilo-auto` / `kilo-auto/free` 等别名）固定路由；权重轮换状态仅存内存、不写回；配置文件缺失时自动启用；`sys ai chat` / `sys ai info providers` / `sys ai info models` 均支持
+- **`sys task list --path/-p` 可执行路径过滤**（src/task.rs `cmd_list` / `proc_matches`）：对进程可执行路径做大小写不敏感子串匹配，与 NAME（子串 / 数字按 PID 精确）及 `-o/--port` 以 AND 组合；无匹配时按过滤维度给出针对性报错
+
+### 变更
+- 版本 0.6.18 -> 0.6.20（0.6.19 无独立发布，合并于此）；README（中 / 英）、main.rs 帮助文本、requirements.md 同步
+- `cargo test --bin sys`：370 -> 379 项全绿（`--free` 路由与 `task list` 路径过滤相关 9 项）
+
+---
+
 ## v0.6.18（2026-10-20）
 
 ### 新增

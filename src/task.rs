@@ -220,10 +220,37 @@ fn port_pids(port: u16) -> Result<Vec<u32>> {
 // Commands
 // ---------------------------------------------------------------------------
 
+/// Whether a process survives the name / PID / path filters. The port
+/// pre-check is handled by the caller; every supplied filter combines with
+/// AND.
+fn proc_matches(p: &Proc, name: Option<&str>, path_q: Option<&str>) -> bool {
+    if let Some(q) = name {
+        if let Ok(pid) = q.parse::<u32>() {
+            if p.pid != pid {
+                return false;
+            }
+        } else if !contains_ci(&p.name, q) {
+            return false;
+        }
+    }
+    if let Some(pq) = path_q {
+        let hit = p
+            .path
+            .as_deref()
+            .map(|s| contains_ci(s, pq))
+            .unwrap_or(false);
+        if !hit {
+            return false;
+        }
+    }
+    true
+}
+
 /// `sys task list [NAME]` — list processes (PID, name, path).
 /// NAME fuzzy-matches the process name; a numeric NAME looks up that PID;
-/// PORT (with -o/--port) restricts the listing to processes using that port.
-pub fn cmd_list(filter: Option<&str>, port: Option<u16>) -> Result<()> {
+/// `--path/-p` fuzzy-matches the executable path; PORT (with -o/--port)
+/// restricts the listing to processes using that port. Filters combine with AND.
+pub fn cmd_list(filter: Option<&str>, port: Option<u16>, path_filter: Option<&str>) -> Result<()> {
     let mut procs = list_processes()?;
     procs.sort_by_key(|p| p.pid);
 
@@ -240,28 +267,26 @@ pub fn cmd_list(filter: Option<&str>, port: Option<u16>) -> Result<()> {
                 Some(ids) => ids.contains(&p.pid),
                 None => true,
             };
-            if !on_port {
-                return false;
-            }
-            match filter {
-                Some(q) => {
-                    if let Ok(pid) = q.parse::<u32>() {
-                        p.pid == pid
-                    } else {
-                        contains_ci(&p.name, q)
-                    }
-                }
-                None => true,
-            }
+            on_port && proc_matches(p, filter, path_filter)
         })
         .collect();
 
     if hits.is_empty() {
-        match (filter, &port_label) {
-            (Some(q), Some(p)) => bail!("no process matches `{q}` on port {p}"),
-            (Some(q), None) => bail!("no process matches `{q}`"),
-            (None, Some(p)) => bail!("no process is listening on port {p}"),
-            (None, None) => bail!("no processes found"),
+        if let Some(q) = filter {
+            match &port_label {
+                Some(p) => bail!("no process matches `{q}` on port {p}"),
+                None => bail!("no process matches `{q}`"),
+            }
+        } else if let Some(pq) = path_filter {
+            match &port_label {
+                Some(p) => bail!("no process matches path `{pq}` on port {p}"),
+                None => bail!("no process matches path `{pq}`"),
+            }
+        } else {
+            match &port_label {
+                Some(p) => bail!("no process is listening on port {p}"),
+                None => bail!("no processes found"),
+            }
         }
     }
 
@@ -359,6 +384,30 @@ mod tests {
         assert!(contains_ci("chrome.exe", "CHROME"));
         assert!(contains_ci("chrome.exe", "ome"));
         assert!(!contains_ci("chrome.exe", "edge"));
+    }
+
+    #[test]
+    fn proc_matches_name_pid_path_combined_and() {
+        let p = Proc {
+            pid: 100,
+            name: "app.exe".into(),
+            path: Some("C:\\Program Files\\app\\app.exe".into()),
+        };
+        // 名称子串、大小写不敏感
+        assert!(proc_matches(&p, Some("APP"), None));
+        assert!(!proc_matches(&p, Some("nope"), None));
+        // 数字按 PID 精确
+        assert!(proc_matches(&p, Some("100"), None));
+        assert!(!proc_matches(&p, Some("101"), None));
+        // 路径子串、大小写不敏感
+        assert!(proc_matches(&p, None, Some("program files")));
+        assert!(!proc_matches(&p, None, Some("d:\\tools")));
+        // NAME 与 PATH 同时给定时取 AND
+        assert!(proc_matches(&p, Some("app"), Some("program")));
+        assert!(!proc_matches(&p, Some("app"), Some("d:\\tools")));
+        // 无路径的进程永不命中路径过滤
+        let np = Proc { pid: 1, name: "x".into(), path: None };
+        assert!(!proc_matches(&np, None, Some("app")));
     }
 
     #[test]

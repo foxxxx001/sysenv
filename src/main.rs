@@ -120,9 +120,12 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
 
 #[derive(Args)]
 struct DataArgs {
-    /// Selector (`a.b[0]`, `list[*]`, `m["中文键"]`) or assignment expression
-    /// (`PATH = VALUE`, `PATH += N`, `PATH = null` deletes); omitted = pure
-    /// format conversion
+    /// Selector (`a.b[0]`, `list[*]`, `m["中文键"]`), assignment expression
+    /// (`PATH = VALUE`, `PATH = @FILE` reads & parses a file as the value,
+    /// `PATH = strenv(NAME)` reads an environment variable as a string,
+    /// `PATH += N`, `PATH = null` deletes), or jq-style key projection
+    /// (`data[*]|{id,name}`, also after filter/search); omitted = pure format
+    /// conversion
     #[arg(value_name = "EXPR")]
     expr: Option<String>,
     /// Read the input from FILE instead of stdin (the format comes from the
@@ -503,6 +506,12 @@ struct AiInfoArgs {
     /// text view (supported by `info provider`, `info model` and `info list-model`)
     #[arg(short = 'o', long = "output-format", value_name = "FORMAT", value_enum, conflicts_with = "json")]
     output: Option<OutFormat>,
+    /// Show the built-in free routers only (kilo-auto/free anonymous;
+    /// openrouter/free when OPENROUTER_API_KEY is set); optional ROUTER pins
+    /// one router: kilo | openrouter. Works with `info providers` and
+    /// `info models`
+    #[arg(long, value_name = "ROUTER", num_args = 0..=1, default_missing_value = "all")]
+    free: Option<String>,
 }
 
 #[derive(Args)]
@@ -565,6 +574,12 @@ struct ChatArgs {
     /// for Anthropic; PROVIDER = a `name` under `clients`, e.g. baidu)
     #[arg(long, value_name = "PROVIDER")]
     query_model: Option<String>,
+    /// Use the built-in free routers only (kilo-auto/free anonymous;
+    /// openrouter/free when OPENROUTER_API_KEY is set), rotating between them;
+    /// optional ROUTER pins one router: kilo | openrouter. Ignores the config
+    /// file. Also used automatically when no config.yaml exists.
+    #[arg(long, value_name = "ROUTER", num_args = 0..=1, default_missing_value = "all")]
+    free: Option<String>,
 }
 
 /// `sys ai server [ADDR]` — serve the configured providers as an
@@ -668,6 +683,10 @@ enum TaskCmd {
     List {
         /// Fuzzy match on the process name; a numeric value matches the PID
         name: Option<String>,
+        /// Fuzzy match on the executable path (case-insensitive substring),
+        /// combined with NAME and -o/--port with AND
+        #[arg(short = 'p', long, value_name = "PATH")]
+        path: Option<String>,
         /// Show only the process using PORT (e.g. -o 8080)
         #[arg(short = 'o', long, value_name = "PORT")]
         port: Option<u16>,
@@ -1031,7 +1050,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             p.output,
             a.refresh,
         ),
-        AiCmd::Info(i) => ai::cmd_info(i.field.as_deref(), &i.param, i.refresh, i.config.as_deref(), i.output, i.json),
+        AiCmd::Info(i) => ai::cmd_info(i.field.as_deref(), &i.param, i.refresh, i.config.as_deref(), i.output, i.json, i.free.as_deref()),
         AiCmd::Balance(b) => ai::cmd_balance(&b.provider, b.config.as_deref()),
         AiCmd::Price(p) => ai::cmd_price(
             &p.providers,
@@ -1054,6 +1073,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             c.parallel,
             c.remove,
             c.query_model.as_deref(),
+            c.free.as_deref(),
         ),
         AiCmd::Server(s) => {
             let bind = server::parse_addr(s.addr.as_deref().unwrap_or(""));
@@ -1127,7 +1147,9 @@ fn run_net(n: NetArgs) -> anyhow::Result<()> {
 
 fn run_task(t: TaskArgs) -> anyhow::Result<()> {
     match t.cmd {
-        Some(TaskCmd::List { name, port }) => task::cmd_list(name.as_deref(), port.or(t.port)),
+        Some(TaskCmd::List { name, path, port }) => {
+            task::cmd_list(name.as_deref(), port.or(t.port), path.as_deref())
+        }
         Some(TaskCmd::Kill { target, force }) => {
             if t.port.is_some() {
                 anyhow::bail!("`-o/--port` applies to the list mode only (e.g. `sys task -o 8080`)");
@@ -1135,7 +1157,7 @@ fn run_task(t: TaskArgs) -> anyhow::Result<()> {
             task::cmd_kill(&target, force)
         }
         // `sys task` with no subcommand defaults to listing every process.
-        None => task::cmd_list(None, t.port),
+        None => task::cmd_list(None, t.port, None),
     }
 }
 

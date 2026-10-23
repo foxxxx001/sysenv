@@ -2,6 +2,57 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.23 (2026-10-23)
+
+### Added
+- **`sys data` assignment from an environment variable `PATH = strenv(NAME)`** (src/dasel.rs `parse_env_value`): a `strenv(NAME)` right side reads the environment variable `NAME` and assigns its value as a **string** (whitespace around the name is trimmed), e.g. `cat 4k.json | sys data 'wallpaper=strenv(ROOT)' --root`; an **unset variable is an explicit error** (`environment variable <NAME> is not set`, never a silent empty string), non-UTF-8 values report not valid UTF-8, an empty `strenv()` reports needs an environment variable name, and a name containing parentheses reports invalid `strenv(...)`
+- **Right-side resolution chain**: `@FILE` → `strenv(NAME)` → literal; the three are mutually exclusive and neither `@` nor `strenv` triggers the `= null` delete; `PATH += strenv(NAME)` concatenates strings
+
+### Fixed
+- **Assignments were misparsed as unknown functions**: `PATH = strenv(X)` / `PATH = foo(y)` end with `)`, so `parse_function_expr` grabbed them first and reported `unknown function`. Fix: `split_expression` now tracks bracket / parenthesis / brace depth (a `=` inside parentheses is part of the expression, not an assignment operator, so the `list.filter(a = b)` predicate is unaffected), and the assignment branch runs before the function-expression branch in cmd_data
+
+### Changed
+- Version 0.6.22 -> 0.6.23; README (zh/en) data feature line, main.rs `EXPR` help text, requirements.md synced
+- `cargo test --bin sys`: 391 -> 394 passing (3 new `parse_env_value` tests; depth-tracking assertions added to `expression_splitting`)
+
+---
+
+## v0.6.22 (2026-10-23)
+
+### Added
+- **`sys data` assignment from a file `PATH = @FILE`** (src/dasel.rs `load_file_value`): an unquoted `@`-prefixed right side reads & parses the file as the value, e.g. `cat 4k.json | sys data 'wallpaper=@file.json' --root`; the extension picks the format (json / jsonl / yaml / toml / csv / md), unknown extensions try JSON → YAML → plain text in order
+- A bare `@` errors with `@` needs a file path; quoted `"@x"` and multi-character `@` values stay literal; a `@` value never triggers the `= null` delete branch
+
+### Changed
+- Version 0.6.21 -> 0.6.22; README (zh/en) data feature line, main.rs `EXPR` help text, requirements.md synced
+- `cargo test --bin sys`: 386 -> 391 passing (5 new `load_file_value` tests)
+
+---
+
+## v0.6.21 (2026-10-23)
+
+### Added
+- **`sys data` jq-style key projection `path | {k1,k2}`** (src/dasel.rs `split_pipeline` / `parse_projection` / `project_values`): `cat 4k.json | sys data 'data[*]|{id,name,pricing}'` projects the named keys from every matched node — a single match outputs an object, multiple matches output an array, missing keys become null; `{a.b}` / `{a[0]}` / `{x:y}` report "not supported yet"
+- **Projection after filter / search**: `[*].filter(...)|{id,name}` equals jq's `.[] | select(...) | {...}` (function results are spread array-wise and projected per element; `apply_filter_value` / `apply_search_value` were factored out for reuse); top-level `|` splitting skips quoted strings, parentheses and `||`
+
+### Changed
+- Version 0.6.20 -> 0.6.21; README (zh/en) data feature line, main.rs `EXPR` help text, requirements.md synced
+- `cargo test --bin sys`: 379 -> 386 passing (7 new projection tests)
+
+---
+
+## v0.6.20 (2026-10-22)
+
+### Added
+- **`sys ai --free[=ROUTER]` built-in free model routing** (src/chat.rs `free_config` / `builtin_free_config` / `parse_free_router`, src/ai.rs `cmd_info`): free models work with no config file — `kilo-auto/free` connects anonymously (Kilo Gateway, keyless) and `openrouter/free` is added when `OPENROUTER_API_KEY` is set; `--free` and `--free=ROUTER` (kilo | openrouter, case-insensitive, accepting `kilo-auto` / `kilo-auto/free` aliases) pin the router; weight rotation state lives in memory only and is never written back; enabled automatically when config.yaml is missing; supported by `sys ai chat`, `sys ai info providers` and `sys ai info models`
+- **`sys task list --path/-p` executable-path filter** (src/task.rs `cmd_list` / `proc_matches`): case-insensitive substring match on the executable path, combined with NAME (substring, or exact PID when numeric) and `-o/--port` with AND; a no-match reports a filter-specific error
+
+### Changed
+- Version 0.6.18 -> 0.6.20 (0.6.19 had no standalone release; merged here); README (zh/en), main.rs help text, requirements.md synced
+- `cargo test --bin sys`: 370 -> 379 passing (9 new tests for `--free` routing and `task list` path filtering)
+
+---
+
 ## v0.6.18 (2026-10-20)
 
 ### Added
