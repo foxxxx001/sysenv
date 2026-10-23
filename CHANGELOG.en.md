@@ -2,6 +2,19 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.27 (2026-10-23)
+
+### Added
+- **`sys data` gains Python-style list slicing** (src/dasel.rs): `list[:2]` / `list[1:3]` / `list[1:]` / `list[-2:]` / `list[::2]` / `list[::-1]` / `list[:]` / root-array `[:3]` — a new `Step::Slice { start, end, step }` variant; `parse_brackets` recognises brackets containing `:` (1-3 parts, empty part = default bound, step 0 errors, more than 3 parts errors, quoted keys like `m["a:b"]` stay keys); new `python_slice_bounds` (mirrors CPython `PySlice_Unpack` + `PySlice_AdjustIndices`: omitted bounds clamp via PY_SSIZE_T_MAX/MIN sentinels, negative indices count from the end, negative step reverses)
+- **Slice evaluation**: `get_values` picks elements by slice length and step, supports composition (`data[1:3][0]`), out-of-range truncation, empty ranges (`[5:2]` → empty), and silently skips non-arrays (like `[*]`)
+- **Read-only constraint**: slices work in plain selectors, `|count()` pipelines (`data[:2]|count()` = 2) and projection left sides (`data[1:3]|{id,name}`); `PATH = ...` writes (set_value / array_mut_at) and filter / search / remove paths (resolve_single) reject them with a clear error
+
+### Changed
+- Version 0.6.26 -> 0.6.27; README (zh/en) data summary row, main.rs `EXPR` help text, module-header selector docs, requirements.md synced
+- `cargo test --bin sys`: 406 -> 409 passing (3 new tests: `slice_parsing` shapes + invalid cases / `slice_get` positive·negative indices·steps·reverse·out-of-range·composition / `slice_rejected_on_write_and_functions` write & function-path rejection + slice count semantics)
+
+---
+
 ## v0.6.26 (2026-10-23)
 
 ### Added

@@ -120,7 +120,8 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
 
 #[derive(Args)]
 struct DataArgs {
-    /// Selector (`a.b[0]`, `list[*]`, `m["中文键"]`), assignment expression
+    /// Selector (`a.b[0]`, `list[*]`, `list[:2]`, `list[1:3]`, `list[::2]`,
+    /// `m["中文键"]`), assignment expression
     /// (`PATH = VALUE`, `PATH = @FILE` reads & parses a file as the value,
     /// `PATH = strenv(NAME)` reads an environment variable as a string,
     /// `PATH += N`, `PATH = null` deletes), jq-style key projection

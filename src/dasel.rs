@@ -18,7 +18,16 @@
 //!   list[0]         array index (negative counts from the end)
 //!   list[-1]        last element
 //!   list[*]         every element
+//!   list[:2]        Python-style slice: first 2 elements (omit = default
+//!   list[1:3]       bound; negative indices count from the end)
+//!   list[1:]        from element 1 to the end
+//!   list[::2]       every 2nd element; [::-1] reverses; step 0 is an error
 //!   m["中文名"]      quoted key (spaces / dots / CJK)
+//!
+//! Slices are read-only: they work in plain selectors, `|count()` pipelines
+//! (`data[:2]|count()` = 2) and projection left sides
+//! (`data[1:3]|{id,name}`), but not in `PATH = ...` writes or
+//! filter / search / remove paths.
 //!
 //! Expressions:
 //!   PATH            print the value at PATH
@@ -365,6 +374,14 @@ enum Step {
     Key(String),
     /// Array index (may be negative; `*` = every element).
     Index(Option<isize>),
+    /// Python-style array slice `[start:end]` / `[:end]` / `[start:]` /
+    /// `[start:end:step]` — omitted bounds default like Python (negative
+    /// indices count from the end), step may be negative for reverse.
+    Slice {
+        start: Option<isize>,
+        end: Option<isize>,
+        step: Option<isize>,
+    },
 }
 
 /// Parse a dasel-style selector into steps: `.a.b[0]`, `m["名字"]`, `list[*]`.
@@ -467,6 +484,38 @@ fn parse_brackets(
         }
         if inner == "*" {
             steps.push(Step::Index(None));
+        } else if inner.contains(':') {
+            // Python-style array slice: `[start:end]`, `[:end]`, `[start:]`,
+            // `[start:end:step]` (empty part = default bound; negative
+            // indices count from the end; step may be negative for reverse).
+            let parts: Vec<&str> = inner.split(':').collect();
+            if parts.len() > 3 {
+                bail!("invalid slice `[{inner}]` in `{sel}` (at most start:end:step)");
+            }
+            let parse_part = |p: &str, what: &str| -> Result<Option<isize>> {
+                let t = p.trim();
+                if t.is_empty() {
+                    return Ok(None);
+                }
+                t.parse()
+                    .map(Some)
+                    .with_context(|| format!("invalid {what} `[{inner}]` in `{sel}`"))
+            };
+            let start = parse_part(parts[0], "slice start")?;
+            let end = if parts.len() >= 2 {
+                parse_part(parts[1], "slice end")?
+            } else {
+                None
+            };
+            let step = if parts.len() >= 3 {
+                parse_part(parts[2], "slice step")?
+            } else {
+                None
+            };
+            if step == Some(0) {
+                bail!("slice step cannot be zero in `{sel}`");
+            }
+            steps.push(Step::Slice { start, end, step });
         } else {
             let n: isize = inner
                 .parse()
@@ -480,6 +529,48 @@ fn parse_brackets(
 // ---------------------------------------------------------------------------
 // Get
 // ---------------------------------------------------------------------------
+
+/// Python-style slice bounds, mirroring CPython `PySlice_Unpack` +
+/// `PySlice_AdjustIndices`: returns `(start, stop, length)` for an array of
+/// `len` elements, the given `step` and the (possibly omitted) `start` /
+/// `end` bounds. Negative indices count from the end; omitted bounds default
+/// to 0 / len for a positive step and len-1 / -1 for a negative step
+/// (implemented with the same PY_SSIZE_T_MAX / MIN sentinels CPython uses).
+fn python_slice_bounds(
+    len: isize,
+    start: Option<isize>,
+    end: Option<isize>,
+    step: isize,
+) -> (isize, isize, isize) {
+    let (mut s, mut e) = if step < 0 {
+        (start.unwrap_or(isize::MAX), end.unwrap_or(isize::MIN))
+    } else {
+        (start.unwrap_or(0), end.unwrap_or(isize::MAX))
+    };
+    if step < 0 {
+        s = if s < 0 { s + len } else { s };
+        s = if s < 0 { -1 } else if s >= len { len - 1 } else { s };
+        e = if e < 0 { e + len } else { e };
+        e = if e < 0 { -1 } else if e >= len { len - 1 } else { e };
+    } else {
+        s = if s < 0 { s + len } else { s };
+        s = if s < 0 { 0 } else if s >= len { len } else { s };
+        e = if e < 0 { e + len } else { e };
+        e = if e < 0 { 0 } else if e >= len { len } else { e };
+    }
+    let n = if step < 0 {
+        if e < s {
+            (s - e - 1) / (-step) + 1
+        } else {
+            0
+        }
+    } else if s < e {
+        (e - s - 1) / step + 1
+    } else {
+        0
+    };
+    (s, e, n)
+}
 
 /// Read the value at `steps`; returns every match (wildcards may expand).
 fn get_values<'a>(root: &'a Value, steps: &[Step]) -> Vec<&'a Value> {
@@ -505,6 +596,18 @@ fn get_values<'a>(root: &'a Value, steps: &[Step]) -> Vec<&'a Value> {
                         let idx = if *n < 0 { a.len() as isize + *n } else { *n };
                         if idx >= 0 && (idx as usize) < a.len() {
                             next.push(&a[idx as usize]);
+                        }
+                    }
+                }
+                Step::Slice { start, end, step } => {
+                    if let Value::Array(a) = v {
+                        let st = step.unwrap_or(1);
+                        let (_s, _e, n) = python_slice_bounds(a.len() as isize, *start, *end, st);
+                        for k in 0..n.max(0) as usize {
+                            let idx = _s + (k as isize) * st;
+                            if idx >= 0 && (idx as usize) < a.len() {
+                                next.push(&a[idx as usize]);
+                            }
                         }
                     }
                 }
@@ -778,6 +881,7 @@ fn set_value(root: &mut Value, steps: &[Step], new: Value, delete: bool) -> Resu
                 cur = &mut a[idx];
             }
             Step::Index(None) => bail!("`[*]` is only supported when reading"),
+            Step::Slice { .. } => bail!("array slicing `[a:b]` is only supported when reading"),
         }
     }
     Ok(())
@@ -1544,6 +1648,9 @@ fn resolve_single<'v>(root: &'v Value, path: &str, fn_name: &str) -> Result<&'v 
             if root.is_array() && steps.len() == 1 && matches!(steps[0], Step::Index(None)) {
                 return Ok(root);
             }
+            if steps.iter().any(|s| matches!(s, Step::Slice { .. })) {
+                bail!("array slicing `[a:b]` is only supported when reading (selector / count / projection), not in a `{fn_name}` path");
+            }
             bail!(
                 "`{fn_name}` path `{path}` matched {} values (expected exactly one)",
                 got.len()
@@ -1745,6 +1852,7 @@ fn array_mut_at<'v>(root: &'v mut Value, steps: &[Step]) -> Result<&'v mut Value
                 cur = &mut a[idx];
             }
             Step::Index(None) => bail!("`[*]` is only supported when reading"),
+            Step::Slice { .. } => bail!("array slicing `[a:b]` is only supported when reading"),
         }
     }
     unreachable!()
@@ -2310,6 +2418,115 @@ mod tests {
         // 根数组索引自 v0.5.12 起合法（[0] / [-1] / [*]）。
         assert_eq!(parse_selector("[0]").unwrap(), vec![Step::Index(Some(0))]);
         assert!(parse_selector("a[x]").is_err());
+    }
+
+    #[test]
+    fn slice_parsing() {
+        // Python-style slices: [start:end], [:end], [start:], [start:end:step]
+        assert_eq!(
+            parse_selector("list[:2]").unwrap(),
+            vec![Step::Key("list".into()), Step::Slice { start: None, end: Some(2), step: None }]
+        );
+        assert_eq!(
+            parse_selector("list[1:3]").unwrap(),
+            vec![Step::Key("list".into()), Step::Slice { start: Some(1), end: Some(3), step: None }]
+        );
+        assert_eq!(
+            parse_selector("list[1:]").unwrap(),
+            vec![Step::Key("list".into()), Step::Slice { start: Some(1), end: None, step: None }]
+        );
+        assert_eq!(
+            parse_selector("list[::2]").unwrap(),
+            vec![Step::Key("list".into()), Step::Slice { start: None, end: None, step: Some(2) }]
+        );
+        assert_eq!(
+            parse_selector("list[::-1]").unwrap(),
+            vec![Step::Key("list".into()), Step::Slice { start: None, end: None, step: Some(-1) }]
+        );
+        assert_eq!(
+            parse_selector("list[-2:]").unwrap(),
+            vec![Step::Key("list".into()), Step::Slice { start: Some(-2), end: None, step: None }]
+        );
+        // 根数组切片
+        assert_eq!(
+            parse_selector("[:3]").unwrap(),
+            vec![Step::Slice { start: None, end: Some(3), step: None }]
+        );
+        // 冒号键仍走引号键（m["a:b"] 不是切片）
+        assert_eq!(
+            parse_selector(r#"m["a:b"]"#).unwrap(),
+            vec![Step::Key("m".into()), Step::Key("a:b".into())]
+        );
+        // 非法切片
+        assert!(parse_selector("list[::0]").is_err()); // step 0
+        assert!(parse_selector("list[a:2]").is_err()); // 非数字
+        assert!(parse_selector("list[1:2:3:4]").is_err()); // 超 3 段
+    }
+
+    #[test]
+    fn slice_get() {
+        let v = json!({"list": [0, 1, 2, 3, 4, 5, 6, 7, 8]});
+        let nums = |sel: &str| -> Vec<i64> {
+            get_values(&v, &parse_selector(sel).unwrap())
+                .into_iter()
+                .map(|x| x.as_i64().unwrap())
+                .collect()
+        };
+        assert_eq!(nums("list[:2]"), vec![0, 1]);
+        assert_eq!(nums("list[1:3]"), vec![1, 2]);
+        assert_eq!(nums("list[1:]"), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(nums("list[-2:]"), vec![7, 8]);
+        assert_eq!(nums("list[:-1]"), vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(nums("list[-3:-1]"), vec![6, 7]);
+        assert_eq!(nums("list[::2]"), vec![0, 2, 4, 6, 8]);
+        assert_eq!(nums("list[1::2]"), vec![1, 3, 5, 7]);
+        assert_eq!(nums("list[::-1]"), vec![8, 7, 6, 5, 4, 3, 2, 1, 0]);
+        assert_eq!(nums("list[7:2:-1]"), vec![7, 6, 5, 4, 3]);
+        assert_eq!(nums("list[:]"), vec![0, 1, 2, 3, 4, 5, 6, 7, 8]);
+        // 越界截断 / 空区间
+        assert_eq!(nums("list[0:99]"), vec![0, 1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(nums("list[5:2]"), Vec::<i64>::new());
+        assert_eq!(nums("list[5:2:-1]"), vec![5, 4, 3]);
+        // 组合：切片后再索引
+        let nested = json!({"data": [[1, 2, 3], [4, 5, 6], [7, 8, 9]]});
+        let got = get_values(&nested, &parse_selector("data[1:3][0]").unwrap());
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].as_i64().unwrap(), 4);
+        assert_eq!(got[1].as_i64().unwrap(), 7);
+        // 非数组节点上切片不匹配（静默跳过，与 [*] 一致）
+        let obj = json!({"a": {"b": 1}});
+        assert!(get_values(&obj, &parse_selector("a[0:1]").unwrap()).is_empty());
+        // 空数组切片 → 空
+        let empty = json!({"list": []});
+        assert!(get_values(&empty, &parse_selector("list[:2]").unwrap()).is_empty());
+    }
+
+    #[test]
+    fn slice_rejected_on_write_and_functions() {
+        let mut v = json!({"list": [1, 2, 3]});
+        // 写入路径拒绝切片（同 [*] 只读）
+        let err = set_value(
+            &mut v,
+            &parse_selector("list[:2]").unwrap(),
+            json!([9]),
+            false,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("only supported when reading"), "{err}");
+        // filter / search path 拒绝切片
+        let fc = FunctionCall {
+            path: Some("list[:2]".to_string()),
+            name: "filter".to_string(),
+            args: "true".to_string(),
+        };
+        let err = apply_filter_value(&v, &fc).unwrap_err();
+        assert!(err.to_string().contains("only supported when reading"), "{err}");
+        // 切片 + count 管道语义：data[:2]|count() = 2
+        let doc = json!({"data": [1, 2, 3]});
+        let matched = get_values(&doc, &parse_selector("data[:2]").unwrap());
+        assert_eq!(count_matches(&matched), json!(2));
+        let matched = get_values(&doc, &parse_selector("data[::2]").unwrap());
+        assert_eq!(count_matches(&matched), json!(2));
     }
 
     #[test]

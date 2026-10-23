@@ -2,6 +2,19 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.27（2026-10-23）
+
+### 新增
+- **`sys data` 支持 Python 式列表切片**（src/dasel.rs）：`list[:2]`、`list[1:3]`、`list[1:]`、`list[-2:]`、`list[::2]`、`list[::-1]`、`list[:]`、根数组 `[:3]`——`Step` 新增 `Slice { start, end, step }` 变体，`parse_brackets` 识别含 `:` 的括号（1-3 段、空段 = 默认边界、step 0 报错、超 3 段报错、`m["a:b"]` 引号键不受影响）；新增 `python_slice_bounds`（镜像 CPython `PySlice_Unpack` + `PySlice_AdjustIndices`：省略边界用 PY_SSIZE_T_MAX/MIN 哨兵 clamp，负索引从末尾数，负步长反向）
+- **切片求值**：`get_values` 按切片长度逐索引取元素，支持组合（`data[1:3][0]`）、越界截断、空区间（`[5:2]` → 空）、非数组静默跳过（同 `[*]`）
+- **只读约束**：切片在普通查询 / `|count()` 管道（`data[:2]|count()` = 2）/ 投影左侧（`data[1:3]|{id,name}`）可用；`PATH=...` 写入（set_value / array_mut_at）与 filter / search / remove 路径（resolve_single）拒绝并给出明确报错
+
+### 变更
+- 版本 0.6.26 -> 0.6.27；README（中 / 英）data 主表行、main.rs `EXPR` 帮助文本、模块头 selector 文档、requirements.md 同步
+- `cargo test --bin sys`：406 -> 409 项全绿（新增 3 项：`slice_parsing` 各形态与非法用例 / `slice_get` 正负索引·步长·反转·越界·组合 / `slice_rejected_on_write_and_functions` 写入与函数路径拒绝 + 切片 count 语义）
+
+---
+
 ## v0.6.26（2026-10-23）
 
 ### 新增
