@@ -2,6 +2,18 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.24 (2026-10-23)
+
+### Added
+- **`sys http --curl`: build & print the equivalent curl command without sending** (src/httpie.rs `build_curl_command` / `shell_quote`, src/main.rs `HttpArgs.curl`): every piece of the actual request is converted — method / URL (with query) / headers (default UA, Accept, Content-Type plus item headers; Host and Content-Length are left to curl) / body (JSON, `-f` urlencoded form, multipart `-F` text fields and `-F name=@path;type=mime` uploads, `--raw` and stdin raw bodies inlined, `--file FILE` stays `--data-binary @FILE`) / auth (basic → `-u`, bearer → `Authorization` header; a colon-less basic credential errors exactly like a real request) / `--proxy` (→ `-x`) / `--follow` (→ `-L` + `--max-redirs N`) / `--timeout` (→ `--max-time`) / `--verify no` (→ `-k`) and CA bundle (→ `--cacert`) / `--check-status` (→ `-f`) / `-o FILE` and `-d` (→ `-o FILE` / `-OJ`); values are POSIX single-quoted (run directly in bash / zsh / WSL / git-bash / PowerShell); `--curl` implies `--offline`
+- **Extracted `scalar_field_value`**: multipart / form mode and the curl conversion share the same scalar-conversion logic (two previously duplicated inline blocks consolidated)
+
+### Changed
+- Version 0.6.23 -> 0.6.24; README (zh/en) http feature line / examples / flag quick-reference, httpie.rs `print_help`, requirements.md synced
+- `cargo test --bin sys`: 397 -> 403 passing (8 new `build_curl_command` / `shell_quote` tests: GET core parts, JSON body + query, form body, multipart fields & upload, basic/bearer auth, TLS/redirect/timeout/status flags, `--file` keeps its path, output & download, quoting variants)
+
+---
+
 ## v0.6.23 (2026-10-23)
 
 ### Added

@@ -896,6 +896,9 @@ struct HttpArgs {
     /// Build and print the request without sending it
     #[arg(long)]
     offline: bool,
+    /// Build and print the equivalent curl command instead of sending the request (implies --offline)
+    #[arg(long)]
+    curl: bool,
     /// SSL verification: yes (default), no, or a CA bundle file path
     #[arg(long, value_name = "MODE")]
     verify: Option<String>,
@@ -1189,6 +1192,7 @@ fn run_http(h: HttpArgs) -> anyhow::Result<i32> {
         timeout: h.timeout,
         check_status: h.check_status,
         offline: h.offline,
+        curl: h.curl,
         verify: h.verify,
         ignore_stdin: h.ignore_stdin,
         default_scheme: h.default_scheme.unwrap_or_else(|| "http".to_string()),

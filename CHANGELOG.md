@@ -2,6 +2,18 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.24（2026-10-23）
+
+### 新增
+- **`sys http --curl`：构建并打印等价的 curl 命令，不发送请求**（src/httpie.rs `build_curl_command` / `shell_quote`，src/main.rs `HttpArgs.curl`）：按实际请求逐项转换——方法 / URL（含查询参数）/ 请求头（默认 UA、Accept、Content-Type 与条目头，Host 与 Content-Length 交由 curl 计算）/ 请求体（JSON、`-f` 表单 urlencoded、multipart `-F` 文本字段与 `-F name=@path;type=mime` 上传、`--raw` 与 stdin 原始体内联，`--file FILE` 保留为 `--data-binary @FILE`）/ 认证（basic → `-u`、bearer → `Authorization` 头，basic 缺冒号报错与正常请求一致）/ `--proxy`（→ `-x`）/ `--follow`（→ `-L` + `--max-redirs N`）/ `--timeout`（→ `--max-time`）/ `--verify no`（→ `-k`）与 CA 文件（→ `--cacert`）/ `--check-status`（→ `-f`）/ `-o FILE` 与 `-d`（→ `-o FILE` / `-OJ`）；命令按 POSIX 单引号引用（bash / zsh / WSL / git-bash / PowerShell 可直接运行）；`--curl` 隐含 `--offline`
+- **抽取 `scalar_field_value`**：multipart / 表单模式与 curl 转换共用同一标量转换逻辑（原两处重复内联逻辑收敛）
+
+### 变更
+- 版本 0.6.23 -> 0.6.24；README（中 / 英）http 特性行 / 示例 / 参数速查、httpie.rs `print_help`、requirements.md 同步
+- `cargo test --bin sys`：397 -> 403 项全绿（新增 `build_curl_command` / `shell_quote` 相关 8 项：GET 核心段、JSON 体 + 查询、表单体、multipart 字段与上传、basic/bearer 认证、TLS/重定向/超时/状态码旗标、`--file` 保留路径、输出与下载、引用变体）
+
+---
+
 ## v0.6.23（2026-10-23）
 
 ### 新增

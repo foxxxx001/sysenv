@@ -606,13 +606,15 @@ sys task kill -f 1234          # 强制终止（Linux 发送 SIGKILL）
 
 * 认证：`-a user:pass` Basic、`-A bearer -a TOKEN` Bearer
 
-* 网络行为：`-F/--follow` 跟随重定向、`--max-redirects`、`--timeout`、`--proxy`、`--verify no` 跳过证书校验、`--offline` 只构建并打印请求不发送、`-I/--ignore-stdin`
+* 网络行为：`-F/--follow` 跟随重定向、`--max-redirects`、`--timeout`、`--proxy`、`--verify no` 跳过证书校验、`--offline` 只构建并打印请求不发送、`--curl` 构建并打印等价的 curl 命令（不发送，隐含 `--offline`）、`-I/--ignore-stdin`
 
 * `--check-status`：3xx → 退出码 3，4xx → 4，5xx → 5（脚本友好）
 
 * `--help`：打印接口参数说明与示例（http 子命令的 `-h` 是 httpie 语义的“只打印响应头”）
 
 * `--debug`：把**实际 HTTP 请求**（方法 / URL / 请求头 / 请求体，含 Content-Length）与**响应**（状态行 / 响应头 / 响应体）打印到 stderr，stdout 保持正常输出，便于排查真实发包内容
+
+* `--curl`：构建并打印与请求**完全等价**的 curl 命令（方法 / URL / 查询参数 / 请求头 / 请求体 / 认证 / 代理 / 重定向 / 超时 / 证书 / 输出），不发送请求；JSON、表单、multipart（`-F` 文本字段与文件上传）均按实际发送内容转换；`--file FILE` 保留为 `--data-binary @FILE`，其余原始体内联；命令按 POSIX shell 单引号引用（bash / zsh / WSL / git-bash / PowerShell 均可直接运行）
 
 * stdin 管道直接作为原始请求体；`--raw` 显式指定原始体
 
@@ -641,6 +643,7 @@ sys http -A bearer -a TOKEN pie.dev/anything   # Bearer Token
 sys http -F --max-redirects 5 pie.dev/     # 跟随重定向
 sys http --check-status pie.dev/404        # 退出码 = 4
 sys http --offline pie.dev/post a=1        # 只构建并打印请求，不发送
+sys http --curl pie.dev/post name=John age:=29   # 打印等价的 curl 命令（不发送）
 sys http --help                            # 打印接口参数说明与示例
 sys http --debug pie.dev/post a=1 b:=2     # 打印实际请求与响应（含 header）
 sys http POST pie.dev/post --raw '{"a":1}' # 显式原始体
@@ -676,7 +679,7 @@ sys http --verify no https://self-signed.example  # 跳过证书校验
 
 `-a/--auth` `-A/--auth-type` `--proxy` `-F/--follow` `--max-redirects` `--timeout`
 
-`--check-status` `--offline` `--verify` `-I/--ignore-stdin` `--default-scheme`
+`--check-status` `--offline` `--curl` `--verify` `-I/--ignore-stdin` `--default-scheme`
 
 `--debug` `--help`
 

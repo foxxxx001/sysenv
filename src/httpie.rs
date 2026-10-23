@@ -43,6 +43,7 @@ pub struct HttpConfig {
     pub timeout: Option<f64>,
     pub check_status: bool,
     pub offline: bool,
+    pub curl: bool,
     pub verify: Option<String>,
     pub ignore_stdin: bool,
     pub default_scheme: String,
@@ -511,6 +512,23 @@ enum BodyKind {
     Multipart(multipart::Form),
 }
 
+/// Convert a raw JSON field value to the scalar string used by --form and
+/// multipart mode (strings pass through, numbers / booleans are rendered, any
+/// other JSON value is rejected).
+fn scalar_field_value(name: &str, value: &str, raw: bool) -> Result<String> {
+    if raw {
+        match serde_json::from_str::<Value>(value) {
+            Ok(v) if v.is_string() => Ok(v.as_str().unwrap().to_string()),
+            Ok(v) if v.is_number() || v.is_boolean() => Ok(v.to_string()),
+            _ => bail!(
+                "raw JSON field `{name}` is not a scalar; not allowed in multipart/form mode"
+            ),
+        }
+    } else {
+        Ok(value.to_string())
+    }
+}
+
 /// Build the request body; returns the body and an optional Content-Type
 /// to apply when the user did not set one.
 fn build_body(spec: &RequestSpec, cfg: &HttpConfig) -> Result<(BodyKind, Option<String>)> {
@@ -550,17 +568,7 @@ fn build_body(spec: &RequestSpec, cfg: &HttpConfig) -> Result<(BodyKind, Option<
     if has_uploads || cfg.multipart {
         let mut form = multipart::Form::new();
         for (name, value, raw) in &spec.data {
-            let s = if *raw {
-                match serde_json::from_str::<Value>(value) {
-                    Ok(v) if v.is_string() => v.as_str().unwrap().to_string(),
-                    Ok(v) if v.is_number() || v.is_boolean() => v.to_string(),
-                    _ => bail!(
-                        "raw JSON field `{name}` is not a scalar; not allowed in multipart/form mode"
-                    ),
-                }
-            } else {
-                value.clone()
-            };
+            let s = scalar_field_value(name, value, *raw)?;
             form = form.text(name.clone(), s);
         }
         for (name, path, mime) in &spec.uploads {
@@ -579,15 +587,7 @@ fn build_body(spec: &RequestSpec, cfg: &HttpConfig) -> Result<(BodyKind, Option<
     if cfg.form {
         let mut pairs: Vec<(String, String)> = Vec::new();
         for (name, value, raw) in &spec.data {
-            let v = if *raw {
-                match serde_json::from_str::<Value>(value) {
-                    Ok(v) if v.is_string() => v.as_str().unwrap().to_string(),
-                    Ok(v) if v.is_number() || v.is_boolean() => v.to_string(),
-                    _ => bail!("raw JSON field `{name}` is not a scalar; not allowed with --form"),
-                }
-            } else {
-                value.clone()
-            };
+            let v = scalar_field_value(name, value, *raw)?;
             pairs.push((name.clone(), v));
         }
         if pairs.is_empty() {
@@ -788,6 +788,7 @@ Usage: sys http [flags] [METHOD] URL [ITEM...]
       --timeout SECONDS   连接超时（0 = 不限）
       --check-status      3xx/4xx/5xx 退出码 3/4/5
       --offline           只构建并打印请求，不发送
+      --curl              构建并打印等价的 curl 命令（不发送请求；隐含 --offline）
       --verify MODE       yes|no|CA文件路径 控制证书校验
   -I, --ignore-stdin      不读取 stdin
       --default-scheme S  缺省协议（默认 http）
@@ -872,6 +873,132 @@ fn debug_dump_response(status: reqwest::StatusCode, headers: &HeaderMap, body: &
         let _ = writeln!(w, "{pretty}");
         let _ = writeln!(w);
     }
+}
+
+/// Quote a shell token for the printed curl command. Safe characters stay
+/// bare; anything else is wrapped in single quotes with embedded single quotes
+/// escaped POSIX-style (`'\''`). The result is copy-paste ready for bash /
+/// zsh / WSL / git-bash; PowerShell accepts single-quoted tokens too.
+fn shell_quote(s: &str) -> String {
+    if s.is_empty() {
+        return "''".to_string();
+    }
+    if s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_./:=+@%,".contains(c))
+    {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Render the request as an equivalent curl command (printed by `--curl`).
+/// Mirrors the actual request built in `run()`: defaults + item headers, the
+/// body chosen by `build_body`, auth, proxy, redirect, timeout and TLS flags.
+fn build_curl_command(
+    spec: &RequestSpec,
+    url: &reqwest::Url,
+    headers: &HeaderMap,
+    body_kind: &BodyKind,
+    cfg: &HttpConfig,
+) -> Result<String> {
+    let mut parts: Vec<String> = vec!["curl".to_string()];
+    parts.push(format!("-X {}", shell_quote(&spec.method)));
+    parts.push(shell_quote(url.as_str()));
+
+    for (name, value) in headers.iter() {
+        let lower = name.as_str().to_ascii_lowercase();
+        // Host and Content-Length are computed by curl itself.
+        if lower == "host" || lower == "content-length" {
+            continue;
+        }
+        let v = value.to_str().unwrap_or("");
+        parts.push(format!("-H {}", shell_quote(&format!("{name}: {v}"))));
+    }
+
+    match body_kind {
+        BodyKind::None => {}
+        BodyKind::Bytes(b) => {
+            if b.is_empty() {
+                return Ok(parts.join(" "));
+            }
+            // `--file FILE` keeps the original path (@FILE) so big bodies are
+            // not inlined; --raw / stdin / @FILE bodies are inlined verbatim.
+            if let Some(fp) = &cfg.file {
+                parts.push(format!("--data-binary @{}", shell_quote(&fp.to_string_lossy())));
+            } else {
+                parts.push(format!(
+                    "--data-binary {}",
+                    shell_quote(&String::from_utf8_lossy(b))
+                ));
+            }
+        }
+        BodyKind::Multipart(_) => {
+            for (name, value, raw) in &spec.data {
+                let v = scalar_field_value(name, value, *raw)?;
+                parts.push(format!("-F {}", shell_quote(&format!("{name}={v}"))));
+            }
+            for (name, path, mime) in &spec.uploads {
+                let f = match mime {
+                    Some(m) => format!("{name}=@{};type={m}", path.display()),
+                    None => format!("{name}=@{}", path.display()),
+                };
+                parts.push(format!("-F {}", shell_quote(&f)));
+            }
+        }
+    }
+
+    if let Some(auth) = &cfg.auth {
+        match cfg.auth_type.as_deref().unwrap_or("basic") {
+            "basic" => {
+                if !auth.contains(':') {
+                    bail!(
+                        "basic auth expects USER:PASS (got `{auth}`); for token auth use -A bearer"
+                    );
+                }
+                parts.push(format!("-u {}", shell_quote(auth)));
+            }
+            "bearer" => {
+                parts.push(format!("-H {}", shell_quote(&format!("Authorization: Bearer {auth}"))));
+            }
+            "digest" => bail!("auth type `digest` is not supported by sys"),
+            other => bail!("unsupported auth type `{other}` (use basic or bearer)"),
+        }
+    }
+
+    for p in &cfg.proxies {
+        if let Some((_, url_str)) = p.split_once(':') {
+            parts.push(format!("-x {}", shell_quote(url_str)));
+        }
+    }
+
+    if cfg.follow {
+        parts.push("-L".to_string());
+        if let Some(n) = cfg.max_redirects {
+            parts.push(format!("--max-redirs {n}"));
+        }
+    }
+    if let Some(t) = cfg.timeout {
+        if t > 0.0 {
+            parts.push(format!("--max-time {t}"));
+        }
+    }
+    match cfg.verify.as_deref() {
+        Some("no") | Some("false") => parts.push("-k".to_string()),
+        Some(path) => parts.push(format!("--cacert {}", shell_quote(path))),
+        _ => {}
+    }
+    if cfg.check_status {
+        parts.push("-f".to_string());
+    }
+
+    if let Some(o) = &cfg.output {
+        parts.push(format!("-o {}", shell_quote(&o.to_string_lossy())));
+    } else if cfg.download {
+        parts.push("-OJ".to_string());
+    }
+
+    Ok(parts.join(" "))
 }
 
 // ---------------------------------------------------------------------------
@@ -974,6 +1101,13 @@ pub fn run(cfg: &HttpConfig) -> Result<i32> {
     } else if json_mode && !header_present(&headers, "Content-Type") {
         // Default every request to JSON unless the caller overrides it.
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    }
+
+    // --curl: print the equivalent curl command and do not send the request.
+    if cfg.curl {
+        let cmd = build_curl_command(&spec, &url, &headers, &body_kind, cfg)?;
+        println!("{cmd}");
+        return Ok(0);
     }
 
     // --- Client.
@@ -1276,6 +1410,7 @@ mod tests {
             timeout: None,
             check_status: false,
             offline: false,
+            curl: false,
             verify: None,
             ignore_stdin: false,
             default_scheme: "https".to_string(),
@@ -1508,5 +1643,220 @@ mod tests {
         assert!(!looks_like_url("X-API-Token:123"));
         assert!(!looks_like_url("name=John"));
         assert!(!looks_like_url("example.org")); // no scheme, no port -> not URL by heuristic
+    }
+
+    // ------------------------------------------------------------------
+    // --curl: 等价 curl 命令生成
+    // ------------------------------------------------------------------
+
+    /// 按 run() 相同顺序构建请求头（默认 UA/Accept + 条目头 + Content-Type）。
+    fn curl_headers_for(cfg: &HttpConfig, spec: &RequestSpec, body_ct: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if !header_present(&headers, "User-Agent") {
+            headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STR));
+        }
+        let json_mode = cfg.json || (!cfg.form && !cfg.multipart);
+        let default_accept = if json_mode {
+            "application/json, */*;q=0.5"
+        } else {
+            "*/*"
+        };
+        if !header_present(&headers, "Accept") {
+            headers.insert(ACCEPT, HeaderValue::from_static(default_accept));
+        }
+        for (name, value) in &spec.headers {
+            add_header(&mut headers, name, value).unwrap();
+        }
+        if let Some(ct) = body_ct {
+            if !header_present(&headers, "Content-Type") {
+                headers.insert(CONTENT_TYPE, HeaderValue::from_str(ct).unwrap());
+            }
+        } else if json_mode && !header_present(&headers, "Content-Type") {
+            headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        }
+        headers
+    }
+
+    #[test]
+    fn curl_get_command_core_parts() {
+        let cfg = hcfg();
+        let spec = RequestSpec {
+            method: "GET".to_string(),
+            url: "https://api.example.com/v1/x".to_string(),
+            ..Default::default()
+        };
+        let url: reqwest::Url = spec.url.parse().unwrap();
+        let headers = curl_headers_for(&cfg, &spec, None);
+        let cmd = build_curl_command(&spec, &url, &headers, &BodyKind::None, &cfg).unwrap();
+        assert!(cmd.starts_with("curl "), "cmd: {cmd}");
+        assert!(cmd.contains("-X GET"), "cmd: {cmd}");
+        assert!(cmd.contains(" https://api.example.com/v1/x"), "cmd: {cmd}");
+        // HeaderMap 将头名规范为小写；curl 接受任意大小写头名
+        assert!(cmd.contains("-H 'user-agent: HTTPie/3.2.4 (sys/0.1.0)'"), "cmd: {cmd}");
+        assert!(cmd.contains("-H 'accept: application/json, */*;q=0.5'"), "cmd: {cmd}");
+        // 默认 JSON 模式下无 body 也带 Content-Type
+        assert!(cmd.contains("-H 'content-type: application/json'"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn curl_json_body_and_query() {
+        let mut cfg = hcfg();
+        cfg.json = true;
+        let mut spec = RequestSpec::default();
+        spec.method = "POST".to_string();
+        spec.url = "https://api.example.com/post".to_string();
+        spec.data = vec![("name".to_string(), "J".to_string(), false)];
+        spec.queries = vec![("page".to_string(), "2".to_string())];
+        let (kind, ct) = build_body(&spec, &cfg).unwrap();
+        let mut url: reqwest::Url = spec.url.parse().unwrap();
+        {
+            let mut pairs = url.query_pairs_mut();
+            for (k, v) in &spec.queries {
+                pairs.append_pair(k, v);
+            }
+        }
+        let headers = curl_headers_for(&cfg, &spec, ct.as_deref());
+        let cmd = build_curl_command(&spec, &url, &headers, &kind, &cfg).unwrap();
+        assert!(cmd.contains("'https://api.example.com/post?page=2'"), "cmd: {cmd}");
+        assert!(cmd.contains("-H 'content-type: application/json'"), "cmd: {cmd}");
+        assert!(cmd.contains("--data-binary '{\"name\":\"J\"}'"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn curl_form_body() {
+        let mut cfg = hcfg();
+        cfg.form = true;
+        let mut spec = RequestSpec::default();
+        spec.method = "POST".to_string();
+        spec.url = "https://x.example/form".to_string();
+        spec.data = vec![("a".to_string(), "1 2".to_string(), false)];
+        let (kind, ct) = build_body(&spec, &cfg).unwrap();
+        let url: reqwest::Url = spec.url.parse().unwrap();
+        let headers = curl_headers_for(&cfg, &spec, ct.as_deref());
+        let cmd = build_curl_command(&spec, &url, &headers, &kind, &cfg).unwrap();
+        assert!(
+            cmd.contains("-H 'content-type: application/x-www-form-urlencoded; charset=utf-8'"),
+            "cmd: {cmd}"
+        );
+        assert!(cmd.contains("--data-binary a=1+2"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn curl_multipart_fields_and_upload() {
+        let mut cfg = hcfg();
+        cfg.multipart = true;
+        let tmp = std::env::temp_dir().join("sys-curl-upload.txt");
+        std::fs::write(&tmp, b"data").unwrap();
+        let mut spec = RequestSpec::default();
+        spec.method = "POST".to_string();
+        spec.url = "https://x.example/up".to_string();
+        spec.data = vec![("note".to_string(), "hi".to_string(), false)];
+        spec.uploads = vec![("file".to_string(), tmp.clone(), Some("text/plain".to_string()))];
+        let (kind, ct) = build_body(&spec, &cfg).unwrap();
+        let url: reqwest::Url = spec.url.parse().unwrap();
+        let headers = curl_headers_for(&cfg, &spec, ct.as_deref());
+        let cmd = build_curl_command(&spec, &url, &headers, &kind, &cfg).unwrap();
+        assert!(cmd.contains("-F note=hi"), "cmd: {cmd}");
+        let f = format!("-F 'file=@{};type=text/plain'", tmp.display());
+        assert!(cmd.contains(&f), "cmd: {cmd}");
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn curl_auth_basic_and_bearer() {
+        let spec = RequestSpec {
+            method: "GET".to_string(),
+            url: "https://x.example".to_string(),
+            ..Default::default()
+        };
+        let url: reqwest::Url = spec.url.parse().unwrap();
+        // bearer -> Authorization 头
+        let mut cfg = hcfg();
+        cfg.auth = Some("tok123".to_string());
+        cfg.auth_type = Some("bearer".to_string());
+        let headers = curl_headers_for(&cfg, &spec, None);
+        let cmd = build_curl_command(&spec, &url, &headers, &BodyKind::None, &cfg).unwrap();
+        assert!(cmd.contains("-H 'Authorization: Bearer tok123'"), "cmd: {cmd}");
+        // basic -> -u
+        let mut cfg2 = hcfg();
+        cfg2.auth = Some("u:p".to_string());
+        let cmd2 = build_curl_command(&spec, &url, &headers, &BodyKind::None, &cfg2).unwrap();
+        assert!(cmd2.contains("-u u:p"), "cmd: {cmd2}");
+        // basic 缺冒号 -> 报错（与 run() 一致）
+        let mut cfg3 = hcfg();
+        cfg3.auth = Some("nocolon".to_string());
+        assert!(build_curl_command(&spec, &url, &headers, &BodyKind::None, &cfg3).is_err());
+    }
+
+    #[test]
+    fn curl_tls_redirect_timeout_flags() {
+        let spec = RequestSpec {
+            method: "GET".to_string(),
+            url: "https://x.example".to_string(),
+            ..Default::default()
+        };
+        let url: reqwest::Url = spec.url.parse().unwrap();
+        let mut cfg = hcfg();
+        cfg.verify = Some("no".to_string());
+        cfg.follow = true;
+        cfg.max_redirects = Some(5);
+        cfg.timeout = Some(3.5);
+        cfg.check_status = true;
+        let headers = curl_headers_for(&cfg, &spec, None);
+        let cmd = build_curl_command(&spec, &url, &headers, &BodyKind::None, &cfg).unwrap();
+        assert!(cmd.contains(" -k"), "cmd: {cmd}");
+        assert!(cmd.contains(" -L"), "cmd: {cmd}");
+        assert!(cmd.contains("--max-redirs 5"), "cmd: {cmd}");
+        assert!(cmd.contains("--max-time 3.5"), "cmd: {cmd}");
+        assert!(cmd.contains(" -f"), "cmd: {cmd}");
+        // CA bundle
+        let mut cfg2 = hcfg();
+        cfg2.verify = Some("C:\\ca.pem".to_string());
+        let cmd2 = build_curl_command(&spec, &url, &headers, &BodyKind::None, &cfg2).unwrap();
+        assert!(cmd2.contains("--cacert 'C:\\ca.pem'"), "cmd: {cmd2}");
+    }
+
+    #[test]
+    fn curl_file_body_keeps_path() {
+        let mut cfg = hcfg();
+        cfg.file = Some(std::path::PathBuf::from("C:\\tmp\\body.json"));
+        let mut spec = RequestSpec::default();
+        spec.method = "POST".to_string();
+        spec.url = "https://x.example".to_string();
+        // 模拟 run() 中 --file 读取后的原始体
+        spec.raw_body = Some(b"{}".to_vec());
+        let (kind, _ct) = build_body(&spec, &cfg).unwrap();
+        let url: reqwest::Url = spec.url.parse().unwrap();
+        let headers = curl_headers_for(&cfg, &spec, None);
+        let cmd = build_curl_command(&spec, &url, &headers, &kind, &cfg).unwrap();
+        assert!(cmd.contains("--data-binary @'C:\\tmp\\body.json'"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn curl_output_and_download() {
+        let spec = RequestSpec {
+            method: "GET".to_string(),
+            url: "https://x.example".to_string(),
+            ..Default::default()
+        };
+        let url: reqwest::Url = spec.url.parse().unwrap();
+        let mut cfg = hcfg();
+        cfg.output = Some(std::path::PathBuf::from("out.bin"));
+        let headers = curl_headers_for(&cfg, &spec, None);
+        let cmd = build_curl_command(&spec, &url, &headers, &BodyKind::None, &cfg).unwrap();
+        assert!(cmd.contains("-o out.bin"), "cmd: {cmd}");
+        let mut cfg2 = hcfg();
+        cfg2.download = true;
+        let cmd2 = build_curl_command(&spec, &url, &headers, &BodyKind::None, &cfg2).unwrap();
+        assert!(cmd2.contains(" -OJ"), "cmd: {cmd2}");
+    }
+
+    #[test]
+    fn shell_quote_variants() {
+        assert_eq!(shell_quote("abc"), "abc");
+        assert_eq!(shell_quote("https://x.io/a?b=1&c=2"), "'https://x.io/a?b=1&c=2'");
+        assert_eq!(shell_quote("a b"), "'a b'");
+        assert_eq!(shell_quote(""), "''");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
     }
 }
