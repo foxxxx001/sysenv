@@ -250,6 +250,7 @@ Chats with the configured providers using the OpenAI `/v1/chat/completions` or t
 - Message source: command-line arguments (joined with spaces); with no arguments, stdin is read when it is not a terminal
 - Top-level `stream: true` enables SSE streaming by default (printed token by token); `--no-stream` disables it; `--debug` forces non-streaming
 - `--debug`: prints the **actual HTTP request** (method / URL / headers / body) and **response** (status / headers / body) to stderr without polluting stdout
+- `--free[=ROUTER]`: **ignores the config file and uses only the built-in free routers** (auto-enabled when no config file exists): `kilo-auto/free` (Kilo Gateway, anonymous) and `blockrun/free` (BlockRun anonymous free endpoint `https://blockrun.ai/api/v1`, model `nvidia/llama-3.2-11b-vision`) are always available; `openrouter/free` is appended only when `OPENROUTER_API_KEY` is set. Bare `--free` weighted round-robins across all available routers; `--free=kilo` / `--free=blockrun` / `--free=openrouter` pins one router (aliases `kilo-auto` / `kilo-auto/free` / `blockrun/free` / `openrouter/free` accepted), with a clear error when the pinned router is unavailable
 
 ```
 sys ai chat "hi"                       # chat with the default config (~/.sysenv/config.yaml)
@@ -258,6 +259,8 @@ echo "summarize this" | sys ai chat    # pipe via stdin
 sys ai chat "hi" -c doc/config.yaml    # explicit config file
 sys ai chat "hi" --no-stream           # disable streaming
 sys ai chat "hi" --debug               # print the actual request & response (incl. headers)
+sys ai chat "hi" --free                # built-in free routers (kilo-auto / blockrun; openrouter when the key is set)
+sys ai chat "hi" --free=blockrun       # pin BlockRun anonymous free endpoint (https://blockrun.ai/api/v1)
 sys ai server                          # serve an OpenAI-compatible API (default 127.0.0.1:10000)
 sys ai server 8080                     # bare port: host stays 127.0.0.1
 sys ai server 0.0.0.0                  # bare IP: port stays 10000 (exposed to the network)

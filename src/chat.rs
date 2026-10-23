@@ -128,6 +128,8 @@ pub(crate) fn load_config(path: Option<&Path>) -> Result<(Config, PathBuf)> {
 
 /// Kilo Gateway free auto-router (keyless / anonymous).
 const FREE_KILO_BASE: &str = "https://ai-gateway.kilo.ai/api/v1";
+/// BlockRun free anonymous endpoint (keyless; model: nvidia/llama-3.2-11b-vision).
+const FREE_BLOCKRUN_BASE: &str = "https://blockrun.ai/api/v1";
 /// OpenRouter free models router (needs OPENROUTER_API_KEY).
 const FREE_OPENROUTER_BASE: &str = "https://openrouter.ai/api/v1";
 
@@ -142,16 +144,25 @@ fn free_model(name: &str) -> Model {
     }
 }
 
-/// Free providers: `kilo-auto/free` always (anonymous); `openrouter/free` only
-/// when a non-empty OpenRouter key is supplied.
+/// Free providers: `kilo-auto/free` and `blockrun/free` always (anonymous);
+/// `openrouter/free` only when a non-empty OpenRouter key is supplied.
 fn free_providers(openrouter_key: Option<String>) -> Vec<Provider> {
-    let mut providers = vec![Provider {
-        kind: "openai".to_string(),
-        name: "kilo-auto".to_string(),
-        api_base: FREE_KILO_BASE.to_string(),
-        api_key: String::new(),
-        models: vec![free_model("kilo-auto/free")],
-    }];
+    let mut providers = vec![
+        Provider {
+            kind: "openai".to_string(),
+            name: "kilo-auto".to_string(),
+            api_base: FREE_KILO_BASE.to_string(),
+            api_key: String::new(),
+            models: vec![free_model("kilo-auto/free")],
+        },
+        Provider {
+            kind: "openai".to_string(),
+            name: "blockrun".to_string(),
+            api_base: FREE_BLOCKRUN_BASE.to_string(),
+            api_key: String::new(),
+            models: vec![free_model("nvidia/llama-3.2-11b-vision")],
+        },
+    ];
     if let Some(key) = openrouter_key.filter(|k| !k.trim().is_empty()) {
         providers.push(Provider {
             kind: "openai".to_string(),
@@ -164,8 +175,8 @@ fn free_providers(openrouter_key: Option<String>) -> Vec<Provider> {
     providers
 }
 
-/// In-memory free Config: kilo-auto/free always; openrouter/free only when
-/// `OPENROUTER_API_KEY` is set in the environment.
+/// In-memory free Config: kilo-auto/free and blockrun/free always;
+/// openrouter/free only when `OPENROUTER_API_KEY` is set in the environment.
 pub(crate) fn builtin_free_config() -> Config {
     let key = std::env::var("OPENROUTER_API_KEY").ok();
     Config {
@@ -177,13 +188,15 @@ pub(crate) fn builtin_free_config() -> Config {
 }
 
 /// Parse a `--free[=ROUTER]` selector to the matching built-in provider name.
-/// Accepts kilo / kilo-auto / kilo-auto/free and openrouter / openrouter/free
-/// (case-insensitive); unknown values are rejected.
+/// Accepts kilo / kilo-auto / kilo-auto/free, blockrun / blockrun/free and
+/// openrouter / openrouter/free (case-insensitive); unknown values are
+/// rejected.
 pub(crate) fn parse_free_router(s: &str) -> Result<&'static str> {
     match s.trim().to_ascii_lowercase().as_str() {
         "kilo" | "kilo-auto" | "kilo-auto/free" => Ok("kilo-auto"),
+        "blockrun" | "blockrun/free" => Ok("blockrun"),
         "openrouter" | "openrouter/free" => Ok("openrouter"),
-        other => bail!("unknown free router `{other}` (use kilo or openrouter)"),
+        other => bail!("unknown free router `{other}` (use kilo, blockrun or openrouter)"),
     }
 }
 
@@ -218,7 +231,7 @@ fn filter_free_selector(providers: Vec<Provider>, selector: Option<&str>) -> Res
 }
 
 /// Build the free Config from the environment, optionally pinned to one
-/// router (`kilo` | `openrouter`).
+/// router (`kilo` | `blockrun` | `openrouter`).
 pub(crate) fn free_config(selector: Option<&str>) -> Result<Config> {
     let key = std::env::var("OPENROUTER_API_KEY").ok();
     filter_free_selector(free_providers(key), selector)
@@ -2575,9 +2588,9 @@ stream: true
     }
 
     #[test]
-    fn free_providers_without_openrouter_key_keeps_kilo_only() {
+    fn free_providers_without_openrouter_key_keeps_anonymous_routers() {
         let provs = free_providers(None);
-        assert_eq!(provs.len(), 1);
+        assert_eq!(provs.len(), 2);
         assert_eq!(provs[0].name, "kilo-auto");
         assert_eq!(provs[0].models[0].name, "kilo-auto/free");
         assert!(provs[0].api_key.is_empty());
@@ -2585,19 +2598,27 @@ stream: true
             chat_url(&provs[0]),
             "https://ai-gateway.kilo.ai/api/v1/chat/completions"
         );
+        // blockrun anonymous free endpoint (the real model ID is sent as-is).
+        assert_eq!(provs[1].name, "blockrun");
+        assert_eq!(provs[1].models[0].name, "nvidia/llama-3.2-11b-vision");
+        assert!(provs[1].api_key.is_empty());
+        assert_eq!(
+            chat_url(&provs[1]),
+            "https://blockrun.ai/api/v1/chat/completions"
+        );
     }
 
     #[test]
     fn free_providers_with_openrouter_key_adds_router() {
         let provs = free_providers(Some("sk-or-test".to_string()));
-        assert_eq!(provs.len(), 2);
-        let or = &provs[1];
+        assert_eq!(provs.len(), 3);
+        let or = &provs[2];
         assert_eq!(or.name, "openrouter");
         assert_eq!(or.models[0].name, "openrouter/free");
         assert_eq!(or.api_key, "sk-or-test");
         assert_eq!(chat_url(or), "https://openrouter.ai/api/v1/chat/completions");
-        // A blank / whitespace key drops openrouter and keeps kilo only.
-        assert_eq!(free_providers(Some("  ".to_string())).len(), 1);
+        // A blank / whitespace key drops openrouter and keeps the two anonymous routers.
+        assert_eq!(free_providers(Some("  ".to_string())).len(), 2);
     }
 
     #[test]
@@ -2618,6 +2639,8 @@ stream: true
         assert_eq!(parse_free_router("kilo").unwrap(), "kilo-auto");
         assert_eq!(parse_free_router("KILO-AUTO").unwrap(), "kilo-auto");
         assert_eq!(parse_free_router("kilo-auto/free").unwrap(), "kilo-auto");
+        assert_eq!(parse_free_router("blockrun").unwrap(), "blockrun");
+        assert_eq!(parse_free_router("BLOCKRUN/free").unwrap(), "blockrun");
         assert_eq!(parse_free_router("openrouter").unwrap(), "openrouter");
         assert_eq!(parse_free_router("openrouter/free").unwrap(), "openrouter");
         assert!(parse_free_router("gemini").is_err());
@@ -2628,14 +2651,19 @@ stream: true
         let both = free_providers(Some("sk-or-test".to_string()));
         // None / "all" keeps every available router untouched.
         let all = filter_free_selector(both.clone(), None).unwrap();
-        assert_eq!(all.providers.len(), 2);
+        assert_eq!(all.providers.len(), 3);
         let all = filter_free_selector(both.clone(), Some("all")).unwrap();
-        assert_eq!(all.providers.len(), 2);
+        assert_eq!(all.providers.len(), 3);
         // Pinning kilo keeps only the anonymous router and sets its model.
         let k = filter_free_selector(both.clone(), Some("kilo")).unwrap();
         assert_eq!(k.providers.len(), 1);
         assert_eq!(k.providers[0].name, "kilo-auto");
         assert_eq!(k.model.as_deref(), Some("kilo-auto/free"));
+        // Pinning blockrun keeps only that router and its real free model.
+        let b = filter_free_selector(both.clone(), Some("blockrun")).unwrap();
+        assert_eq!(b.providers.len(), 1);
+        assert_eq!(b.providers[0].name, "blockrun");
+        assert_eq!(b.model.as_deref(), Some("nvidia/llama-3.2-11b-vision"));
         // Pinning openrouter keeps only that router and its model.
         let o = filter_free_selector(both.clone(), Some("openrouter/free")).unwrap();
         assert_eq!(o.providers.len(), 1);

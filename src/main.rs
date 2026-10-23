@@ -506,10 +506,10 @@ struct AiInfoArgs {
     /// text view (supported by `info provider`, `info model` and `info list-model`)
     #[arg(short = 'o', long = "output-format", value_name = "FORMAT", value_enum, conflicts_with = "json")]
     output: Option<OutFormat>,
-    /// Show the built-in free routers only (kilo-auto/free anonymous;
-    /// openrouter/free when OPENROUTER_API_KEY is set); optional ROUTER pins
-    /// one router: kilo | openrouter. Works with `info providers` and
-    /// `info models`
+    /// Show the built-in free routers only (kilo-auto/free and blockrun/free
+    /// anonymous; openrouter/free when OPENROUTER_API_KEY is set); optional
+    /// ROUTER pins one router: kilo | blockrun | openrouter. Works with
+    /// `info providers` and `info models`
     #[arg(long, value_name = "ROUTER", num_args = 0..=1, default_missing_value = "all")]
     free: Option<String>,
 }
@@ -574,9 +574,10 @@ struct ChatArgs {
     /// for Anthropic; PROVIDER = a `name` under `clients`, e.g. baidu)
     #[arg(long, value_name = "PROVIDER")]
     query_model: Option<String>,
-    /// Use the built-in free routers only (kilo-auto/free anonymous;
-    /// openrouter/free when OPENROUTER_API_KEY is set), rotating between them;
-    /// optional ROUTER pins one router: kilo | openrouter. Ignores the config
+    /// Use the built-in free routers only (kilo-auto/free and blockrun/free
+    /// anonymous; openrouter/free when OPENROUTER_API_KEY is set), rotating
+    /// between them; optional ROUTER pins one router: kilo | blockrun |
+    /// openrouter. Ignores the config
     /// file. Also used automatically when no config.yaml exists.
     #[arg(long, value_name = "ROUTER", num_args = 0..=1, default_missing_value = "all")]
     free: Option<String>,

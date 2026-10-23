@@ -2,6 +2,19 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.25 (2026-10-23)
+
+### Added
+- **`sys ai --free` gains the `blockrun` anonymous free router** (src/chat.rs `FREE_BLOCKRUN_BASE` / `free_providers` / `parse_free_router`): endpoint `https://blockrun.ai/api/v1` (BlockRun anonymous free endpoint, no key, no subscription), model `nvidia/llama-3.2-11b-vision` (Llama 3.2 11B Vision, 128K context, text + image); always available (same tier as kilo-auto, no env var dependency); `--free=blockrun` / `--free=blockrun/free` pins it; `sys ai chat` / `info providers` / `info models` all support it
+- **The free router set is now a trio**: `kilo-auto/free` (Kilo Gateway, anonymous) → `blockrun/free` (BlockRun, anonymous) → `openrouter/free` (appended only when `OPENROUTER_API_KEY` is set); bare `--free` weighted round-robins across every available router; the default router stays kilo-auto (provider order unchanged)
+
+### Changed
+- Version 0.6.24 -> 0.6.25; README (zh/en) ai chat `--free` entry & examples, main.rs `--free` help comments, requirements.md synced
+- `cargo test --bin sys`: 403 passing (4 existing free-router tests updated: 2 anonymous routers without a key, 3 with openrouter, `--free=blockrun` pinning + real model ID assertions)
+- Live connectivity check: `sys ai chat "say OK" --free=blockrun` → returned `OK` (exit 0)
+
+---
+
 ## v0.6.24 (2026-10-23)
 
 ### Added

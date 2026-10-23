@@ -376,6 +376,8 @@ sys ai cn-model gpt-6-1-sol --refresh  # 强制重新抓取（--refresh 属 ai �
 
 * `--debug`：把**实际 HTTP 请求**（方法 / URL / 请求头 / 请求体）与**响应**（状态 / 响应头 / 响应体）打印到 stderr，不污染 stdout
 
+* `--free[=ROUTER]`：**忽略配置文件，只用内置免费路由**（无配置文件时自动启用）：`kilo-auto/free`（Kilo Gateway，匿名直连）与 `blockrun/free`（BlockRun 匿名免费端点 `https://blockrun.ai/api/v1`，模型 `nvidia/llama-3.2-11b-vision`）始终可用；`openrouter/free` 仅在设置 `OPENROUTER_API_KEY` 后追加。`--free` 不带参数在所有可用路由间加权轮询；`--free=kilo` / `--free=blockrun` / `--free=openrouter` 固定单路由（别名接受 `kilo-auto` / `kilo-auto/free` / `blockrun/free` / `openrouter/free`），指定路由不可用时明确报错
+
 ```
 sys ai chat "你好"                     # 用默认配置聊天（~/.sysenv/config.yaml）
 sys ai chat 你好 世界                  # 多参数自动拼接
@@ -383,6 +385,8 @@ echo "帮我总结这段文字" | sys ai chat   # stdin 管道
 sys ai chat "你好" -c doc/config.yaml  # 指定配置文件
 sys ai chat "你好" --no-stream         # 关闭流式
 sys ai chat "你好" --debug             # 打印实际请求与响应（含 header）
+sys ai chat "hi" --free                # 用内置免费路由聊天（kilo-auto / blockrun，有 key 时含 openrouter）
+sys ai chat "hi" --free=blockrun       # 固定 BlockRun 匿名免费端点（https://blockrun.ai/api/v1）
 sys ai chat "你好" -m agnes:agnes-3.0-flash   # 覆盖顶层 model，只用 agnes 的该模型
 sys ai chat "你好" -m "agnes:*,claude:claude-3-5-sonnet"  # 多模型逗号分隔，加权轮询
 sys ai chat "你好" -m "group:cheap"               # 用分组名选中所有归属 cheap 组的模型

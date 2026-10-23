@@ -2,6 +2,19 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.25（2026-10-23）
+
+### 新增
+- **`sys ai --free` 新增 `blockrun` 匿名免费路由**（src/chat.rs `FREE_BLOCKRUN_BASE` / `free_providers` / `parse_free_router`）：端点 `https://blockrun.ai/api/v1`（BlockRun 匿名免费端点，无需 key、无订阅），模型 `nvidia/llama-3.2-11b-vision`（Llama 3.2 11B Vision，128K 上下文，文本 + 图像）；始终可用（与 kilo-auto 同级，不依赖任何环境变量）；`--free=blockrun` / `--free=blockrun/free` 固定路由；`sys ai chat` / `info providers` / `info models` 均支持
+- **免费路由现为三选**：`kilo-auto/free`（Kilo Gateway，匿名）→ `blockrun/free`（BlockRun，匿名）→ `openrouter/free`（仅设置 `OPENROUTER_API_KEY` 时追加）；`--free` 不带参数在所有可用路由间加权轮询，默认路由仍为 kilo-auto（provider 顺序不变）
+
+### 变更
+- 版本 0.6.24 -> 0.6.25；README（中 / 英）ai chat `--free` 条目与示例、main.rs `--free` 帮助注释、requirements.md 同步
+- `cargo test --bin sys`：403 项全绿（更新 4 项既有 free 路由测试：匿名路由现为 2 个、openrouter 存在时共 3 个、`--free=blockrun` 固定路由与真实模型 ID 断言）
+- 真机连通性验证：`sys ai chat "say OK" --free=blockrun` → 返回 `OK`（exit 0）
+
+---
+
 ## v0.6.24（2026-10-23）
 
 ### 新增
