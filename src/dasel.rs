@@ -819,6 +819,7 @@ const FUNCTION_NAMES: &[&str] = &[
     "filter",
     "search",
     "remove",
+    "count",
     "contains",
     "startsWith",
     "endsWith",
@@ -908,9 +909,14 @@ fn parse_function_expr(expr: &str) -> Option<Result<FunctionCall>> {
         None => (None, prefix),
     };
     let name = name.trim().to_string();
+    if name.contains('|') {
+        // `path | count()` / `filter(...) | count()` style pipeline: the call
+        // name region carries a top-level pipe, so let split_pipeline handle it.
+        return None;
+    }
     if !FUNCTION_NAMES.contains(&name.as_str()) {
         return Some(Err(anyhow::anyhow!(
-            "unknown function `{name}` (expected: filter | search | remove | contains | startsWith | endsWith | indexOf | has)"
+            "unknown function `{name}` (expected: filter | search | remove | count | contains | startsWith | endsWith | indexOf | has)"
         )));
     }
     if matches!(name.as_str(), "filter" | "remove" | "search") && args.trim().is_empty() {
@@ -1623,6 +1629,39 @@ fn apply_search(v: &Value, call: &FunctionCall, out_f: DataFormat, compact: bool
     serialize_output(&apply_search_value(v, call)?, out_f, compact)
 }
 
+/// `count()` semantics: the size of the matched-node set. A single array
+/// result counts its elements (`data|count()` = row count,
+/// `filter(...)|count()` = kept count); several matches count the matches;
+/// an empty set counts 0; any other single node counts 1.
+fn count_matches(matched: &[&Value]) -> Value {
+    let n = if matched.len() == 1 {
+        match &matched[0] {
+            Value::Array(a) => a.len(),
+            _ => 1,
+        }
+    } else {
+        matched.len()
+    };
+    num_value(n as f64)
+}
+
+/// `path.count()` / `count()`: count the nodes matched by the selector path
+/// (the whole document when no path is given). Takes no arguments; an empty
+/// match counts 0 instead of erroring.
+fn apply_count(v: &Value, call: &FunctionCall, out_f: DataFormat, compact: bool) -> Result<String> {
+    if !call.args.trim().is_empty() {
+        bail!("`count` takes no arguments (got `{}`)", call.args);
+    }
+    let matched = match &call.path {
+        Some(p) => {
+            let steps = parse_selector(p).with_context(|| format!("invalid path for `count`"))?;
+            get_values(v, &steps)
+        }
+        None => vec![v],
+    };
+    render_get(&count_matches(&matched), out_f, compact)
+}
+
 fn search_collect(node: &Value, key: Option<Value>, pred: &str, found: &mut Vec<Value>) -> Result<()> {
     if eval_predicate(node, key.as_ref(), pred)? {
         found.push(node.clone());
@@ -1965,6 +2004,7 @@ pub fn cmd_data(
         // Function expression: filter / search / remove / string functions.
         let fc = fc?;
         result_string = match fc.name.as_str() {
+            "count" => apply_count(&v, &fc, out_f, compact)?,
             "filter" => apply_filter(&v, &fc, out_f, compact)?,
             "search" => apply_search(&v, &fc, out_f, compact)?,
             "remove" => apply_remove(&mut v, &fc, out_f, compact, root)?,
@@ -1987,37 +2027,61 @@ pub fn cmd_data(
             _ => apply_string_fn(&v, &fc, out_f, compact)?,
         };
     } else if let Some((left, right)) = split_pipeline(expr) {
-        // jq-style key projection: `path | {k1, k2}`. The left side is a
-        // plain selector or a filter / search call; the projection applies to
-        // each matched node (function results spread their array, like jq's
-        // `.[] | select(...) | {...}`).
-        let keys =
-            parse_projection(&right).with_context(|| format!("invalid projection in `{expr}`"))?;
-        result_string = match parse_function_expr(&left) {
-            Some(Ok(fc)) => match fc.name.as_str() {
-                "filter" => {
-                    let arr = apply_filter_value(&v, &fc)?;
-                    project_values(
-                        arr.as_array().cloned().unwrap_or_default(),
-                        &keys,
-                        out_f,
-                        compact,
-                    )?
+        if right.trim() == "count()" {
+            // `path | count()` / `filter(...) | count()` / `search(...) | count()`:
+            // count the nodes matched on the left, printed as a bare number.
+            result_string = match parse_function_expr(&left) {
+                Some(Ok(fc)) => match fc.name.as_str() {
+                    "filter" => {
+                        let arr = apply_filter_value(&v, &fc)?;
+                        render_get(&count_matches(&[&arr]), out_f, compact)?
+                    }
+                    "search" => {
+                        let arr = apply_search_value(&v, &fc)?;
+                        render_get(&count_matches(&[&arr]), out_f, compact)?
+                    }
+                    other => bail!("cannot pipe `{other}(...)` into count()"),
+                },
+                Some(Err(e)) => return Err(e),
+                None => {
+                    let steps = parse_selector(&left)?;
+                    let got = get_values(&v, &steps);
+                    render_get(&count_matches(&got), out_f, compact)?
                 }
-                "search" => {
-                    let arr = apply_search_value(&v, &fc)?;
-                    project_values(
-                        arr.as_array().cloned().unwrap_or_default(),
-                        &keys,
-                        out_f,
-                        compact,
-                    )?
-                }
-                other => bail!("cannot pipe `{other}(...)` into a projection"),
-            },
-            Some(Err(e)) => return Err(e),
-            None => apply_projection_path(&v, &left, &keys, out_f, compact)?,
-        };
+            };
+        } else {
+            // jq-style key projection: `path | {k1, k2}`. The left side is a
+            // plain selector or a filter / search call; the projection applies
+            // to each matched node (function results spread their array, like
+            // jq's `.[] | select(...) | {...}`).
+            let keys = parse_projection(&right)
+                .with_context(|| format!("invalid projection in `{expr}`"))?;
+            result_string = match parse_function_expr(&left) {
+                Some(Ok(fc)) => match fc.name.as_str() {
+                    "filter" => {
+                        let arr = apply_filter_value(&v, &fc)?;
+                        project_values(
+                            arr.as_array().cloned().unwrap_or_default(),
+                            &keys,
+                            out_f,
+                            compact,
+                        )?
+                    }
+                    "search" => {
+                        let arr = apply_search_value(&v, &fc)?;
+                        project_values(
+                            arr.as_array().cloned().unwrap_or_default(),
+                            &keys,
+                            out_f,
+                            compact,
+                        )?
+                    }
+                    other => bail!("cannot pipe `{other}(...)` into a projection"),
+                },
+                Some(Err(e)) => return Err(e),
+                None => apply_projection_path(&v, &left, &keys, out_f, compact)?,
+            };
+        }
     } else if looks_like_bare_predicate(expr)
         && matches!(in_f, DataFormat::Csv | DataFormat::Table | DataFormat::Jsonl)
     {
@@ -2636,6 +2700,64 @@ mod tests {
             let got: Value = serde_json::from_str(&out).unwrap();
             assert_eq!(got.as_array().unwrap().len(), want, "predicate {pred}");
         }
+    }
+
+    #[test]
+    fn count_matches_node_set_sizes() {
+        // 单个数组结果 → 数组长度
+        let arr = json!([1, 2, 3]);
+        assert_eq!(count_matches(&[&arr]), json!(3));
+        // 空数组 → 0
+        let empty = json!([]);
+        assert_eq!(count_matches(&[&empty]), json!(0));
+        // 单值节点 → 1
+        let scalar = json!(5);
+        assert_eq!(count_matches(&[&scalar]), json!(1));
+        // 多个匹配节点 → 节点数（data[*] 展开）
+        let m = vec![json!(1), json!(2), json!(3), json!(4)];
+        let refs: Vec<&Value> = m.iter().collect();
+        assert_eq!(count_matches(&refs), json!(4));
+        // 无匹配 → 0
+        assert_eq!(count_matches(&[]), json!(0));
+    }
+
+    #[test]
+    fn count_dot_style_and_bare_and_arg_errors() {
+        let v = json!({"data": [{"n": 1}, {"n": 2}, {"n": 3}]});
+        // path.count()
+        let fc = parse_function_expr("data.count()").unwrap().unwrap();
+        assert_eq!(fc.path.as_deref(), Some("data"));
+        assert_eq!(fc.name, "count");
+        let out = apply_count(&v, &fc, DataFormat::Json, false).unwrap();
+        assert_eq!(out.trim(), "3");
+        // 裸 count() 统计整个文档
+        let fc = parse_function_expr("count()").unwrap().unwrap();
+        assert!(fc.path.is_none());
+        let out = apply_count(&v, &fc, DataFormat::Json, false).unwrap();
+        assert_eq!(out.trim(), "1"); // 文档是对象 → 1 个节点
+        // 数组根文档 → 长度
+        let arr = json!([1, 2, 3, 4, 5]);
+        let out = apply_count(&arr, &fc, DataFormat::Json, false).unwrap();
+        assert_eq!(out.trim(), "5");
+        // 无匹配 selector → 0 而非报错
+        let fc = parse_function_expr("missing.count()").unwrap().unwrap();
+        let out = apply_count(&v, &fc, DataFormat::Json, false).unwrap();
+        assert_eq!(out.trim(), "0");
+        // count 带参数 → 报错
+        let fc = parse_function_expr("data.count(x)").unwrap().unwrap();
+        assert!(apply_count(&v, &fc, DataFormat::Json, false).is_err());
+    }
+
+    #[test]
+    fn count_pipeline_parses_via_split_pipeline() {
+        // `path | count()` 的管道形式：parse_function_expr 必须让位（name 含 |）
+        assert!(parse_function_expr("data|count()").is_none());
+        // `filter(...) | count()` 同样让位给管道
+        assert!(parse_function_expr("data.filter(n>=2)|count()").is_none());
+        // split_pipeline 正确切分左右
+        let (left, right) = split_pipeline("data.filter(n>=2)|count()").unwrap();
+        assert_eq!(left, "data.filter(n>=2)");
+        assert_eq!(right, "count()");
     }
 
     #[test]

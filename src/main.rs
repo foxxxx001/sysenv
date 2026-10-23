@@ -123,9 +123,10 @@ struct DataArgs {
     /// Selector (`a.b[0]`, `list[*]`, `m["中文键"]`), assignment expression
     /// (`PATH = VALUE`, `PATH = @FILE` reads & parses a file as the value,
     /// `PATH = strenv(NAME)` reads an environment variable as a string,
-    /// `PATH += N`, `PATH = null` deletes), or jq-style key projection
-    /// (`data[*]|{id,name}`, also after filter/search); omitted = pure format
-    /// conversion
+    /// `PATH += N`, `PATH = null` deletes), jq-style key projection
+    /// (`data[*]|{id,name}`, also after filter/search), or node counting
+    /// (`data|count()`, `data.filter(...)|count()`, `data.count()`);
+    /// omitted = pure format conversion
     #[arg(value_name = "EXPR")]
     expr: Option<String>,
     /// Read the input from FILE instead of stdin (the format comes from the

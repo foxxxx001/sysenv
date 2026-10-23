@@ -2,6 +2,19 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.26 (2026-10-23)
+
+### Added
+- **`sys data` gains a `count()` node-counting function** (src/dasel.rs `count_matches` / `apply_count` / cmd_data dispatch): counts the matched nodes — **pipeline forms** `path|count()` / `filter(...)|count()` / `search(...)|count()` (a selector left side counts matches: `data|count()` = array row count, `data[*]|count()` = element count; a filter/search left side counts its result array length, an empty filter = 0); **dot form** `path.count()` and **bare** `count()` (counts the whole document: array → length, anything else → 1); an unmatched selector counts 0 instead of erroring; `count(x)` with arguments errors
+- **Pipeline hand-off**: `parse_function_expr` returns None when the function-name region carries a top-level `|`, so `filter(...)|count()` falls through to the `split_pipeline` branch (the same entry as the jq-style projection pipeline); the projection branch only handles `{k1,k2}` right sides
+
+### Changed
+- Version 0.6.25 -> 0.6.26; README (zh/en) data summary row, main.rs `EXPR` help text, requirements.md synced
+- `cargo test --bin sys`: 403 -> 406 passing (3 new tests: `count_matches` shapes / `apply_count` dot·bare·no-match·arg-error / pipeline hand-off + split_pipeline splitting)
+- Smoke tests (Python subprocess, 11 cases): `data|count()`=3, `data[*]|count()`=3, `data.filter(n>=2)|count()`=2, `data.count()`=2, bare `count()`=4, `search(k=="x")|count()`=2, empty filter=0, scalar=1, no match=0, `count(x)` errors, `data|count` (no parens) errors
+
+---
+
 ## v0.6.25 (2026-10-23)
 
 ### Added

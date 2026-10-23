@@ -2,6 +2,19 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.26（2026-10-23）
+
+### 新增
+- **`sys data` 新增 `count()` 节点计数函数**（src/dasel.rs `count_matches` / `apply_count` / cmd_data 分派）：统计匹配节点数——**管道形式** `path|count()`、`filter(...)|count()`、`search(...)|count()`（左为选择器时按匹配节点数，`data|count()` = 数组行数、`data[*]|count()` = 元素数；左为 filter/search 时按其结果数组长度，空过滤 = 0）；**点式** `path.count()` 与**裸** `count()`（统计整个文档：数组→长度、其他→1）；无匹配 selector 计 0 而非报错；`count(x)` 带参数报错
+- **管道让位**：`parse_function_expr` 对函数名区域含顶层 `|` 的表达式返回 None，使 `filter(...)|count()` 落到 `split_pipeline` 分支（与 jq 式投影管道同一入口），投影分支仅处理 `{k1,k2}` 右侧
+
+### 变更
+- 版本 0.6.25 -> 0.6.26；README（中 / 英）data 主表行、main.rs `EXPR` 帮助文本、requirements.md 同步
+- `cargo test --bin sys`：403 -> 406 项全绿（新增 3 项：`count_matches` 各形态 / `apply_count` 点式·裸·缺匹配·带参报错 / 管道解析让位与 split_pipeline 切分）
+- 冒烟（Python subprocess，11 例）：`data|count()`=3、`data[*]|count()`=3、`data.filter(n>=2)|count()`=2、`data.count()`=2、裸 `count()`=4、`search(k=="x")|count()`=2、空过滤=0、标量=1、无匹配=0、`count(x)` 报错、`data|count`（无括号）报错
+
+---
+
 ## v0.6.25（2026-10-23）
 
 ### 新增
