@@ -2,6 +2,18 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.28（2026-10-24）
+
+### 新增
+- **`sys data` 裸 `{k1,k2}` 根投影**（src/dasel.rs）：字段选择器直接作用于根文档——对象根只保留列出的键（jq `. | {k1,k2}` 语义，缺失键 → null），数组根逐元素投影（同 `[*]|{k1,k2}`，csv/table/jsonl 行数组与 JSON 数组一致）；键列表校验与管道形式共用 `parse_projection`（`{a.b}` 嵌套路径 / `{x:y}` 别名 / 空列表报错）；`cat 4k.json | sys data '{wallpaper,warningText}'` 直接可用
+- **`sys data` 深层节点尾随投影**（src/dasel.rs）：`PATH{k1,k2}` / `PATH.{k1,k2}` 等价 `PATH|{k1,k2}`——投影管道可省略，字段选择器可应用到深层节点（`sites[0]{key,name}`、`sites[:2]{key,name}`）；引号键与切片同样可作左侧；新增 `split_trailing_projection`（引号内 `{` 跳过、顶层 `|` 让位管道分支）
+
+### 变更
+- 版本 0.6.27 -> 0.6.28；`sys ai` / `sys data` 的 `--help` 帮助文本与 README 补全（第 5 节 ai 命令速查表、5.5 模型价格 / 5.6 官方余额小节、第 11 节 data 专章；修正 `info balance` 已提升为 `ai balance`、`cn-model --list` 等过时说明）；README.en.md 未动
+- `cargo test --bin sys`：409 -> 417 项全绿（新增 4 项裸投影 + 4 项深层尾随投影单测）
+
+---
+
 ## v0.6.27（2026-10-23）
 
 ### 新增

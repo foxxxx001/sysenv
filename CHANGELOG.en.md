@@ -2,6 +2,18 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.28 (2026-10-24)
+
+### Added
+- **`sys data` bare `{k1,k2}` root projection** (src/dasel.rs): the field selector applies to the root document directly — an object root keeps only the listed keys (jq `. | {k1,k2}` semantics, missing keys become null), an array root projects every row (same as `[*]|{k1,k2}`, csv/table/jsonl row arrays and JSON arrays alike); key-list validation is shared with the pipe form via `parse_projection` (nested paths like `{a.b}`, aliases like `{x:y}` and empty lists error); `cat 4k.json | sys data '{wallpaper,warningText}'` works out of the box
+- **`sys data` deep-node trailing projection** (src/dasel.rs): `PATH{k1,k2}` / `PATH.{k1,k2}` are equivalent to `PATH|{k1,k2}` — the projection pipe is now optional, so the field selector reaches deep nodes (`sites[0]{key,name}`, `sites[:2]{key,name}`); quoted keys and slices work as the left side too; new `split_trailing_projection` (skips `{` inside quotes, lets top-level `|` fall through to the pipeline branch)
+
+### Changed
+- Version 0.6.27 -> 0.6.28; `sys ai` / `sys data` `--help` text and README expanded (section 5 AI command quick-reference table, 5.5 model pricing / 5.6 official balance subsections, section 11 data chapter; stale notes fixed, e.g. `info balance` promoted to `ai balance`, `cn-model --list`); README.en.md untouched
+- `cargo test --bin sys`: 409 -> 417 all green (4 new bare-projection + 4 new trailing-projection unit tests)
+
+---
+
 ## v0.6.27 (2026-10-23)
 
 ### Added
