@@ -108,7 +108,9 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     /// filters and search; -f tails the file (`sys log --file app.log [--level
     /// LEVEL] [--search KW] [--line N] [--newer TIME] [-f]`)
     Log(LogArgs),
-    /// fd/sd-style text search and replacement: search stdin or a directory tree, or replace a string in place
+    /// fd/sd-style text tool: 1 arg = search stdin, 2 args = search a file /
+    /// directory tree, 3 args = in-place replace, --enc = encoding conversion
+    /// (gbk/gb2312 <-> utf-8), -md5/-sha = hash, -l = line counts
     File(FileArgs),
     /// Query / modify / convert structured data (JSON / JSONL / YAML / TOML / CSV / MD / TABLE), dasel-compatible
     /// (alias `dasel`): `sys data [EXPR] [-f FILE | -u URL] [-i FMT] [-o FMT] [-w FILE] [--compact] [--root] [--depth [N]] [--limit N] [--header|--no-header]`
@@ -1006,15 +1008,32 @@ struct NetArgs {
 
 #[derive(Args)]
 struct FileArgs {
-    /// PATTERN, or PATTERN PATH, or OLD NEW PATH (path = file or directory);
-    /// or -md5/-sha FILE [EXPECTED] to hash a file; or --enc SRC [DST]
-    /// [--from ENC] [--to ENC] to convert between utf-8 / gbk / gb2312:
-    /// --from ENC (alias -f ENC) fixes the source encoding (omit to
-    /// auto-detect), --to ENC sets the target (default utf-8); ENC =
-    /// utf-8 | gbk | gb2312; --enc aliases --encode / --convert. These
-    /// flag-like tokens are absorbed into ARGS, like `data`'s raw tokens, so
-    /// they may appear at any position
-    #[arg(value_name = "ARGS", allow_hyphen_values = true)]
+    /// The mode is chosen by how many arguments are given; see the long help
+    /// below for the 1-arg / 2-arg / 3-arg and --enc mode reference
+    #[arg(
+        value_name = "ARGS",
+        allow_hyphen_values = true,
+        long_help = r#"The mode is chosen by how many arguments are given. Flag-like tokens
+(-md5 / -sha / --enc / -l / -n / -S / --newer / --older / -d) are absorbed
+into ARGS and may appear at any position:
+
+  1 arg   `sys file PATTERN`          search PATTERN in stdin (piped); a quoted
+          string ("me.txt") forces the search meaning, a bare token with an
+          extension (me.txt) displays that file's text
+  2 args  `sys file PATTERN PATH`     search PATTERN in PATH: a single file, or
+          a directory tree (hidden dirs / .git / node_modules / target and
+          binary files are skipped; -e/-i/-t/-w/-c/-n apply)
+  3 args  `sys file OLD NEW PATH`     replace every occurrence of OLD with NEW
+          in PATH in place (file or directory tree; -e/-i/-t/-w apply)
+  --enc   `sys file --enc SRC [DST] [--from ENC] [--to ENC]` converts a file's
+          encoding between utf-8 / gbk / gb2312 (default target utf-8; --from /
+          -f ENC fixes the source, omit = auto-detect; DST omitted = stdout,
+          DST must differ from SRC; aliases --encode / --convert)
+  -md5/-sha `sys file -md5/-sha FILE [EXPECTED]` print or verify a file hash
+  -l      `sys file -l [PATTERN [PATH]]` count lines (stdin / a file / matches)
+  filters `-S SIZE` / `--newer TIME` / `--older TIME` / `-d N` with no PATTERN
+          list files instead of searching (default PATH = .)"#
+    )]
     args: Vec<String>,
     /// Only search files with this extension (repeatable; leading dot optional, e.g. -e py -e md)
     #[arg(short = 'e', long, value_name = "EXT")]
