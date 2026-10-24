@@ -522,9 +522,9 @@ enum AiCmd {
     /// timeout, no content) — --remove deletes the failed models instead;
     /// --parallel N tests N models concurrently (default: CPU core count);
     /// --free[=ROUTER] ignores the config file and uses the built-in
-    /// anonymous free routers kilo-auto/free and blockrun/free (openrouter/
-    /// free only when OPENROUTER_API_KEY is set), rotating between them;
-    /// also used automatically when no config.yaml exists. -c/--config FILE
+    /// anonymous free routers kilo-auto/free and blockrun/free
+    /// (openrouter/free only when OPENROUTER_API_KEY is set), rotating
+    /// between them; also used automatically when no config.yaml exists. -c/--config FILE
     /// overrides the config. Examples: sys ai chat "你好" | echo x | sys ai chat |
     /// sys ai chat "hi" -m "agnes:*,claude:claude-3-5-sonnet" | sys ai chat "hi" --free
     Chat(ChatArgs),
