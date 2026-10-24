@@ -2,6 +2,16 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.29（2026-10-24）
+
+### 变更
+- **`sys file --help` 分模式补全**（src/main.rs）：`FileArgs.args` 改用 arg 级 `long_help`，1 参数（`PATTERN` stdin 搜索 / 引号强制搜索 / 带扩展名显示文件）、2 参数（`PATTERN PATH` 文件或目录树搜索）、3 参数（`OLD NEW PATH` 就地替换）与 `--enc SRC [DST] [--from ENC] [--to ENC]`（gbk/gb2312 <-> utf-8，默认转 utf-8，`--from/-f` 定源编码、缺省自动探测，DST 缺省输出 stdout 且须与 SRC 不同，别名 `--encode/--convert`）各自独立成段；另列 `-md5/-sha` 哈希、`-l` 行数统计与属性过滤列文件模式；根因是 clap 折叠 arg 级 doc 换行（原先四种模式挤成一段），`long_help` 保留换行分块渲染
+- 短帮助 `-h` 保留一行简要指引；顶层 `sys --help` 命令列表 file 行改为模式概要（`fd/sd-style text tool: 1 arg = ...`）；文案与 src/file.rs 实际分派（`--enc` > `-md5/-sha` > `-l/-n` > 1/2/3 参）逐条核对一致
+- 版本 0.6.28 -> 0.6.29；Cargo.lock 版本同步（上一版发布遗漏，补提交）
+- `cargo test --bin sys`：417 项全绿（本次为帮助文档改动，无新增测试）
+
+---
+
 ## v0.6.28（2026-10-24）
 
 ### 新增

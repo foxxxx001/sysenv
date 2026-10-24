@@ -2,6 +2,16 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.29 (2026-10-24)
+
+### Changed
+- **`sys file --help` reworked into per-mode sections** (src/main.rs): `FileArgs.args` now uses an arg-level `long_help`, so the 1-arg mode (`PATTERN` searching stdin / quoted string forces search / bare token with an extension displays that file), 2-arg mode (`PATTERN PATH` search of a file or a directory tree), 3-arg mode (`OLD NEW PATH` in-place replace) and `--enc SRC [DST] [--from ENC] [--to ENC]` (gbk/gb2312 <-> utf-8, default target utf-8, `--from/-f ENC` fixes the source encoding or auto-detects, DST omitted = stdout and must differ from SRC, aliases `--encode/--convert`) each get their own block; `-md5/-sha` hashing, `-l` line counts and attribute-filter listing are also listed. Root cause: clap folds arg-level doc-comment newlines (all four modes previously merged into one blob); `long_help` keeps the line breaks
+- Short help `-h` keeps a one-line summary; the top-level `sys --help` command list shows the mode overview for file (`fd/sd-style text tool: 1 arg = ...`); wording cross-checked against the real dispatch in src/file.rs (`--enc` > `-md5/-sha` > `-l/-n` > 1/2/3-arg modes)
+- Version 0.6.28 -> 0.6.29; Cargo.lock version synced (missed in the previous release commit)
+- `cargo test --bin sys`: 417 all green (help-text change, no new tests)
+
+---
+
 ## v0.6.28 (2026-10-24)
 
 ### Added
