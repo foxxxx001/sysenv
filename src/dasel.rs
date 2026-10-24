@@ -1156,6 +1156,66 @@ fn apply_bare_projection(
     project_values(nodes, &keys, out_f, compact)
 }
 
+/// Split a trailing key projection `PATH{k1,k2}` / `PATH.{k1,k2}` into the
+/// selector path and the `{...}` part (the pipe is optional on deep nodes:
+/// `sites[0]{key,name}` == `sites[0]|{key,name}`). Returns None for a bare
+/// `{k1,k2}` (path empty), for a pipeline (handled by split_pipeline) or when
+/// no valid trailing projection is present.
+fn split_trailing_projection(expr: &str) -> Option<(String, String)> {
+    let s = expr.trim();
+    if !s.ends_with('}') || s.starts_with('{') {
+        return None;
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let mut depth = 0i32;
+    let mut in_quote: Option<char> = None;
+    for (i, &c) in chars.iter().enumerate() {
+        match in_quote {
+            Some(q) if c == q => in_quote = None,
+            Some(_) => {}
+            None => match c {
+                '"' | '\'' => in_quote = Some(c),
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                '|' if depth == 0 && chars.get(i + 1) != Some(&'|') => return None, // 管道交给 split_pipeline
+                '{' if depth == 0 => {
+                    let rest: String = chars[i..].iter().collect();
+                    if parse_projection(&rest).is_ok() {
+                        let mut left: String = chars[..i].iter().collect();
+                        let left = left.trim();
+                        // `PATH.{k1,k2}`: drop the dot right before the brace.
+                        if left.ends_with('.') {
+                            let cut = left[..left.len() - 1].trim_end();
+                            if cut.is_empty() {
+                                return None;
+                            }
+                            return Some((cut.to_string(), rest));
+                        }
+                        return Some((left.to_string(), rest));
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+    None
+}
+
+/// `PATH{k1,k2}` / `PATH.{k1,k2}`: resolve the selector path and project
+/// every match — the deep-node form of the bare root projection.
+fn apply_trailing_projection(
+    v: &Value,
+    expr: &str,
+    out_f: DataFormat,
+    compact: bool,
+) -> Result<String> {
+    let (path, proj) = split_trailing_projection(expr)
+        .with_context(|| format!("invalid projection `{expr}`"))?;
+    let keys = parse_projection(&proj)
+        .with_context(|| format!("invalid projection `{expr}`"))?;
+    apply_projection_path(v, &path, &keys, out_f, compact)
+}
+
 // --- Predicate mini-language -----------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2216,6 +2276,11 @@ pub fn cmd_data(
         // root keys, and `ps | sys data -i table '{Id,Name}'` projects every
         // row. Key list validation is shared with `path | {k1,k2}`.
         result_string = apply_bare_projection(&v, expr, out_f, compact)?;
+    } else if split_trailing_projection(expr).is_some() {
+        // Trailing key projection on a deep node: `sites[0]{key,name}` /
+        // `sites[0].{key,name}` == `sites[0]|{key,name}` — the deep-node
+        // form of the bare root projection (arrays project every row).
+        result_string = apply_trailing_projection(&v, expr, out_f, compact)?;
     } else if looks_like_bare_predicate(expr)
         && matches!(in_f, DataFormat::Csv | DataFormat::Table | DataFormat::Jsonl)
     {
@@ -3404,6 +3469,76 @@ mod tests {
         assert!(apply_bare_projection(&v, "id", DataFormat::Json, false).is_err());
         // 空键列表（仅逗号）同样报错。
         assert!(apply_bare_projection(&v, "{,}", DataFormat::Json, false).is_err());
+    }
+
+    #[test]
+    fn split_trailing_projection_shapes() {
+        // PATH{...} / PATH.{...} 拆分为路径 + 投影；裸 / 管道 / 无尾随投影返回 None。
+        assert_eq!(
+            split_trailing_projection("sites[0]{key,name}"),
+            Some(("sites[0]".to_string(), "{key,name}".to_string()))
+        );
+        assert_eq!(
+            split_trailing_projection("sites[0].{key,name}"),
+            Some(("sites[0]".to_string(), "{key,name}".to_string()))
+        );
+        assert_eq!(
+            split_trailing_projection("m[\"a{b\"]{c}"),
+            Some(("m[\"a{b\"]".to_string(), "{c}".to_string()))
+        );
+        assert!(split_trailing_projection("{a}").is_none()); // 裸投影
+        assert!(split_trailing_projection("data[*] | {id,name}").is_none()); // 管道
+        assert!(split_trailing_projection("a.b").is_none()); // 无投影
+        assert!(split_trailing_projection("a{b.c}").is_none()); // 非法投影键
+        assert!(split_trailing_projection("a{b").is_none()); // 不以 } 结尾
+    }
+
+    #[test]
+    fn trailing_projection_on_deep_object_node() {
+        // `sites[0]{key,name}` == `sites[0]|{key,name}`：单个深层对象节点
+        // 投影，输出单个对象。
+        let v = parse_input(
+            r#"{"sites":[{"key":"a","name":"A","x":1},{"key":"b","name":"B"}]}"#,
+            DataFormat::Json,
+            None,
+        )
+        .unwrap();
+        let out = apply_trailing_projection(&v, "sites[0]{key,name}", DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), r#"{"key":"a","name":"A"}"#);
+        // 点式写法等价。
+        let out2 = apply_trailing_projection(&v, "sites[0].{key,name}", DataFormat::Json, true).unwrap();
+        assert_eq!(out, out2);
+    }
+
+    #[test]
+    fn trailing_projection_on_deep_array_projects_every_row() {
+        // `sites[*]{key}` 数组逐元素投影，与 `sites[*]|{key}` 输出一致。
+        let v = parse_input(
+            r#"{"sites":[{"key":"a","name":"A"},{"key":"b","name":"B"}]}"#,
+            DataFormat::Json,
+            None,
+        )
+        .unwrap();
+        let direct = apply_trailing_projection(&v, "sites[*]{key,name}", DataFormat::Json, true).unwrap();
+        let piped = apply_projection_path(&v, "sites[*]", &parse_projection("{key,name}").unwrap(), DataFormat::Json, true).unwrap();
+        assert_eq!(direct, piped);
+        assert_eq!(
+            direct.trim(),
+            r#"[{"key":"a","name":"A"},{"key":"b","name":"B"}]"#
+        );
+        // 切片 + 尾随投影（切片可作投影左侧）：前 1 个元素，单匹配输出
+        // 单个对象（与 `|{key}` 语义一致）。
+        let out = apply_trailing_projection(&v, "sites[:1]{key}", DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), r#"{"key":"a"}"#);
+    }
+
+    #[test]
+    fn trailing_projection_invalid_keys_error() {
+        let v = json!({"a": {"b": 1}});
+        assert!(apply_trailing_projection(&v, "a{b.c}", DataFormat::Json, false).is_err());
+        assert!(apply_trailing_projection(&v, "a{}", DataFormat::Json, false).is_err());
+        // 路径本身非法（左括号函数形态）同样报错。
+        assert!(apply_trailing_projection(&v, "a.filter(x==1){b}", DataFormat::Json, false).is_err());
     }
 
     #[test]

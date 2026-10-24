@@ -130,6 +130,9 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     ///   {k1,k2}              bare projection on the root document: an object
     ///                        root keeps only those keys, an array root
     ///                        projects every row (like [*]|{k1,k2})
+    ///   path{k1,k2}          deep-node projection, pipe optional:
+    ///                        `sites[0]{key,name}` (also
+    ///                        `sites[0].{key,name}`) == `sites[0]|{key,name}`
     ///   PRED                 bare predicate on csv / table / jsonl input
     ///                        auto-filters the row array (e.g. `Id==7360`)
     ///   (omitted)            pure format conversion, e.g. `sys data -i yaml -o json < in.yaml`
@@ -191,7 +194,9 @@ struct DataArgs {
     ///    A bare `{k1,k2}` (no left side) projects the root document itself:
     ///    an object root keeps only those keys (jq `. | {k1,k2}`, e.g.
     ///    `cat 4k.json | sys data '{wallpaper,warningText}'`), an array root
-    ///    projects every row (same as `[*]|{k1,k2}`).
+    ///    projects every row (same as `[*]|{k1,k2}`). The pipe may also be
+    ///    omitted on a deep node: `sites[0]{key,name}` /
+    ///    `sites[0].{key,name}` == `sites[0]|{key,name}`.
     /// Predicate language: `$this` / `$key`, field paths (`name`, `a.b[0]`,
     /// `m["中文键"]`), literals (numbers, single/double-quoted strings, true /
     /// false / null), `== != > >= < <= && || !`, and contains / startsWith /
