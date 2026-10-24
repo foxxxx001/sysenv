@@ -1181,7 +1181,7 @@ fn split_trailing_projection(expr: &str) -> Option<(String, String)> {
                 '{' if depth == 0 => {
                     let rest: String = chars[i..].iter().collect();
                     if parse_projection(&rest).is_ok() {
-                        let mut left: String = chars[..i].iter().collect();
+                        let left: String = chars[..i].iter().collect();
                         let left = left.trim();
                         // `PATH.{k1,k2}`: drop the dot right before the brace.
                         if left.ends_with('.') {
