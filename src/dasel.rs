@@ -1138,6 +1138,24 @@ fn apply_projection_path(
     project_values(got.into_iter().cloned().collect(), keys, out_f, compact)
 }
 
+/// Bare key projection `{k1, k2}` applied to the root document: an object
+/// root is projected directly (single object out), an array root element-wise
+/// (every row projected, same as `[*]|{k1,k2}`). Missing keys become null.
+fn apply_bare_projection(
+    v: &Value,
+    expr: &str,
+    out_f: DataFormat,
+    compact: bool,
+) -> Result<String> {
+    let keys = parse_projection(expr)
+        .with_context(|| format!("invalid projection `{expr}`"))?;
+    let nodes: Vec<Value> = match v.as_array() {
+        Some(arr) => arr.clone(),
+        None => vec![v.clone()],
+    };
+    project_values(nodes, &keys, out_f, compact)
+}
+
 // --- Predicate mini-language -----------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2190,6 +2208,14 @@ pub fn cmd_data(
                 None => apply_projection_path(&v, &left, &keys, out_f, compact)?,
             };
         }
+    } else if expr.starts_with('{') && expr.ends_with('}') {
+        // Bare key projection `{k1, k2}` applied to the root document:
+        // an object root is projected directly (jq `. | {k1,k2}`), an array
+        // root element-wise (same as `[*]|{k1,k2}`) — so
+        // `cat 4k.json | sys data '{wallpaper,warningText}'` keeps only those
+        // root keys, and `ps | sys data -i table '{Id,Name}'` projects every
+        // row. Key list validation is shared with `path | {k1,k2}`.
+        result_string = apply_bare_projection(&v, expr, out_f, compact)?;
     } else if looks_like_bare_predicate(expr)
         && matches!(in_f, DataFormat::Csv | DataFormat::Table | DataFormat::Jsonl)
     {
@@ -3325,6 +3351,59 @@ mod tests {
         assert!(parse_projection("id").is_err());
         assert_eq!(parse_projection("{id, name,}").unwrap(), vec!["id", "name"]);
         assert_eq!(parse_projection("{ one , two }").unwrap(), vec!["one", "two"]);
+    }
+
+    #[test]
+    fn bare_projection_on_object_root_keeps_only_listed_keys() {
+        // `sys data '{wallpaper,warningText}'` on an object root: jq
+        // `. | {k1,k2}` semantics — a single object, other keys dropped.
+        let v = json!({"wallpaper": {"id": 1}, "warningText": "warn", "other": 42});
+        let out = apply_bare_projection(&v, "{wallpaper, warningText}", DataFormat::Json, false).unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(got, json!({"wallpaper": {"id": 1}, "warningText": "warn"}));
+    }
+
+    #[test]
+    fn bare_projection_on_array_root_projects_every_row() {
+        // Array root (csv / table / jsonl parse to one): element-wise, the
+        // same as `[*]|{Id,Name}`.
+        let v = parse_input(
+            "[{\"Id\":\"1\",\"Name\":\"a\",\"Drop\":true},{\"Id\":\"2\",\"Name\":\"b\",\"Drop\":true}]",
+            DataFormat::Json,
+            None,
+        )
+        .unwrap();
+        let out = apply_bare_projection(&v, "{Id, Name}", DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), "[{\"Id\":\"1\",\"Name\":\"a\"},{\"Id\":\"2\",\"Name\":\"b\"}]");
+        // table 输入（首行表头）同样逐行投影；单元格类型推断：数字列解析为数字。
+        let v = parse_input("Id Name\n1 a\n2 b\n", DataFormat::Table, None).unwrap();
+        let out = apply_bare_projection(&v, "{Id}", DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), "[{\"Id\":1},{\"Id\":2}]");
+    }
+
+    #[test]
+    fn bare_projection_missing_key_null_and_scalar_root() {
+        // Missing keys become null, jq-style; a scalar root yields one
+        // object with all-null values instead of an error.
+        let v = json!([{"id": 1}, {"name": "x"}]);
+        let out = apply_bare_projection(&v, "{id,name}", DataFormat::Json, true).unwrap();
+        assert_eq!(
+            out.trim(),
+            "[{\"id\":1,\"name\":null},{\"id\":null,\"name\":\"x\"}]"
+        );
+        let v = json!(5);
+        let out = apply_bare_projection(&v, "{a}", DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), "{\"a\":null}");
+    }
+
+    #[test]
+    fn bare_projection_validates_key_list() {
+        let v = json!({"a": 1});
+        assert!(apply_bare_projection(&v, "{a.b}", DataFormat::Json, false).is_err());
+        assert!(apply_bare_projection(&v, "{}", DataFormat::Json, false).is_err());
+        assert!(apply_bare_projection(&v, "id", DataFormat::Json, false).is_err());
+        // 空键列表（仅逗号）同样报错。
+        assert!(apply_bare_projection(&v, "{,}", DataFormat::Json, false).is_err());
     }
 
     #[test]

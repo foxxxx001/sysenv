@@ -127,6 +127,9 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     ///   expr|count()         count matched nodes (array = element count,
     ///                        single value = 1, none = 0)
     ///   path|{k1,k2}         jq-style key projection (also after filter/search)
+    ///   {k1,k2}              bare projection on the root document: an object
+    ///                        root keeps only those keys, an array root
+    ///                        projects every row (like [*]|{k1,k2})
     ///   PRED                 bare predicate on csv / table / jsonl input
     ///                        auto-filters the row array (e.g. `Id==7360`)
     ///   (omitted)            pure format conversion, e.g. `sys data -i yaml -o json < in.yaml`
@@ -185,6 +188,10 @@ struct DataArgs {
     /// 5. PROJECTION — `path|{k1,k2}` keeps only the listed keys of every
     ///    matched node (missing keys -> null); the left side may also be a
     ///    filter / search call, whose array result is spread element-wise.
+    ///    A bare `{k1,k2}` (no left side) projects the root document itself:
+    ///    an object root keeps only those keys (jq `. | {k1,k2}`, e.g.
+    ///    `cat 4k.json | sys data '{wallpaper,warningText}'`), an array root
+    ///    projects every row (same as `[*]|{k1,k2}`).
     /// Predicate language: `$this` / `$key`, field paths (`name`, `a.b[0]`,
     /// `m["中文键"]`), literals (numbers, single/double-quoted strings, true /
     /// false / null), `== != > >= < <= && || !`, and contains / startsWith /
