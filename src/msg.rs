@@ -271,6 +271,31 @@ fn cron_to_schtasks(c: &CronSpec) -> Result<Vec<String>> {
 }
 
 // ---------------------------------------------------------------------------
+// GBK encoding helpers (msg.exe reads its stdin in the system ANSI code page)
+// ---------------------------------------------------------------------------
+
+/// Encode TEXT as GBK bytes (msg.exe on a Chinese Windows expects GBK/936).
+fn encode_gbk(text: &str) -> Result<Vec<u8>> {
+    let (bytes, _, had_errors) = encoding_rs::GBK.encode(text);
+    if had_errors {
+        bail!("提醒内容含无法用 GBK 表示的字符");
+    }
+    let mut out = bytes.into_owned();
+    out.push(b'\n');
+    Ok(out)
+}
+
+/// Decode a GBK .txt file for `--list` output (fall back to lossy UTF-8).
+fn decode_gbk(bytes: &[u8]) -> String {
+    let (s, _, had_errors) = encoding_rs::GBK.decode(bytes);
+    if had_errors {
+        String::from_utf8_lossy(bytes).into_owned()
+    } else {
+        s.into_owned()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Storage helpers
 // ---------------------------------------------------------------------------
 
@@ -414,17 +439,29 @@ fn cmd_add(
         Schedule::Cron(c) => flags.extend(cron_to_schtasks(c)?),
     }
 
-    // Write the launcher (.cmd, pure ASCII) and the message (.txt, UTF-8). The
-    // batch switches the console code page to UTF-8 so Chinese text survives the
-    // msg.exe popup; the message is fed through stdin to avoid quoting hell. No
-    // /TIME limit: the popup stays until the user dismisses it.
+    // Write the launcher (.cmd, pure ASCII) and the message (.txt). The message
+    // file must be GBK: msg.exe decodes its stdin with the system ANSI code
+    // page (936 on Chinese Windows) — chcp 65001 does not affect it, UTF-8
+    // bytes come out as mojibake. The popup stays until the user dismisses it.
     let dir = base_dir()?;
     fs::create_dir_all(&dir)
         .with_context(|| format!("cannot create {}", dir.display()))?;
-    let txt = format!("{text}\n");
-    fs::write(dir.join(format!("{full}.txt")), txt)
+    let txt_gbk = encode_gbk(text)?;
+    fs::write(dir.join(format!("{full}.txt")), txt_gbk)
         .with_context(|| format!("cannot write {}", dir.join(format!("{full}.txt")).display()))?;
-    let cmd_body = format!("@echo off\r\nchcp 65001 >nul\r\nmsg * < \"%~dp0{full}.txt\"\r\n");
+    // One-shot tasks delete themselves after the popup is dismissed: msg waits
+    // for the user's OK, then the batch removes the scheduled task and both
+    // files. Daily/cron tasks stay. Order matters: `del "%~f0"` (the running
+    // batch itself) must be the LAST line — once cmd.exe deletes the batch it
+    // is executing it cannot read any further lines, so the .txt is removed
+    // first. If the schtasks delete ever fails the batch exits without touching
+    // the files, so a manual `sys msg --delete` can retry.
+    let cmd_body = match &schedule {
+        Schedule::Once { .. } => format!(
+            "@echo off\r\nmsg * < \"%~dp0{full}.txt\"\r\nschtasks /Delete /TN \"{full}\" /F >nul 2>nul || goto :eof\r\ndel \"%~dp0{full}.txt\"\r\ndel \"%~f0\"\r\n"
+        ),
+        _ => format!("@echo off\r\nmsg * < \"%~dp0{full}.txt\"\r\n"),
+    };
     fs::write(dir.join(format!("{full}.cmd")), cmd_body)
         .with_context(|| format!("cannot write {}", dir.join(format!("{full}.cmd")).display()))?;
 
@@ -495,7 +532,8 @@ fn cmd_list() -> Result<()> {
         return Ok(());
     }
     for (name, next, status) in rows {
-        let content = fs::read_to_string(dir.join(format!("{name}.txt")))
+        let content = fs::read(dir.join(format!("{name}.txt")))
+            .map(|b| decode_gbk(&b))
             .unwrap_or_default()
             .trim()
             .to_string();
@@ -637,5 +675,16 @@ mod tests {
         assert_eq!(field_slug(&Field::Step(5)), "n5");
         assert_eq!(field_slug(&Field::Num(20)), "20");
         assert_eq!(field_slug(&Field::List(vec![9, 18])), "9_18");
+    }
+
+    #[test]
+    fn gbk_roundtrip_chinese() {
+        let text = "每日下班提醒：该休息了";
+        let bytes = encode_gbk(text).unwrap();
+        // Not valid UTF-8 (it is GBK), and decodes back losslessly.
+        assert!(std::str::from_utf8(&bytes).is_err() || !bytes.is_empty());
+        assert_eq!(decode_gbk(&bytes).trim(), text);
+        // ASCII text stays valid UTF-8 too.
+        assert_eq!(decode_gbk(&encode_gbk("drink water").unwrap()).trim(), "drink water");
     }
 }
