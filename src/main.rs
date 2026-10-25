@@ -207,6 +207,17 @@ struct DataArgs {
     ///    null / nested objects and arrays. Works bare, after a pipe and as a
     ///    trailing projection, e.g.
     ///    `cat f.json | sys data '{"name":"Mike",key1,key2.child1,"country":key3.key2}'`.
+    /// 7. VALUE FUNCTIONS — any value expression (path or literal) may end in
+    ///    a chain of string functions: `key.split(",")` (string -> array),
+    ///    `arr.join("|")` (array -> string), `key.replace("a","b")`
+    ///    (replace every occurrence), `key.substr(start,length)` (JS
+    ///    `substr` semantics; a negative start counts from the end). They run
+    ///    left to right: `key.split(",").join("|")`. A literal value takes a
+    ///    function after a dot (`"a,b,c".substr(0,3)` -> `"a,b"`), and the
+    ///    comma form `"newKey","a,b,c",substr(0,3)` is equivalent.
+    ///    Type mismatches and functions on a missing path (null) error, e.g.
+    ///    `cat f.json | sys data '{"arr1":key1.split(","),key2.substr(0,1),
+    ///    key3.replace("a","b"),"newkey1","a,b,c",substr(0,3)}'`.
     /// Predicate language: `$this` / `$key`, field paths (`name`, `a.b[0]`,
     /// `m["中文键"]`), literals (numbers, single/double-quoted strings, true /
     /// false / null), `== != > >= < <= && || !`, and contains / startsWith /

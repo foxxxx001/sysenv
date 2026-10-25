@@ -44,6 +44,11 @@
 //!   data[*]|{id,name}               jq-style key projection (pipes a
 //!                                   selector or filter / search result onto
 //!                                   the listed keys; missing keys -> null)
+//!   {..} elements may be `"key":lit`, `"key":path`, bare paths (child
+//!   lift), and any value expression may end in a function chain:
+//!   `key.split(",")`, `arr.join("|")`, `key.replace("a","b")`,
+//!   `key.substr(0,1)` / `"a,b,c".substr(0,3)`; `"new","a,b,c",substr(0,3)`
+//!   is the comma form of `"new":"a,b,c".substr(0,3)`.
 //!
 //! On csv / table / jsonl input (root = row array), a bare method predicate
 //! (`Name.contains("x")`, `has("k")`, …) auto-filters the root array, the
@@ -1075,19 +1080,42 @@ fn split_pipeline(expr: &str) -> Option<(String, String)> {
     None
 }
 
+/// A string function applied to a projected value: `key.split(",")`,
+/// `key2.substr(0,1)`, `key3.replace("a","b")`, `"a,b,c".substr(0,3)`.
+/// Functions run left to right as a chain (`key.split(",").join("|")`).
+#[derive(Debug, Clone)]
+enum ValueFn {
+    /// `split(sep)` — split a string into an array on every occurrence of
+    /// `sep`; an empty `sep` splits per character.
+    Split(String),
+    /// `join(sep)` — join an array into a string with `sep` between the
+    /// elements (string / number / bool as-is, null as "", object / array
+    /// elements error).
+    Join(String),
+    /// `replace(old, new)` — replace every occurrence of `old` with `new`.
+    Replace(String, String),
+    /// `substr(start, length)` — JS `substr` semantics: `length` characters
+    /// from `start`; a negative `start` counts from the end; a `length`
+    /// beyond the end is truncated; a `start` beyond the string yields "".
+    Substr(isize, usize),
+}
+
 /// One element of an object-construction projection `{...}`: either a
 /// literal value under a new key, or the value at a selector path (bare
-/// paths lift the deepest node up, named after its last path segment).
+/// paths lift the deepest node up, named after its last path segment). The
+/// value may pass through a function chain (`key.split(",")`, ...).
 #[derive(Debug, Clone)]
 enum ProjItem {
     /// `"key": <json literal>` — e.g. `"name":"Mike"`, `"n":1`, `"ok":true`,
-    /// `"cfg":{"a":1}`. The literal is inserted under `key` verbatim.
-    Literal { key: String, value: Value },
+    /// `"cfg":{"a":1}`. The literal is inserted under `key` verbatim
+    /// (possibly transformed by `funcs`: `"a,b,c".substr(0,3)`).
+    Literal { key: String, value: Value, funcs: Vec<ValueFn> },
     /// `key` / `path` / `"key": path` — the value at `path` in each matched
     /// node. A bare path (no alias) emits the value under the path's last
     /// segment, lifting a child node to the current level
     /// (`{key2.child1}` -> `"child1": ...`); a missing path yields null.
-    FromPath { key: String, path: String },
+    /// `funcs` transforms the value (`key.split(",")`).
+    FromPath { key: String, path: String, funcs: Vec<ValueFn> },
 }
 
 /// Parse an object-construction projection `{key1, "new":lit, a.b, "c":d.e}`
@@ -1098,24 +1126,69 @@ enum ProjItem {
 ///   - `"key": <json literal>` — a literal value (`"Mike"`, `123`, `true`,
 ///     `[1,2]`, `{"a":1}`, ...) inserted under `key`;
 ///   - `"key": path` — the value copied from a selector path.
+/// Any value expression may end in a function chain: `key.split(",")`,
+/// `key2.substr(0,1)`, `key3.replace("a","b")`, `"a,b,c".substr(0,3)`,
+/// `"arr1":key1.split(",").join("|")`. A comma-separated form
+/// `"name", value, func(...)` (e.g. `"newkey1","a,b,c",substr(0,3)`) is
+/// merged into one item only when the value is followed by a function call,
+/// so `"a","b"` keeps the two quoted-field semantics.
 fn parse_projection(s: &str) -> Result<Vec<ProjItem>> {
     let s = s.trim();
     if !(s.starts_with('{') && s.ends_with('}')) || s.len() < 2 {
         bail!("projection must look like `{{k1, k2, ...}}` (got `{s}`)");
     }
     let inner = &s[1..s.len() - 1];
+    let parts = split_projection_parts(inner);
     let mut items = Vec::new();
-    for part in split_projection_parts(inner) {
-        let part = part.trim();
+    let mut i = 0usize;
+    while i < parts.len() {
+        let part = parts[i].trim();
         if part.is_empty() {
+            i += 1;
             continue;
         }
-        items.push(parse_proj_item(part)?);
+        // `"name", value, func(...)`: a quoted field name followed by a value
+        // expression and at least one function call merges into one item
+        // (`"newkey1","a,b,c",substr(0,3)` -> `"newkey1":"a,b,c".substr(0,3)`).
+        if is_quoted_name(part)
+            && i + 2 < parts.len()
+            && !is_func_call(parts[i + 1].trim())
+            && is_func_call(parts[i + 2].trim())
+        {
+            let mut expr = format!("{part}:{}", parts[i + 1].trim());
+            let mut j = i + 2;
+            while j < parts.len() && is_func_call(parts[j].trim()) {
+                expr.push('.');
+                expr.push_str(parts[j].trim());
+                j += 1;
+            }
+            items.push(parse_proj_item(&expr)?);
+            i = j;
+        } else {
+            items.push(parse_proj_item(part)?);
+            i += 1;
+        }
     }
     if items.is_empty() {
         bail!("projection needs at least one key (got `{s}`)");
     }
     Ok(items)
+}
+
+/// Whether `part` is a quoted field name (`"newkey1"` / `'newkey1'`).
+fn is_quoted_name(part: &str) -> bool {
+    let p = part.trim();
+    (p.starts_with('"') && p.ends_with('"') && p.len() >= 2)
+        || (p.starts_with('\'') && p.ends_with('\'') && p.len() >= 2)
+}
+
+/// Whether `part` is a bare function call `split(...)` / `join(...)` /
+/// `replace(...)` / `substr(...)` (a top-level, complete call).
+fn is_func_call(part: &str) -> bool {
+    let p = part.trim();
+    let Some(open) = p.find('(') else { return false };
+    let name = &p[..open];
+    matches!(name, "split" | "join" | "replace" | "substr") && p.ends_with(')')
 }
 
 /// Whether the char at `i` is escaped by an odd number of backslashes.
@@ -1164,7 +1237,205 @@ fn split_projection_parts(inner: &str) -> Vec<String> {
 
 /// Parse one `{...}` element: `"key": <literal|path>`, or a bare path
 /// `key` / `a.b` / `list[0]` (kept / lifted under its last path segment).
+/// A trailing function chain (`key.split(",")`, `"a,b,c".substr(0,3)`) is
+/// split off first and attached to the base item.
 fn parse_proj_item(part: &str) -> Result<ProjItem> {
+    let part = part.trim();
+    if is_func_call(part) {
+        bail!("projection function `{part}` needs a value expression (write `key.{part}`)");
+    }
+    let (base, funcs) = split_func_chain(part)?;
+    let item = parse_proj_base(&base)?;
+    Ok(match item {
+        ProjItem::Literal { key, value, .. } => ProjItem::Literal { key, value, funcs },
+        ProjItem::FromPath { key, path, .. } => ProjItem::FromPath { key, path, funcs },
+    })
+}
+
+/// Split a projection element into its base value expression and the
+/// trailing function chain, cut at the first top-level `.func(` (dots inside
+/// quotes / brackets and plain path dots stay part of the base).
+fn split_func_chain(part: &str) -> Result<(String, Vec<ValueFn>)> {
+    let chars: Vec<char> = part.chars().collect();
+    let mut in_quote: Option<char> = None;
+    let mut depth = 0i32;
+    let mut split_at = None;
+    for (i, &c) in chars.iter().enumerate() {
+        match in_quote {
+            Some(q) if c == q && !is_escaped(&chars, i) => in_quote = None,
+            Some(_) => {}
+            None => match c {
+                '"' | '\'' => in_quote = Some(c),
+                '[' | '{' | '(' => depth += 1,
+                ']' | '}' | ')' => depth -= 1,
+                '.' if depth == 0 && func_name_at(&part[i + 1..]).is_some() => {
+                    split_at = Some(i);
+                    break;
+                }
+                _ => {}
+            },
+        }
+    }
+    let (base, chain) = match split_at {
+        Some(at) => (part[..at].to_string(), &part[at + 1..]),
+        None => (part.to_string(), ""),
+    };
+    let funcs = if chain.is_empty() {
+        Vec::new()
+    } else {
+        parse_func_calls(chain)?
+    };
+    Ok((base, funcs))
+}
+
+/// The known function name right at the start of `s` (`split(`, `join(`,
+/// `replace(`, `substr(`), or None.
+fn func_name_at(s: &str) -> Option<&'static str> {
+    for name in ["split", "join", "replace", "substr"] {
+        if let Some(rest) = s.strip_prefix(name) {
+            if rest.starts_with('(') {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+/// Parse a function chain `split(",").join("|")` into the ordered function
+/// list (split on top-level dots; function arguments may contain dots,
+/// quotes and commas).
+fn parse_func_calls(chain: &str) -> Result<Vec<ValueFn>> {
+    let chars: Vec<char> = chain.chars().collect();
+    let mut segs: Vec<String> = Vec::new();
+    let mut in_quote: Option<char> = None;
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, &c) in chars.iter().enumerate() {
+        match in_quote {
+            Some(q) if c == q && !is_escaped(&chars, i) => in_quote = None,
+            Some(_) => {}
+            None => match c {
+                '"' | '\'' => in_quote = Some(c),
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                '.' if depth == 0 => {
+                    segs.push(chars[start..i].iter().collect::<String>());
+                    start = i + 1;
+                }
+                _ => {}
+            },
+        }
+    }
+    segs.push(chars[start..].iter().collect::<String>());
+    let mut funcs = Vec::with_capacity(segs.len());
+    for seg in segs {
+        funcs.push(parse_func_call(&seg)?);
+    }
+    Ok(funcs)
+}
+
+/// Parse one `func(args)` call into a [`ValueFn`], validating the name and
+/// the argument count / kinds.
+fn parse_func_call(seg: &str) -> Result<ValueFn> {
+    let seg = seg.trim();
+    let Some(open) = seg.find('(') else {
+        bail!("invalid projection function `{seg}`");
+    };
+    if !seg.ends_with(')') {
+        bail!("invalid projection function `{seg}`");
+    }
+    let name = seg[..open].trim();
+    let args = split_args(&seg[open + 1..seg.len() - 1]);
+    match name {
+        "split" => {
+            let a = one_str_arg(&args, name)?;
+            Ok(ValueFn::Split(a))
+        }
+        "join" => {
+            let a = one_str_arg(&args, name)?;
+            Ok(ValueFn::Join(a))
+        }
+        "replace" => {
+            if args.len() != 2 {
+                bail!("replace() needs 2 arguments (old, new), got {}", args.len());
+            }
+            let old = str_arg(&args[0], "replace")?;
+            let new = str_arg(&args[1], "replace")?;
+            Ok(ValueFn::Replace(old, new))
+        }
+        "substr" => {
+            if args.len() != 2 {
+                bail!("substr() needs 2 arguments (start, length), got {}", args.len());
+            }
+            let start = int_arg(&args[0], "substr")?;
+            let len = usize_arg(&args[1], "substr")?;
+            Ok(ValueFn::Substr(start, len))
+        }
+        other => bail!(
+            "unknown projection function `{other}` (use split / join / replace / substr)"
+        ),
+    }
+}
+
+/// Split the argument list of a function call on top-level commas (quotes
+/// are tracked, so `replace("a,b","c")` keeps both strings).
+fn split_args(args: &str) -> Vec<String> {
+    let chars: Vec<char> = args.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut in_quote: Option<char> = None;
+    let mut start = 0usize;
+    for (i, &c) in chars.iter().enumerate() {
+        match in_quote {
+            Some(q) if c == q && !is_escaped(&chars, i) => in_quote = None,
+            Some(_) => {}
+            None => match c {
+                '"' | '\'' => in_quote = Some(c),
+                ',' => {
+                    out.push(chars[start..i].iter().collect::<String>());
+                    start = i + 1;
+                }
+                _ => {}
+            },
+        }
+    }
+    out.push(chars[start..].iter().collect::<String>());
+    out
+}
+
+fn one_str_arg(args: &[String], f: &str) -> Result<String> {
+    if args.len() != 1 {
+        bail!("{f}() needs 1 argument, got {}", args.len());
+    }
+    str_arg(&args[0], f)
+}
+
+fn str_arg(arg: &str, f: &str) -> Result<String> {
+    let a = arg.trim();
+    if let Ok(s) = serde_json::from_str::<String>(a) {
+        return Ok(s);
+    }
+    if a.len() >= 2 && a.starts_with('\'') && a.ends_with('\'') {
+        return Ok(a[1..a.len() - 1].to_string());
+    }
+    bail!("{f}() argument `{a}` must be a quoted string");
+}
+
+fn int_arg(arg: &str, f: &str) -> Result<isize> {
+    let a = arg.trim();
+    a.parse::<isize>()
+        .with_context(|| format!("{f}() argument `{a}` must be an integer"))
+}
+
+fn usize_arg(arg: &str, f: &str) -> Result<usize> {
+    let a = arg.trim();
+    a.parse::<usize>()
+        .with_context(|| format!("{f}() argument `{a}` must be a non-negative integer"))
+}
+
+/// The base value expression of a projection element: `"key": <literal|path>`
+/// or a bare path `key` / `a.b` / `list[0]` (kept / lifted under its last
+/// path segment).
+fn parse_proj_base(part: &str) -> Result<ProjItem> {
     // Top-level colon: `"key": value` (a colon inside quotes / brackets does
     // not split — JSON literals like `{"a":1}` and paths with quoted keys
     // `m["a:b"]` stay intact).
@@ -1201,12 +1472,12 @@ fn parse_proj_item(part: &str) -> Result<ProjItem> {
             // `{"a":1}`, ...) is inserted verbatim; anything else is a
             // selector path copied from the node.
             match serde_json::from_str::<Value>(rest) {
-                Ok(value) => Ok(ProjItem::Literal { key, value }),
+                Ok(value) => Ok(ProjItem::Literal { key, value, funcs: Vec::new() }),
                 Err(_) => {
                     if rest.is_empty() {
                         bail!("projection alias `{part}` needs a value");
                     }
-                    Ok(ProjItem::FromPath { key, path: rest.to_string() })
+                    Ok(ProjItem::FromPath { key, path: rest.to_string(), funcs: Vec::new() })
                 }
             }
         }
@@ -1216,16 +1487,16 @@ fn parse_proj_item(part: &str) -> Result<ProjItem> {
             // selector path and emitted under its last path segment (lift).
             if part.starts_with('"') || part.starts_with('\'') {
                 if let Ok(key) = serde_json::from_str::<String>(part) {
-                    return Ok(ProjItem::FromPath { key: key.clone(), path: key });
+                    return Ok(ProjItem::FromPath { key: key.clone(), path: key, funcs: Vec::new() });
                 }
                 if part.len() >= 2 && part.starts_with('\'') && part.ends_with('\'') {
                     let key = part[1..part.len() - 1].to_string();
-                    return Ok(ProjItem::FromPath { key: key.clone(), path: key });
+                    return Ok(ProjItem::FromPath { key: key.clone(), path: key, funcs: Vec::new() });
                 }
             }
             let path = part.to_string();
             let key = projection_leaf_name(&path);
-            Ok(ProjItem::FromPath { key, path })
+            Ok(ProjItem::FromPath { key, path, funcs: Vec::new() })
         }
     }
 }
@@ -1268,18 +1539,84 @@ fn projection_leaf_name(path: &str) -> String {
 
 /// Resolve one projection item against a node: a literal is cloned verbatim,
 /// a path is looked up with the full selector machinery (first match wins; a
-/// missing path yields null, a malformed path is an error).
+/// missing path yields null, a malformed path is an error). Any attached
+/// function chain is applied to the resulting value.
 fn resolve_proj_item(node: &Value, item: &ProjItem) -> Result<(String, Value)> {
-    match item {
-        ProjItem::Literal { key, value } => Ok((key.clone(), value.clone())),
-        ProjItem::FromPath { key, path } => {
+    let (key, raw, funcs) = match item {
+        ProjItem::Literal { key, value, funcs } => (key.clone(), value.clone(), funcs),
+        ProjItem::FromPath { key, path, funcs } => {
             let steps = parse_selector(path)
                 .with_context(|| format!("invalid projection path `{path}`"))?;
             let got = get_values(node, &steps);
             let value = got.into_iter().next().cloned().unwrap_or(Value::Null);
-            Ok((key.clone(), value))
+            (key.clone(), value, funcs)
         }
+    };
+    let value = if funcs.is_empty() {
+        raw
+    } else {
+        apply_funcs(raw, funcs)?
+    };
+    Ok((key, value))
+}
+
+/// Apply a function chain to a value, left to right. Type mismatches (e.g.
+/// `split()` on a number) and functions on a missing path (null) are errors,
+/// matching jq.
+fn apply_funcs(mut value: Value, funcs: &[ValueFn]) -> Result<Value> {
+    for f in funcs {
+        value = match f {
+            ValueFn::Split(sep) => {
+                let s = value
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("split() needs a string value, got {}", type_name(&value)))?;
+                let parts: Vec<Value> = if sep.is_empty() {
+                    s.chars().map(|c| Value::String(c.to_string())).collect()
+                } else {
+                    s.split(sep.as_str()).map(|p| Value::String(p.to_string())).collect()
+                };
+                Value::Array(parts)
+            }
+            ValueFn::Join(sep) => {
+                let arr = value
+                    .as_array()
+                    .ok_or_else(|| anyhow::anyhow!("join() needs an array value, got {}", type_name(&value)))?;
+                let mut parts = Vec::with_capacity(arr.len());
+                for e in arr {
+                    match e {
+                        Value::String(s) => parts.push(s.clone()),
+                        Value::Number(n) => parts.push(n.to_string()),
+                        Value::Bool(b) => parts.push(b.to_string()),
+                        Value::Null => parts.push(String::new()),
+                        other => bail!("join() element must be a scalar, got {}", type_name(other)),
+                    }
+                }
+                Value::String(parts.join(sep))
+            }
+            ValueFn::Replace(old, new) => {
+                let s = value
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("replace() needs a string value, got {}", type_name(&value)))?;
+                Value::String(s.replace(old.as_str(), new.as_str()))
+            }
+            ValueFn::Substr(start, len) => {
+                let s = value
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("substr() needs a string value, got {}", type_name(&value)))?;
+                let chars: Vec<char> = s.chars().collect();
+                let n = chars.len() as isize;
+                let start = if *start < 0 {
+                    (n + start).max(0)
+                } else {
+                    (*start).min(n)
+                };
+                let start = start as usize;
+                let end = start.saturating_add(*len).min(chars.len());
+                Value::String(chars[start..end].iter().collect())
+            }
+        };
     }
+    Ok(value)
 }
 
 /// Project each node onto the given construction items (missing paths become
@@ -3792,6 +4129,111 @@ mod tests {
         // 值部分是合法 JSON 字面量时优先按字面量处理：`"k":123` 是数字而非路径。
         let out = apply_bare_projection(&v, r#"{"k":123}"#, DataFormat::Json, true).unwrap();
         assert_eq!(out.trim(), r#"{"k":123}"#);
+    }
+
+    // ------------------------------------------------------------------
+    // Value functions: `key.split(",")`, `key2.substr(0,1)`,
+    // `key3.replace("a","b")`, `"a,b,c".substr(0,3)`
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn construction_value_functions_user_example() {
+        // 用户示例：`{"arr1":key1.split(","),key2.substr(0,1),
+        // key3.replace("a","b"),"newkey1","a,b,c",substr(0,3)}` —
+        // 逗号形式的 `"newkey1","a,b,c",substr(0,3)` 合并为
+        // 新字段 newkey1 = 字面量 "a,b,c" 经 substr(0,3) = "a,b"。
+        let v = json!({
+            "key1": "a,b,c",
+            "key2": "hello",
+            "key3": "banana",
+        });
+        let out = apply_bare_projection(
+            &v,
+            r#"{"arr1":key1.split(","),key2.substr(0,1),key3.replace("a","b"),"newkey1","a,b,c",substr(0,3)}"#,
+            DataFormat::Json,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            out.trim(),
+            r#"{"arr1":["a","b","c"],"key2":"h","key3":"bbnbnb","newkey1":"a,b"}"#
+        );
+    }
+
+    #[test]
+    fn construction_func_chain_and_literal_dot() {
+        let v = json!({"key1": "a,b,c"});
+        // 链式：split 后 join（从左到右依序应用）。
+        let out = apply_bare_projection(&v, r#"{"j":key1.split(",").join("|")}"#, DataFormat::Json, true)
+            .unwrap();
+        assert_eq!(out.trim(), r#"{"j":"a|b|c"}"#);
+        // 字面量 + 函数（点号形式，别名下同样生效）。
+        let out = apply_bare_projection(&v, r#"{"s":"a,b,c".substr(0,3)}"#, DataFormat::Json, true)
+            .unwrap();
+        assert_eq!(out.trim(), r#"{"s":"a,b"}"#);
+        // 深路径 + 函数：`"t":meta.tag.substr(0,2)` 别名取值后再变换。
+        // （`data[*]` 只匹配 1 个元素 -> 单对象输出。）
+        let v = json!({"data": [{"meta": {"tag": "abc"}}]});
+        let items = parse_projection(r#"{"t":meta.tag.substr(0,2)}"#).unwrap();
+        let out = apply_projection_path(&v, "data[*]", &items, DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), r#"{"t":"ab"}"#);
+    }
+
+    #[test]
+    fn construction_func_semantics() {
+        let v = json!({
+            "s": "hello world",
+            "arr": ["x", 1, true, null],
+        });
+        // split("") 空分隔符 -> 逐字符。
+        let out = apply_bare_projection(&v, r#"{"c":s.split("")}"#, DataFormat::Json, true).unwrap();
+        assert_eq!(
+            out.trim(),
+            r#"{"c":["h","e","l","l","o"," ","w","o","r","l","d"]}"#
+        );
+        // join：数字 / 布尔 / null 元素按字符串参与连接。
+        let out = apply_bare_projection(&v, r#"{"j":arr.join("-")}"#, DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), r#"{"j":"x-1-true-"}"#);
+        // substr：负 start 从末尾数 / length 超界截断 / 常规截取。
+        let out = apply_bare_projection(
+            &v,
+            r#"{"a":s.substr(-5,5),"b":s.substr(6,99),"c":s.substr(0,5)}"#,
+            DataFormat::Json,
+            true,
+        )
+        .unwrap();
+        assert_eq!(out.trim(), r#"{"a":"world","b":"world","c":"hello"}"#);
+        // replace 全替换。
+        let out = apply_bare_projection(&v, r#"{"r":s.replace("l","L")}"#, DataFormat::Json, true)
+            .unwrap();
+        assert_eq!(out.trim(), r#"{"r":"heLLo worLd"}"#);
+    }
+
+    #[test]
+    fn construction_func_errors() {
+        let v = json!({"s": "abc", "n": 42, "a": [1, 2]});
+        // 类型不符（数字 split / 数组 replace / 缺失路径 null 上 substr）-> 报错。
+        assert!(apply_bare_projection(&v, r#"{n.split(",")}"#, DataFormat::Json, false).is_err());
+        assert!(apply_bare_projection(&v, r#"{a.replace("a","b")}"#, DataFormat::Json, false).is_err());
+        assert!(apply_bare_projection(&v, r#"{missing.substr(0,1)}"#, DataFormat::Json, false).is_err());
+        // 未知函数（函数链层白名单检查报错；裸路径 `s.toupper()` 是合法
+        // selector 函数路径，求值空 -> null，与缺失路径一致）
+        // / 参数个数错误 / 参数类型错误 / 独立函数元素 -> 报错。
+        assert!(parse_projection(r#"{s.split(",").toupper()}"#).is_err());
+        assert!(parse_projection(r#"{s.split()}"#).is_err());
+        assert!(parse_projection(r#"{s.replace("a")}"#).is_err());
+        assert!(parse_projection(r#"{s.substr("x",1)}"#).is_err());
+        assert!(parse_projection(r#"{split(",")}"#).is_err());
+        // 引号参数内的逗号不误切参数。
+        assert!(parse_projection(r#"{s.replace("a,b","c")}"#).is_ok());
+    }
+
+    #[test]
+    fn construction_comma_form_two_quoted_fields_unchanged() {
+        // `"a","b"`（值后无函数）保持两个引号保留字段的既有语义，不合并为字面量。
+        let v = json!({"a": 1, "b": 2});
+        let out = apply_bare_projection(&v, r#"{"a","b"}"#, DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), r#"{"a":1,"b":2}"#);
     }
 
     #[test]
