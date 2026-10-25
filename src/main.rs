@@ -196,7 +196,8 @@ struct DataArgs {
     ///    `PATH += N` / `-=` / `*=` / `/=` (numeric; `+=` also appends
     ///    strings).
     ///
-    /// 3. FUNCTIONS — `path.filter(pred)` keeps the matching array elements,
+    /// 3. FUNCTIONS — `path.filter(pred)` keeps the matching array elements
+    ///    (in place, so `-w` writes back the filtered document),
     ///    `path.remove(pred)` deletes them, `search(pred)` recursively
     ///    collects every node matching pred, string / key functions
     ///    `name.contains("x")` / `startsWith` / `endsWith` / `indexOf` /

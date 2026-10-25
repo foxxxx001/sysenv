@@ -37,7 +37,8 @@
 //!   PATH = strenv(NAME)  set from an environment variable (string; an unset
 //!                   variable is an error)
 //!   PATH += VALUE / -= / *= / /=    numeric (or string append for +=)
-//!   list.filter(predicate)          keep matching array elements
+//!   list.filter(predicate)          keep matching array elements (in place:
+//!                                   `-w` writes back the filtered document)
 //!   list.remove(predicate)          delete matching array elements
 //!   search(predicate)               recursively collect matching nodes
 //!   name.endsWith("x")              string / key functions
@@ -906,7 +907,8 @@ fn set_value(root: &mut Value, steps: &[Step], new: Value, delete: bool) -> Resu
 // ---------------------------------------------------------------------------
 //
 // dasel-compatible function calls usable as a trailing expression:
-//   list.filter(age >= 18)          keep matching array elements
+//   list.filter(age >= 18)          keep matching array elements (in place:
+//                                   `-w` writes back the filtered document)
 //   list.remove(name.contains("web"))   delete matching array elements
 //   search(has("name"))             recursively collect matching nodes
 //   name.endsWith("x")              string / key functions on a selector
@@ -2302,9 +2304,43 @@ fn apply_filter_value(v: &Value, call: &FunctionCall) -> Result<Value> {
     Ok(Value::Array(kept))
 }
 
-/// `path.filter(predicate)`: keep the matching array elements (read-only).
-fn apply_filter(v: &Value, call: &FunctionCall, out_f: DataFormat, compact: bool) -> Result<String> {
-    serialize_output(&apply_filter_value(v, call)?, out_f, compact)
+/// `path.filter(predicate)`: keep the matching array elements **in place**,
+/// so `-w` writes back the filtered document (stdout still shows the filtered
+/// array, or the full document with --root).
+fn apply_filter(
+    v: &mut Value,
+    call: &FunctionCall,
+    out_f: DataFormat,
+    compact: bool,
+    root: bool,
+) -> Result<String> {
+    let path = call.path.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("`filter` needs an array path (e.g. `list.filter(...)`)")
+    })?;
+    let steps = parse_selector(path).with_context(|| format!("invalid path for `filter`"))?;
+    // `[*]` / `[]` address the root array itself when filtering in place
+    // (array_mut_at rejects the wildcard step); a nested `a[*]` still errors.
+    let node = match steps.as_slice() {
+        [Step::Index(None)] => &mut *v,
+        _ => array_mut_at(v, &steps)?,
+    };
+    if !node.is_array() {
+        bail!("`filter` needs an array (got {})", type_name(node));
+    }
+    let a = node.as_array_mut().unwrap();
+    let mut kept = Vec::new();
+    for (i, e) in a.iter().enumerate() {
+        let key = Value::Number(serde_json::Number::from(i as u64));
+        if eval_predicate(e, Some(&key), &call.args)? {
+            kept.push(e.clone());
+        }
+    }
+    *a = kept;
+    if root {
+        serialize_output(v, out_f, compact)
+    } else {
+        serialize_output(node, out_f, compact)
+    }
 }
 
 /// `path.remove(predicate)`: delete the matching array elements in place
@@ -2772,7 +2808,7 @@ pub fn cmd_data(
         let fc = fc?;
         result_string = match fc.name.as_str() {
             "count" => apply_count(&v, &fc, out_f, compact)?,
-            "filter" => apply_filter(&v, &fc, out_f, compact)?,
+            "filter" => apply_filter(&mut v, &fc, out_f, compact, root)?,
             "search" => apply_search(&v, &fc, out_f, compact)?,
             "remove" => apply_remove(&mut v, &fc, out_f, compact, root)?,
             // 裸方法谓词（`NAME.contains("x")` / `has("k")` 等）在
@@ -2789,7 +2825,7 @@ pub fn cmd_data(
                     name: "filter".to_string(),
                     args: expr.to_string(),
                 };
-                apply_filter(&v, &auto, out_f, compact)?
+                apply_filter(&mut v, &auto, out_f, compact, root)?
             }
             _ => apply_string_fn(&v, &fc, out_f, compact)?,
         };
@@ -2873,7 +2909,7 @@ pub fn cmd_data(
             name: "filter".to_string(),
             args: expr.to_string(),
         };
-        result_string = apply_filter(&v, &fc, out_f, compact)?;
+        result_string = apply_filter(&mut v, &fc, out_f, compact, root)?;
     } else {
         // Plain selector.
         let steps = parse_selector(expr)?;
@@ -3540,20 +3576,25 @@ mod tests {
 
     #[test]
     fn filter_keeps_matching_elements() {
-        let v = json!({"sites": [
+        let mut v = json!({"sites": [
             {"name": "web", "type": 1},
             {"name": "db", "type": 2},
             {"name": "api", "type": 1},
         ]});
         let fc = parse_function_expr("sites.filter(type==1)").unwrap().unwrap();
-        let out = apply_filter(&v, &fc, DataFormat::Json, false).unwrap();
+        let out = apply_filter(&mut v, &fc, DataFormat::Json, false, false).unwrap();
         let got: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(got.as_array().unwrap().len(), 2);
         assert_eq!(got[0]["name"], json!("web"));
         assert_eq!(got[1]["name"], json!("api"));
+        // In place: the document's `sites` array is filtered too, so `-w`
+        // writes back the filtered document.
+        assert_eq!(v["sites"].as_array().unwrap().len(), 2);
+        assert_eq!(v["sites"][0]["name"], json!("web"));
+        assert_eq!(v["sites"][1]["name"], json!("api"));
         // Non-array targets error.
         let fc = parse_function_expr("sites[0].filter(x)").unwrap().unwrap();
-        assert!(apply_filter(&v, &fc, DataFormat::Json, false).is_err());
+        assert!(apply_filter(&mut v, &fc, DataFormat::Json, false, false).is_err());
     }
 
     #[test]
@@ -3575,13 +3616,13 @@ mod tests {
     #[test]
     fn bare_predicate_on_csv_auto_filters() {
         // table/csv 根数组 + 裸谓词 = 自动 filter（等价于 [*].filter(...)）。
-        let v = parse_input("Id Name\n1 a\n2 b\n3 c\n", DataFormat::Table, None).unwrap();
+        let mut v = parse_input("Id Name\n1 a\n2 b\n3 c\n", DataFormat::Table, None).unwrap();
         let fc = FunctionCall {
             path: Some("[*]".to_string()),
             name: "filter".to_string(),
             args: "Id==2".to_string(),
         };
-        let out = apply_filter(&v, &fc, DataFormat::Json, false).unwrap();
+        let out = apply_filter(&mut v, &fc, DataFormat::Json, false, false).unwrap();
         let got: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(got.as_array().unwrap().len(), 1);
         assert_eq!(got[0]["Name"], "b");
@@ -3591,7 +3632,6 @@ mod tests {
     fn bare_method_predicate_auto_filters_root_array() {
         // `Name.contains("a")` / `has("Id")` 等裸方法谓词在 table/csv/jsonl
         // 根数组上等价于 `[*].filter(...)`（自动过滤分支构造同一合成 fc）。
-        let v = parse_input("Id Name\n1 alpha\n2 beta\n3 gamma\n", DataFormat::Table, None).unwrap();
         let cases = [
             ("Name.contains(\"ph\")", 1),    // 仅 alpha 含 ph
             ("Name.startsWith(\"ga\")", 1),   // 仅 gamma
@@ -3599,12 +3639,14 @@ mod tests {
             ("has(\"Id\")", 3),              // 每行都有 Id 键
         ];
         for (pred, want) in cases {
+            // filter is in-place now, so each case gets a fresh input.
+            let mut v = parse_input("Id Name\n1 alpha\n2 beta\n3 gamma\n", DataFormat::Table, None).unwrap();
             let auto = FunctionCall {
                 path: Some("[*]".to_string()),
                 name: "filter".to_string(),
                 args: pred.to_string(),
             };
-            let out = apply_filter(&v, &auto, DataFormat::Json, false).unwrap();
+            let out = apply_filter(&mut v, &auto, DataFormat::Json, false, false).unwrap();
             let got: Value = serde_json::from_str(&out).unwrap();
             assert_eq!(got.as_array().unwrap().len(), want, "predicate {pred}");
         }
@@ -3672,33 +3714,56 @@ mod tests {
     fn filter_on_root_array_via_wildcard() {
         // `ps | sys data -i table '[*].filter(Id==7360)'` — a bare `[*]` on a
         // root array addresses the array itself.
-        let v = parse_input("Id Name\n1 a\n2 b\n3 c\n", DataFormat::Table, None).unwrap();
+        let mut v = parse_input("Id Name\n1 a\n2 b\n3 c\n", DataFormat::Table, None).unwrap();
         let fc = parse_function_expr("[*].filter(Id >= 2)").unwrap().unwrap();
         assert_eq!(fc.path.as_deref(), Some("[*]"));
-        let out = apply_filter(&v, &fc, DataFormat::Json, false).unwrap();
+        let out = apply_filter(&mut v, &fc, DataFormat::Json, false, false).unwrap();
         let got: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(got.as_array().unwrap().len(), 2);
         assert_eq!(got[0]["Id"], json!(2));
         assert_eq!(got[0]["Name"], json!("b"));
-        // `[]` 是 `[*]` 的简写，根数组行为一致。
+        // `[]` 是 `[*]` 的简写，根数组行为一致（就地过滤，用独立输入）。
+        let mut v2 = parse_input("Id Name\n1 a\n2 b\n3 c\n", DataFormat::Table, None).unwrap();
         let fc = parse_function_expr("[].filter(Id >= 2)").unwrap().unwrap();
         assert_eq!(fc.path.as_deref(), Some("[]"));
-        let out = apply_filter(&v, &fc, DataFormat::Json, false).unwrap();
+        let out = apply_filter(&mut v2, &fc, DataFormat::Json, false, false).unwrap();
         let got: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(got.as_array().unwrap().len(), 2);
         assert_eq!(got[0]["Id"], json!(2));
-        // search works the same way over the root array.
+        // search works the same way over the root array (read-only).
+        let v3 = parse_input("Id Name\n1 a\n2 b\n3 c\n", DataFormat::Table, None).unwrap();
         let fc = parse_function_expr("[*].search(Id == 1)").unwrap().unwrap();
-        let out = apply_search(&v, &fc, DataFormat::Json, false).unwrap();
+        let out = apply_search(&v3, &fc, DataFormat::Json, false).unwrap();
         let got: Value = serde_json::from_str(&out).unwrap();
         let arr = got.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["Name"], json!("a"));
         // Nested arrays under a key keep the previous behaviour (expanded
         // elements still error — no root special case).
-        let o = json!({"sites": [{"n": 1}, {"n": 2}]});
+        let mut o = json!({"sites": [{"n": 1}, {"n": 2}]});
         let fc = parse_function_expr("sites[*].filter(n==1)").unwrap().unwrap();
-        assert!(apply_filter(&o, &fc, DataFormat::Json, false).is_err());
+        assert!(apply_filter(&mut o, &fc, DataFormat::Json, false, false).is_err());
+    }
+
+    #[test]
+    fn filter_in_place_with_root_outputs_whole_doc() {
+        // `--root` + in-place filter: the full document comes back with the
+        // filtered `sites` array, other fields untouched — the `-w` write-back
+        // path writes exactly this document.
+        let mut v = json!({
+            "sites": [
+                {"name": "web", "type": 1},
+                {"name": "db", "type": 2},
+            ],
+            "lives": [{"name": "tv"}],
+        });
+        let fc = parse_function_expr("sites.filter(type==1)").unwrap().unwrap();
+        let out = apply_filter(&mut v, &fc, DataFormat::Json, true, true).unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(got["sites"].as_array().unwrap().len(), 1);
+        assert_eq!(got["sites"][0]["name"], json!("web"));
+        assert_eq!(got["lives"].as_array().unwrap().len(), 1);
+        assert_eq!(got["lives"][0]["name"], json!("tv"));
     }
 
     #[test]
@@ -4026,7 +4091,7 @@ mod tests {
     fn jsonl_bare_predicate_filters_array() {
         // Core of `sys data -f x.jsonl 'level=="error"'`: parse -> root array
         // -> auto-filter on the bare predicate -> jsonl output.
-        let v = parse_input(
+        let mut v = parse_input(
             "{\"level\":\"info\",\"pid\":1}\n{\"level\":\"error\",\"pid\":2}\n{\"level\":\"error\",\"pid\":3}\n",
             DataFormat::Jsonl,
             None,
@@ -4036,7 +4101,7 @@ mod tests {
             name: "filter".to_string(),
             args: "level==\"error\"".to_string(),
         };
-        let out = apply_filter(&v, &fc, DataFormat::Jsonl, false).unwrap();
+        let out = apply_filter(&mut v, &fc, DataFormat::Jsonl, false, false).unwrap();
         assert_eq!(out, "{\"level\":\"error\",\"pid\":2}\n{\"level\":\"error\",\"pid\":3}\n");
         // --limit composes with the array root.
         let mut v = parse_input(
