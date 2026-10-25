@@ -2,6 +2,19 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.35（2026-10-25）
+
+### 新增
+- **`sys msg` 定时提醒**（src/msg.rs，Windows 专用）：基于 Windows 计划任务（schtasks）创建任务、到点用 `msg.exe` 弹出桌面提醒；任务名统一加 `sysmsg-` 前缀，与系统计划任务隔离，`--list` / `--delete` 只操作该前缀内的任务
+  - `sys msg --daily 20:00:02 "内容"`：每天定时（/SC DAILY，/ST 精确到秒）
+  - `sys msg --once 20:00:02 "内容"`：只提醒一次（/SC ONCE，今天该时刻已过自动顺延至明天）
+  - `sys msg --cron "0 20 * * *" "内容"`：crontab 五段式（MIN HOUR DOM MON DOW）映射为 schtasks——`*/n * * * *` → /SC MINUTE /MO n；`m * * * *` → /SC HOURLY /ST 00:mm；`m */n * * *` → /SC HOURLY /MO n；`m h * * *` → /SC DAILY /ST h:m；`m h * * dow` → /SC WEEKLY /D MON..SUN；`m h dom * *` → /SC MONTHLY /D dom；无法用单条任务表达的组合（DOM+DOW 同设、列表、`*`/`*/n` 与具体值混搭等）明确报错并提示
+  - `sys msg --list`：列出所有 `sysmsg-` 任务（任务名 / 下次运行 / 状态 / 提醒内容）
+  - `sys msg --delete NAME`：删除任务（可省略 `sysmsg-` 前缀自动补；前缀外任务不受影响）
+  - 提醒内容存 `%LOCALAPPDATA%\sysmsg\<任务名>.txt`（UTF-8），任务动作是 `.cmd` 批处理 `chcp 65001` 后 `msg * /TIME:0 < 内容.txt`，中文正常弹窗；任务以当前用户 /IT 交互式运行；`--name` 自定义任务名（仅限字母数字-_）
+- 新增 5 个单元测试（时间解析 / cron 解析与校验 / cron→schtasks 映射含错误分支 / CSV 行解析 / 名称校验与默认名摘要）；`cargo test --bin sys`：423 -> 428 项全绿
+- 版本 0.6.34 -> 0.6.35
+
 ## v0.6.34（2026-10-25）
 
 ### 修复

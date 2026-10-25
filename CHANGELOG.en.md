@@ -2,6 +2,19 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.35 (2026-10-25)
+
+### Added
+- **`sys msg` scheduled reminders** (src/msg.rs, Windows-only): creates Windows scheduled tasks (schtasks) that pop a desktop reminder via `msg.exe`; every task is named with the `sysmsg-` prefix to keep it apart from the system's own scheduled tasks, and `--list` / `--delete` only ever touch that prefix
+  - `sys msg --daily 20:00:02 "text"` — every day at that time (/SC DAILY, second precision in /ST)
+  - `sys msg --once 20:00:02 "text"` — one shot (/SC ONCE; if today's time already passed it rolls over to tomorrow)
+  - `sys msg --cron "0 20 * * *" "text"` — five-field crontab (MIN HOUR DOM MON DOW) mapped onto schtasks: `*/n * * * *` → /SC MINUTE /MO n; `m * * * *` → /SC HOURLY /ST 00:mm; `m */n * * *` → /SC HOURLY /MO n; `m h * * *` → /SC DAILY /ST h:m; `m h * * dow` → /SC WEEKLY /D MON..SUN; `m h dom * *` → /SC MONTHLY /D dom; combos a single task cannot express (DOM+DOW together, lists, `*`/`*/n` mixed with concrete values) fail with a clear hint
+  - `sys msg --list` — lists every `sysmsg-` task (name / next run / status / message)
+  - `sys msg --delete NAME` — removes a task (bare names get the `sysmsg-` prefix automatically; nothing outside the prefix is touched)
+  - The message lives in `%LOCALAPPDATA%\sysmsg\<task>.txt` (UTF-8); the task action is a `.cmd` batch that runs `chcp 65001` then `msg * /TIME:0 < message.txt`, so Chinese text renders correctly; tasks run interactively as the current user (/IT); `--name` sets a custom task name (letters/digits/-/_ only)
+- 5 new unit tests (time parsing / cron parsing & validation / cron→schtasks mapping incl. error branches / CSV line parsing / name validation & default-name slugs); `cargo test --bin sys`: 423 -> 428 all green
+- Version 0.6.34 -> 0.6.35
+
 ## v0.6.34 (2026-10-25)
 
 ### Fixed

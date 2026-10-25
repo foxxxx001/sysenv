@@ -10,6 +10,7 @@ mod image;
 mod link;
 mod lock;
 mod log;
+mod msg;
 mod net;
 mod path;
 mod server;
@@ -25,7 +26,7 @@ use std::process::ExitCode;
     name = "sys",
     version = concat!(env!("CARGO_PKG_VERSION"), " (Made by Gary-china)"),
     about = "System PATH & environment manager + httpie-compatible HTTP client (Windows / Ubuntu)",
-    long_about = "sys manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, probes domains / URLs read from a file or extracts the valid URLs from it (`sys net`, response-time / JSON / plain-text / URL-extraction checks), installs command shims (spath/senv/slink/shttp/sai/stask/sfile), and ships an httpie-compatible HTTP client.
+    long_about = "sys manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, probes domains / URLs read from a file or extracts the valid URLs from it (`sys net`, response-time / JSON / plain-text / URL-extraction checks), installs command shims (spath/senv/slink/shttp/sai/stask/sfile), schedules Windows desktop reminders that pop up via msg.exe (sys msg --daily 20:00:02 TEXT, --once, --cron, --list, --delete), and ships an httpie-compatible HTTP client.
 
 Examples:
   sys path list
@@ -109,6 +110,11 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     /// directory tree, 3 args = in-place replace, --enc = encoding conversion
     /// (gbk/gb2312 <-> utf-8), -md5/-sha = hash, -l = line counts
     File(FileArgs),
+    /// Windows scheduled reminders via msg.exe popups: `--daily 20:00:02`
+    /// (every day), `--once 20:00:02` (one shot, next occurrence), or a crontab
+    /// expression `--cron "MIN HOUR DOM MON DOW"` (`*`, `*/n`, single values);
+    /// `--list` shows every `sysmsg-` task, `--delete NAME` removes one
+    Msg(MsgArgs),
     /// Query / modify / convert structured data (JSON / JSONL / YAML / TOML / CSV / MD / TABLE), dasel-compatible
     /// (alias `dasel`): `sys data [EXPR] [-f FILE | -u URL] [-i FMT] [-o FMT] [-w FILE] [--compact] [--root] [--depth [N]] [--limit N] [--header|--no-header]`
     ///
@@ -1096,6 +1102,31 @@ position:
 }
 
 #[derive(Args)]
+struct MsgArgs {
+    /// 每天定时提醒，TIME = HH:MM[:SS]（如 20:00:02；秒精确到计划任务）
+    #[arg(long, value_name = "TIME", conflicts_with_all = ["once", "cron", "list", "delete"])]
+    daily: Option<String>,
+    /// 只提醒一次，TIME = HH:MM[:SS]（今天该时刻已过则顺延至明天）
+    #[arg(long, value_name = "TIME", conflicts_with_all = ["daily", "cron", "list", "delete"])]
+    once: Option<String>,
+    /// crontab 表达式：MIN HOUR DOM MON DOW（*、*/n、单值；列表/特殊组合不支持）
+    #[arg(long, value_name = "CRON", conflicts_with_all = ["daily", "once", "list", "delete"])]
+    cron: Option<String>,
+    /// 任务名称（默认按时间自动生成；仅限字母、数字、- 和 _）
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["list", "delete"])]
+    name: Option<String>,
+    /// 列出所有 sysmsg- 前缀的定时提醒任务
+    #[arg(long, conflicts_with_all = ["daily", "once", "cron", "name", "delete"])]
+    list: bool,
+    /// 删除一个 sysmsg- 任务（可省略 sysmsg- 前缀；前缀外任务不受影响）
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["daily", "once", "cron", "name", "list"])]
+    delete: Option<String>,
+    /// 提醒内容（添加模式必填）
+    #[arg(value_name = "TEXT")]
+    text: Option<String>,
+}
+
+#[derive(Args)]
 struct LogArgs {
     /// Log file to parse (default: stdin when piped; `-` also means stdin)
     #[arg(long, value_name = "FILE")]
@@ -1220,6 +1251,16 @@ fn main() -> ExitCode {
         Cmd::Http(h) => run_http(h),
         Cmd::Ai(a) => run_ai(a).map(|_| 0),
         Cmd::Net(n) => run_net(n).map(|_| 0),
+        Cmd::Msg(m) => msg::cmd_msg(
+            m.daily.as_deref(),
+            m.once.as_deref(),
+            m.cron.as_deref(),
+            m.name.as_deref(),
+            m.list,
+            m.delete.as_deref(),
+            m.text.as_deref(),
+        )
+        .map(|_| 0),
         Cmd::File(f) => file::cmd_file(
             &f.args,
             &f.ext,
