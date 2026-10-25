@@ -2,6 +2,19 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.36（2026-10-25）
+
+### 修复
+- **`sys data` 裸标量字面量表达式拦截**（src/dasel.rs）：`sys data 12` 等裸 JSON 标量（数字 / 布尔 / null / 引号字符串）此前被当作 selector 路径——交互终端直接运行会**阻塞等待 stdin（挂起）**，有管道输入时报误导性 `selector `12` matched nothing`；新增 `looks_like_scalar_literal` 在读取 stdin 之前拦截并清晰报错：`` `12` is a literal value, not an expression — select a node with a path (e.g. `a.b`, `list[0]`) or assign with `PATH = 12` ``。数组 / 对象字面量不拦截（`[1,2]`、`{...}` 走原有 selector / projection 语义），赋值 `a=12`、路径 `a.b`、投影 `{a}` 行为不变；新增 3 个单元测试，`cargo test --bin sys`：434 -> 437 项全绿
+
+### 新增
+- **`sys data --sample` 快速格式检查**（src/dasel.rs + src/main.rs）：只保留每个顶层数组的第一个元素，一眼看清文档结构——对象根时每个数组字段截断为首元素，数组根时只留首元素（jsonl / csv / table 输入即一行样本）；保留的样本元素内部嵌套数组保持完整（便于看到一条完整记录的结构）；标量根与空数组不变；与 `--limit` / `--depth` 同阶段（表达式求值之前），可与 `--limit` 叠加；`sys data --help` 同步更新
+
+### 变更
+- **`sys data` 帮助文档 [EXPR] 示例分行**（src/main.rs）：clap 4 会把 doc comment 中连续的行折叠成单段文本（行间换行变空格，仅空行分段），导致 `EXPR is one of` 的 15 条示例与 [EXPR] 参数说明 7 个要点全部挤成一大段；EXPR 列表条目间加空行分段、列表对齐改为 `条目 — 说明`，DataArgs.expr 7 个编号要点间加空行分段；仅改帮助文本无行为变化
+
+- 版本 0.6.35 -> 0.6.36
+
 ## v0.6.35（2026-10-25）
 
 ### 新增

@@ -2,6 +2,19 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.36 (2026-10-25)
+
+### Fixed
+- **`sys data` rejects bare scalar literals as expressions** (src/dasel.rs): a bare JSON scalar (`12`, `true`, `null`, `"..."`) was previously treated as a selector path — in an interactive terminal it **blocked waiting on stdin (hang)**, and with piped input it reported a misleading `selector `12` matched nothing`; a new `looks_like_scalar_literal` check runs before stdin is read and errors clearly: `` `12` is a literal value, not an expression — select a node with a path (e.g. `a.b`, `list[0]`) or assign with `PATH = 12` ``. Array / object literals are not intercepted (`[1,2]`, `{...}` keep their selector / projection semantics); assignments `a=12`, paths `a.b` and projections `{a}` are unchanged; 3 new unit tests, `cargo test --bin sys`: 434 -> 437 all green
+
+### Added
+- **`sys data --sample` quick format check** (src/dasel.rs + src/main.rs): keeps only the first element of every top-level array so the document shape is visible at a glance — on an object root every array field is truncated to its first element, on an array root only the first element is kept (jsonl / csv / table input yields a single sample row); nested arrays inside the kept element stay complete (one full record shows the format); scalar roots and empty arrays are untouched; runs at the same stage as `--limit` / `--depth` (before expression evaluation) and stacks with `--limit`; `sys data --help` updated
+
+### Changed
+- **`sys data` help: [EXPR] examples split into separate lines** (src/main.rs): clap 4 folds consecutive doc-comment lines into one paragraph (line breaks become spaces, only blank lines split), so the 15 `EXPR is one of` examples and the 7 numbered points in the [EXPR] argument description were all squashed into one block; blank-line paragraphs were added between list items and the alignment changed to `item — description`, and blank lines separate the 7 numbered points in `DataArgs.expr`; help text only, no behavior change
+
+- Version 0.6.35 -> 0.6.36
+
 ## v0.6.35 (2026-10-25)
 
 ### Added
