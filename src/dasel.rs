@@ -902,6 +902,11 @@ fn set_value(root: &mut Value, steps: &[Step], new: Value, delete: bool) -> Resu
 //   clients.filter(name=="x")|{id}  filter result array spreads into the
 //                                   projection (jq `.[]|select|{...}`)
 //   data[0]|{id}                    single match emits an object, not an array
+//   {"n":"Mike",id,a.b,"c":d.e}     object construction: new fields from JSON
+//                                   literals (`"n":"Mike"`) or selector paths
+//                                   (`"c":d.e`); bare paths keep the node
+//                                   under their last segment (`id`, or lift
+//                                   `a.b` -> `"b": ...`); missing -> null
 //
 // File-valued assignments (this file):
 //   PATH = @FILE                    value loaded & parsed from FILE (extension
@@ -1070,50 +1075,231 @@ fn split_pipeline(expr: &str) -> Option<(String, String)> {
     None
 }
 
-/// Parse a key projection `{key1, key2, ...}` into the ordered key list.
-/// Empty slots (e.g. a trailing comma) are skipped; nested key paths
-/// (`{a.b}` / `{a[0]}`) and aliases (`{x: y}`) are rejected for now.
-fn parse_projection(s: &str) -> Result<Vec<String>> {
+/// One element of an object-construction projection `{...}`: either a
+/// literal value under a new key, or the value at a selector path (bare
+/// paths lift the deepest node up, named after its last path segment).
+#[derive(Debug, Clone)]
+enum ProjItem {
+    /// `"key": <json literal>` — e.g. `"name":"Mike"`, `"n":1`, `"ok":true`,
+    /// `"cfg":{"a":1}`. The literal is inserted under `key` verbatim.
+    Literal { key: String, value: Value },
+    /// `key` / `path` / `"key": path` — the value at `path` in each matched
+    /// node. A bare path (no alias) emits the value under the path's last
+    /// segment, lifting a child node to the current level
+    /// (`{key2.child1}` -> `"child1": ...`); a missing path yields null.
+    FromPath { key: String, path: String },
+}
+
+/// Parse an object-construction projection `{key1, "new":lit, a.b, "c":d.e}`
+/// into the ordered element list. Empty slots (e.g. a trailing comma) are
+/// skipped. Every element is one of:
+///   - a bare path `key` / `a.b` / `list[0]` — kept / lifted under its last
+///     path segment;
+///   - `"key": <json literal>` — a literal value (`"Mike"`, `123`, `true`,
+///     `[1,2]`, `{"a":1}`, ...) inserted under `key`;
+///   - `"key": path` — the value copied from a selector path.
+fn parse_projection(s: &str) -> Result<Vec<ProjItem>> {
     let s = s.trim();
     if !(s.starts_with('{') && s.ends_with('}')) || s.len() < 2 {
         bail!("projection must look like `{{k1, k2, ...}}` (got `{s}`)");
     }
     let inner = &s[1..s.len() - 1];
-    let mut keys = Vec::new();
-    for part in inner.split(',') {
-        let k = part.trim();
-        if k.is_empty() {
+    let mut items = Vec::new();
+    for part in split_projection_parts(inner) {
+        let part = part.trim();
+        if part.is_empty() {
             continue;
         }
-        if k.chars().any(|c| matches!(c, '{' | '}' | '[' | ']' | '.' | ':' | '"' | '\'')) {
-            bail!("projection key `{k}` is not a plain field name (nested paths / aliases are not supported yet)");
-        }
-        keys.push(k.to_string());
+        items.push(parse_proj_item(part)?);
     }
-    if keys.is_empty() {
+    if items.is_empty() {
         bail!("projection needs at least one key (got `{s}`)");
     }
-    Ok(keys)
+    Ok(items)
 }
 
-/// Project each node onto the given keys (missing keys become null, jq-style);
-/// a single projected value is emitted as-is, several as an array.
+/// Whether the char at `i` is escaped by an odd number of backslashes.
+fn is_escaped(chars: &[char], i: usize) -> bool {
+    let mut n = 0usize;
+    let mut j = i;
+    while j > 0 {
+        j -= 1;
+        if chars[j] == '\\' {
+            n += 1;
+        } else {
+            break;
+        }
+    }
+    n % 2 == 1
+}
+
+/// Split the `{...}` body on top-level commas, ignoring commas inside
+/// quotes, brackets or nested braces (a literal value may itself be a JSON
+/// object / array).
+fn split_projection_parts(inner: &str) -> Vec<String> {
+    let chars: Vec<char> = inner.chars().collect();
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut in_quote: Option<char> = None;
+    let mut start = 0usize;
+    for (i, &c) in chars.iter().enumerate() {
+        match in_quote {
+            Some(q) if c == q && !is_escaped(&chars, i) => in_quote = None,
+            Some(_) => {}
+            None => match c {
+                '"' | '\'' => in_quote = Some(c),
+                '[' | '{' | '(' => depth += 1,
+                ']' | '}' | ')' => depth -= 1,
+                ',' if depth == 0 => {
+                    parts.push(chars[start..i].iter().collect());
+                    start = i + 1;
+                }
+                _ => {}
+            },
+        }
+    }
+    parts.push(chars[start..].iter().collect());
+    parts
+}
+
+/// Parse one `{...}` element: `"key": <literal|path>`, or a bare path
+/// `key` / `a.b` / `list[0]` (kept / lifted under its last path segment).
+fn parse_proj_item(part: &str) -> Result<ProjItem> {
+    // Top-level colon: `"key": value` (a colon inside quotes / brackets does
+    // not split — JSON literals like `{"a":1}` and paths with quoted keys
+    // `m["a:b"]` stay intact).
+    let colon = {
+        let chars: Vec<char> = part.chars().collect();
+        let mut in_quote: Option<char> = None;
+        let mut depth = 0i32;
+        let mut found = None;
+        for (i, &c) in chars.iter().enumerate() {
+            match in_quote {
+                Some(q) if c == q && !is_escaped(&chars, i) => in_quote = None,
+                Some(_) => {}
+                None => match c {
+                    '"' | '\'' => in_quote = Some(c),
+                    '[' | '{' | '(' => depth += 1,
+                    ']' | '}' | ')' => depth -= 1,
+                    ':' if depth == 0 => {
+                        found = Some(i);
+                        break;
+                    }
+                    _ => {}
+                },
+            }
+        }
+        found
+    };
+    match colon {
+        Some(i) => {
+            let name = part[..i].trim();
+            let rest = part[i + 1..].trim();
+            let key = parse_proj_key(name)
+                .with_context(|| format!("invalid projection key `{name}`"))?;
+            // A full JSON literal (`"Mike"`, `123`, `true`, `[1,2]`,
+            // `{"a":1}`, ...) is inserted verbatim; anything else is a
+            // selector path copied from the node.
+            match serde_json::from_str::<Value>(rest) {
+                Ok(value) => Ok(ProjItem::Literal { key, value }),
+                Err(_) => {
+                    if rest.is_empty() {
+                        bail!("projection alias `{part}` needs a value");
+                    }
+                    Ok(ProjItem::FromPath { key, path: rest.to_string() })
+                }
+            }
+        }
+        None => {
+            // Bare path. A quoted JSON string (`"中文键"`) keeps that field
+            // under the same name; otherwise the value is taken from the
+            // selector path and emitted under its last path segment (lift).
+            if part.starts_with('"') || part.starts_with('\'') {
+                if let Ok(key) = serde_json::from_str::<String>(part) {
+                    return Ok(ProjItem::FromPath { key: key.clone(), path: key });
+                }
+                if part.len() >= 2 && part.starts_with('\'') && part.ends_with('\'') {
+                    let key = part[1..part.len() - 1].to_string();
+                    return Ok(ProjItem::FromPath { key: key.clone(), path: key });
+                }
+            }
+            let path = part.to_string();
+            let key = projection_leaf_name(&path);
+            Ok(ProjItem::FromPath { key, path })
+        }
+    }
+}
+
+/// The key part of an alias: either a quoted string (`"中文键"` / `'中文键'`)
+/// or a bare field name (`country`, `name2`).
+fn parse_proj_key(name: &str) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("empty key");
+    }
+    if name.starts_with('"') || name.starts_with('\'') {
+        if let Ok(k) = serde_json::from_str::<String>(name) {
+            return Ok(k);
+        }
+        if name.len() >= 2 && name.starts_with('\'') && name.ends_with('\'') {
+            return Ok(name[1..name.len() - 1].to_string());
+        }
+        bail!("key `{name}` is not a quoted string");
+    }
+    if name
+        .chars()
+        .any(|c| matches!(c, '.' | '[' | ']' | '{' | '}' | '"' | '\'' | ',' | ':' | '(' | ')'))
+    {
+        bail!("key `{name}` contains selector or delimiter characters (quote it: `\"{name}\"`)");
+    }
+    Ok(name.to_string())
+}
+
+/// The output key for a bare path: the segment after the last dot
+/// (`a.b.c` -> `c`), with any trailing index groups stripped
+/// (`data[0]` / `m["中文键"]` -> `data` / `m`).
+fn projection_leaf_name(path: &str) -> String {
+    let base = path.rsplit('.').next().unwrap_or(path).trim();
+    match base.find('[') {
+        Some(i) => base[..i].trim().to_string(),
+        None => base.to_string(),
+    }
+}
+
+/// Resolve one projection item against a node: a literal is cloned verbatim,
+/// a path is looked up with the full selector machinery (first match wins; a
+/// missing path yields null, a malformed path is an error).
+fn resolve_proj_item(node: &Value, item: &ProjItem) -> Result<(String, Value)> {
+    match item {
+        ProjItem::Literal { key, value } => Ok((key.clone(), value.clone())),
+        ProjItem::FromPath { key, path } => {
+            let steps = parse_selector(path)
+                .with_context(|| format!("invalid projection path `{path}`"))?;
+            let got = get_values(node, &steps);
+            let value = got.into_iter().next().cloned().unwrap_or(Value::Null);
+            Ok((key.clone(), value))
+        }
+    }
+}
+
+/// Project each node onto the given construction items (missing paths become
+/// null, jq-style); a single projected value is emitted as-is, several as an
+/// array.
 fn project_values(
     nodes: Vec<Value>,
-    keys: &[String],
+    items: &[ProjItem],
     out_f: DataFormat,
     compact: bool,
 ) -> Result<String> {
-    let out: Vec<Value> = nodes
-        .into_iter()
-        .map(|node| {
-            let mut obj = serde_json::Map::new();
-            for k in keys {
-                obj.insert(k.clone(), lookup_key(&node, k));
-            }
-            Value::Object(obj)
-        })
-        .collect();
+    let mut out = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let mut obj = serde_json::Map::new();
+        for item in items {
+            let (key, value) = resolve_proj_item(&node, item)?;
+            obj.insert(key, value);
+        }
+        out.push(Value::Object(obj));
+    }
     let value = if out.len() == 1 {
         out.into_iter().next().unwrap()
     } else {
@@ -1126,7 +1312,7 @@ fn project_values(
 fn apply_projection_path(
     v: &Value,
     path: &str,
-    keys: &[String],
+    items: &[ProjItem],
     out_f: DataFormat,
     compact: bool,
 ) -> Result<String> {
@@ -1135,25 +1321,26 @@ fn apply_projection_path(
     if got.is_empty() {
         bail!("projection path `{path}` matched nothing");
     }
-    project_values(got.into_iter().cloned().collect(), keys, out_f, compact)
+    project_values(got.into_iter().cloned().collect(), items, out_f, compact)
 }
 
-/// Bare key projection `{k1, k2}` applied to the root document: an object
-/// root is projected directly (single object out), an array root element-wise
-/// (every row projected, same as `[*]|{k1,k2}`). Missing keys become null.
+/// Bare object-construction projection `{k1, "new":lit, a.b}` applied to the
+/// root document: an object root is projected directly (single object out),
+/// an array root element-wise (every row projected, same as `[*]|{...}`).
+/// Bare paths keep / lift their last segment; missing paths become null.
 fn apply_bare_projection(
     v: &Value,
     expr: &str,
     out_f: DataFormat,
     compact: bool,
 ) -> Result<String> {
-    let keys = parse_projection(expr)
+    let items = parse_projection(expr)
         .with_context(|| format!("invalid projection `{expr}`"))?;
     let nodes: Vec<Value> = match v.as_array() {
         Some(arr) => arr.clone(),
         None => vec![v.clone()],
     };
-    project_values(nodes, &keys, out_f, compact)
+    project_values(nodes, &items, out_f, compact)
 }
 
 /// Split a trailing key projection `PATH{k1,k2}` / `PATH.{k1,k2}` into the
@@ -1211,9 +1398,9 @@ fn apply_trailing_projection(
 ) -> Result<String> {
     let (path, proj) = split_trailing_projection(expr)
         .with_context(|| format!("invalid projection `{expr}`"))?;
-    let keys = parse_projection(&proj)
+    let items = parse_projection(&proj)
         .with_context(|| format!("invalid projection `{expr}`"))?;
-    apply_projection_path(v, &path, &keys, out_f, compact)
+    apply_projection_path(v, &path, &items, out_f, compact)
 }
 
 // --- Predicate mini-language -----------------------------------------------
@@ -2240,7 +2427,7 @@ pub fn cmd_data(
             // plain selector or a filter / search call; the projection applies
             // to each matched node (function results spread their array, like
             // jq's `.[] | select(...) | {...}`).
-            let keys = parse_projection(&right)
+            let items = parse_projection(&right)
                 .with_context(|| format!("invalid projection in `{expr}`"))?;
             result_string = match parse_function_expr(&left) {
                 Some(Ok(fc)) => match fc.name.as_str() {
@@ -2248,7 +2435,7 @@ pub fn cmd_data(
                         let arr = apply_filter_value(&v, &fc)?;
                         project_values(
                             arr.as_array().cloned().unwrap_or_default(),
-                            &keys,
+                            &items,
                             out_f,
                             compact,
                         )?
@@ -2257,7 +2444,7 @@ pub fn cmd_data(
                         let arr = apply_search_value(&v, &fc)?;
                         project_values(
                             arr.as_array().cloned().unwrap_or_default(),
-                            &keys,
+                            &items,
                             out_f,
                             compact,
                         )?
@@ -2265,7 +2452,7 @@ pub fn cmd_data(
                     other => bail!("cannot pipe `{other}(...)` into a projection"),
                 },
                 Some(Err(e)) => return Err(e),
-                None => apply_projection_path(&v, &left, &keys, out_f, compact)?,
+                None => apply_projection_path(&v, &left, &items, out_f, compact)?,
             };
         }
     } else if expr.starts_with('{') && expr.ends_with('}') {
@@ -2472,6 +2659,16 @@ fn lines_are_jsonl(text: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The output keys of a parsed projection, in order.
+    fn proj_keys(items: &[ProjItem]) -> Vec<&str> {
+        items
+            .iter()
+            .map(|it| match it {
+                ProjItem::Literal { key, .. } | ProjItem::FromPath { key, .. } => key.as_str(),
+            })
+            .collect()
+    }
 
     #[test]
     fn selector_parsing() {
@@ -3331,9 +3528,15 @@ mod tests {
             {"id": 1, "name": "a", "pricing": 9.9, "extra": true},
             {"id": 2, "name": "b", "pricing": 19.9, "extra": false},
         ]});
-        let keys = parse_projection("{id, name, pricing}").unwrap();
-        assert_eq!(keys, vec!["id", "name", "pricing"]);
-        let out = apply_projection_path(&v, "data[*]", &keys, DataFormat::Json, false).unwrap();
+        let items = parse_projection("{id, name, pricing}").unwrap();
+        let item_keys: Vec<&str> = items
+            .iter()
+            .map(|it| match it {
+                ProjItem::Literal { key, .. } | ProjItem::FromPath { key, .. } => key.as_str(),
+            })
+            .collect();
+        assert_eq!(item_keys, vec!["id", "name", "pricing"]);
+        let out = apply_projection_path(&v, "data[*]", &items, DataFormat::Json, false).unwrap();
         let got: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(got.as_array().unwrap().len(), 2);
         assert_eq!(got[0], json!({"id": 1, "name": "a", "pricing": 9.9}));
@@ -3409,13 +3612,22 @@ mod tests {
 
     #[test]
     fn parse_projection_validation() {
-        assert!(parse_projection("{a.b}").is_err());
-        assert!(parse_projection("{x: y}").is_err());
-        assert!(parse_projection("{a[0]}").is_err());
+        // 新构造语法：嵌套路径 / 别名 / 下标均合法（子节点提升 / 新字段）。
+        let items = parse_projection("{a.b}").unwrap();
+        assert_eq!(proj_keys(&items), vec!["b"]);
+        let items = parse_projection("{x: y}").unwrap();
+        assert_eq!(proj_keys(&items), vec!["x"]);
+        assert!(parse_projection("{a[0]}").is_ok());
         assert!(parse_projection("{}").is_err());
         assert!(parse_projection("id").is_err());
-        assert_eq!(parse_projection("{id, name,}").unwrap(), vec!["id", "name"]);
-        assert_eq!(parse_projection("{ one , two }").unwrap(), vec!["one", "two"]);
+        let items = parse_projection("{id, name,}").unwrap();
+        assert_eq!(proj_keys(&items), vec!["id", "name"]);
+        let items = parse_projection("{ one , two }").unwrap();
+        assert_eq!(proj_keys(&items), vec!["one", "two"]);
+        // 空键名 / 悬空别名 / 非法键字符报错。
+        assert!(parse_projection("{:a}").is_err());
+        assert!(parse_projection("{a:}").is_err());
+        assert!(parse_projection("{a.b:c}").is_err());
     }
 
     #[test]
@@ -3464,11 +3676,130 @@ mod tests {
     #[test]
     fn bare_projection_validates_key_list() {
         let v = json!({"a": 1});
-        assert!(apply_bare_projection(&v, "{a.b}", DataFormat::Json, false).is_err());
+        // 嵌套路径现在合法：`{a.b}` 提升 b 到当前层（源 a.b 缺失 -> null）。
+        let out = apply_bare_projection(&v, "{a.b}", DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), r#"{"b":null}"#);
         assert!(apply_bare_projection(&v, "{}", DataFormat::Json, false).is_err());
         assert!(apply_bare_projection(&v, "id", DataFormat::Json, false).is_err());
         // 空键列表（仅逗号）同样报错。
         assert!(apply_bare_projection(&v, "{,}", DataFormat::Json, false).is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // Object construction: `{"new":literal, key, a.b.lift, "alias":path}`
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn construction_literal_alias_and_lift() {
+        // 用户示例语义：字面量新字段 / 保留根字段 / 子节点提升 / 别名路径取值。
+        let v = json!({
+            "key1": {"deep": 1},
+            "key2": {"child1": "lifted", "other": true},
+            "key3": {"key2": [1, 2]},
+        });
+        let out = apply_bare_projection(
+            &v,
+            r#"{"name":"Mike",key1,key2.child1,"country":key3.key2}"#,
+            DataFormat::Json,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            out.trim(),
+            r#"{"name":"Mike","key1":{"deep":1},"child1":"lifted","country":[1,2]}"#
+        );
+    }
+
+    #[test]
+    fn construction_literal_kinds() {
+        let v = json!({});
+        let out = apply_bare_projection(
+            &v,
+            r#"{"s":"x","n":123,"f":1.5,"b":true,"z":null,"arr":[1,"a"],"obj":{"k":"v"}}"#,
+            DataFormat::Json,
+            true,
+        )
+        .unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            got,
+            json!({"s":"x","n":123,"f":1.5,"b":true,"z":null,"arr":[1,"a"],"obj":{"k":"v"}})
+        );
+    }
+
+    #[test]
+    fn construction_missing_path_null_and_deep_copy() {
+        // 路径缺失 -> null；整棵子树原样拷贝（不浅取）。
+        let v = json!({"a": {"b": {"c": [1]}}, "top": {"n": 5}});
+        let out = apply_bare_projection(
+            &v,
+            r#"{top, a.b, "x":missing.x, "m":a.b.c}"#,
+            DataFormat::Json,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            out.trim(),
+            r#"{"top":{"n":5},"b":{"c":[1]},"x":null,"m":[1]}"#
+        );
+    }
+
+    #[test]
+    fn construction_bare_quoted_key_keeps_field() {
+        let v = json!({"中文键": 7, "a": 1});
+        let out = apply_bare_projection(&v, r#"{"中文键"}"#, DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), r#"{"中文键":7}"#);
+        // 单引号裸键同样保留字段。
+        let out = apply_bare_projection(&v, "{'a'}", DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn construction_literal_with_commas_and_braces() {
+        // 值里的逗号 / 花括号不参与元素切分。
+        let v = json!({"x": 1});
+        let out = apply_bare_projection(
+            &v,
+            r#"{"a":{"k1":1,"k2":2},"b":[1,2],"c":"s,with,commas"}"#,
+            DataFormat::Json,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            out.trim(),
+            r#"{"a":{"k1":1,"k2":2},"b":[1,2],"c":"s,with,commas"}"#
+        );
+    }
+
+    #[test]
+    fn construction_pipeline_and_trailing() {
+        // 管道投影 `path|{...}` 与尾随投影 `path{...}` 同样支持构造语法。
+        let v = json!({
+            "data": [
+                {"id": 1, "meta": {"tag": "a"}},
+                {"id": 2, "meta": {"tag": "b"}},
+            ]
+        });
+        let items = parse_projection(r#"{"id", "tag":meta.tag, "name":"x"}"#).unwrap();
+        let out = apply_projection_path(&v, "data[*]", &items, DataFormat::Json, true).unwrap();
+        assert_eq!(
+            out.trim(),
+            r#"[{"id":1,"tag":"a","name":"x"},{"id":2,"tag":"b","name":"x"}]"#
+        );
+        let out =
+            apply_trailing_projection(&v, r#"data[0]{"id","t":meta.tag}"#, DataFormat::Json, true)
+                .unwrap();
+        assert_eq!(out.trim(), r#"{"id":1,"t":"a"}"#);
+    }
+
+    #[test]
+    fn construction_bad_path_errors() {
+        let v = json!({"a": {"b": 1}});
+        // 路径语法非法（双点）-> 报错，而不是静默 null。
+        assert!(apply_bare_projection(&v, "{a..b}", DataFormat::Json, false).is_err());
+        // 值部分是合法 JSON 字面量时优先按字面量处理：`"k":123` 是数字而非路径。
+        let out = apply_bare_projection(&v, r#"{"k":123}"#, DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), r#"{"k":123}"#);
     }
 
     #[test]
@@ -3489,7 +3820,15 @@ mod tests {
         assert!(split_trailing_projection("{a}").is_none()); // 裸投影
         assert!(split_trailing_projection("data[*] | {id,name}").is_none()); // 管道
         assert!(split_trailing_projection("a.b").is_none()); // 无投影
-        assert!(split_trailing_projection("a{b.c}").is_none()); // 非法投影键
+        // 尾随投影体现在支持嵌套路径（提升）与别名（新字段），仍可拆分。
+        assert_eq!(
+            split_trailing_projection("a{b.c}"),
+            Some(("a".to_string(), "{b.c}".to_string()))
+        );
+        assert_eq!(
+            split_trailing_projection("a{\"n\":b.c}"),
+            Some(("a".to_string(), "{\"n\":b.c}".to_string()))
+        );
         assert!(split_trailing_projection("a{b").is_none()); // 不以 } 结尾
     }
 
@@ -3535,7 +3874,9 @@ mod tests {
     #[test]
     fn trailing_projection_invalid_keys_error() {
         let v = json!({"a": {"b": 1}});
-        assert!(apply_trailing_projection(&v, "a{b.c}", DataFormat::Json, false).is_err());
+        // `{b.c}` 在尾随投影里合法（把 a.b.c 提升为 c；源路径缺失 -> null）。
+        let out = apply_trailing_projection(&v, "a{b.c}", DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), r#"{"c":null}"#);
         assert!(apply_trailing_projection(&v, "a{}", DataFormat::Json, false).is_err());
         // 路径本身非法（左括号函数形态）同样报错。
         assert!(apply_trailing_projection(&v, "a.filter(x==1){b}", DataFormat::Json, false).is_err());

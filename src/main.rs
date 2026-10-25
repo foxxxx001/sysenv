@@ -135,6 +135,9 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     ///   path{k1,k2}          deep-node projection, pipe optional:
     ///                        `sites[0]{key,name}` (also
     ///                        `sites[0].{key,name}`) == `sites[0]|{key,name}`
+    ///   {k1,"n":v,a.b}       object construction: new fields from literals /
+    ///                        selector paths, bare paths lift child nodes up
+    ///                        (e.g. {a.b} -> "b": ...), missing paths -> null
     ///   PRED                 bare predicate on csv / table / jsonl input
     ///                        auto-filters the row array (e.g. `Id==7360`)
     ///   (omitted)            pure format conversion, e.g. `sys data -i yaml -o json < in.yaml`
@@ -199,6 +202,16 @@ struct DataArgs {
     ///    projects every row (same as `[*]|{k1,k2}`). The pipe may also be
     ///    omitted on a deep node: `sites[0]{key,name}` /
     ///    `sites[0].{key,name}` == `sites[0]|{key,name}`.
+    /// 6. OBJECT CONSTRUCTION — every element of `{...}` may additionally be
+    ///    `"newKey":<json literal>` (insert a literal value, e.g.
+    ///    `{"name":"Mike"}`), `"newKey":path` (copy the value at a selector
+    ///    path, e.g. `{"country":key3.key2}`), or a bare path `a.b` /
+    ///    `list[0]` (keep the node at that path under its last segment,
+    ///    lifting a child node up: `{key2.child1}` -> `"child1": ...`).
+    ///    Missing paths become null; literals may be numbers / booleans /
+    ///    null / nested objects and arrays. Works bare, after a pipe and as a
+    ///    trailing projection, e.g.
+    ///    `cat f.json | sys data '{"name":"Mike",key1,key2.child1,"country":key3.key2}'`.
     /// Predicate language: `$this` / `$key`, field paths (`name`, `a.b[0]`,
     /// `m["中文键"]`), literals (numbers, single/double-quoted strings, true /
     /// false / null), `== != > >= < <= && || !`, and contains / startsWith /
