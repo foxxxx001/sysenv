@@ -17,7 +17,7 @@
 //!   .a.b            dotted keys (a leading `.` is optional)
 //!   list[0]         array index (negative counts from the end)
 //!   list[-1]        last element
-//!   list[*]         every element
+//!   list[*]         every element (`list[]` is a shorthand)
 //!   list[:2]        Python-style slice: first 2 elements (omit = default
 //!   list[1:3]       bound; negative indices count from the end)
 //!   list[1:]        from element 1 to the end
@@ -487,7 +487,8 @@ fn parse_brackets(
             steps.push(Step::Key(inner[1..inner.len() - 1].to_string()));
             continue;
         }
-        if inner == "*" {
+        if inner.trim().is_empty() || inner == "*" {
+            // `[]` is a shorthand for `[*]` — every element (`list[]` == `list[*]`).
             steps.push(Step::Index(None));
         } else if inner.contains(':') {
             // Python-style array slice: `[start:end]`, `[:end]`, `[start:]`,
@@ -3017,6 +3018,15 @@ mod tests {
             parse_selector("list[*]").unwrap(),
             vec![Step::Key("list".into()), Step::Index(None)]
         );
+        // `list[]`（含空白 `[ ]`）是 `list[*]` 的简写。
+        assert_eq!(
+            parse_selector("list[]").unwrap(),
+            vec![Step::Key("list".into()), Step::Index(None)]
+        );
+        assert_eq!(
+            parse_selector("list[ ]").unwrap(),
+            vec![Step::Key("list".into()), Step::Index(None)]
+        );
         // Quoted keys with dots / CJK / spaces.
         assert_eq!(
             parse_selector(r#"m["中文名.字"]"#).unwrap(),
@@ -3606,6 +3616,13 @@ mod tests {
         assert_eq!(got.as_array().unwrap().len(), 2);
         assert_eq!(got[0]["Id"], json!(2));
         assert_eq!(got[0]["Name"], json!("b"));
+        // `[]` 是 `[*]` 的简写，根数组行为一致。
+        let fc = parse_function_expr("[].filter(Id >= 2)").unwrap().unwrap();
+        assert_eq!(fc.path.as_deref(), Some("[]"));
+        let out = apply_filter(&v, &fc, DataFormat::Json, false).unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(got.as_array().unwrap().len(), 2);
+        assert_eq!(got[0]["Id"], json!(2));
         // search works the same way over the root array.
         let fc = parse_function_expr("[*].search(Id == 1)").unwrap().unwrap();
         let out = apply_search(&v, &fc, DataFormat::Json, false).unwrap();
