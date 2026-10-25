@@ -2,6 +2,15 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.30 (2026-10-25)
+
+### Changed
+- **`sys data` object-construction projection** (src/dasel.rs): every comma-separated element of `{...}` may now be `"key":<json literal>` (a new field; literals support strings / numbers / booleans / null / nested objects and arrays), `"key":path` (a new field whose value is copied from a selector path), or a bare path `key` / `a.b` / `list[0]` (keeps the field, or lifts a child node to the current level under its last path segment: `{key2.child1}` -> `"child1"`). Missing paths yield null (jq semantics), malformed paths error. The four entry points — bare `{...}` on the root, pipelines `path|{...}`, trailing `path{...}`, and filter / search result projections — share the upgraded parser; the old `{k1,k2}` syntax is fully compatible. The parser now uses a unified Literal / FromPath representation
+- Help and module docs updated: `sys data --help` gains item 6 OBJECT CONSTRUCTION (with the example `{"name":"Mike",key1,key2.child1,"country":key3.key2}`), the top-level EXPR list gets one more line
+- 7 new unit tests (construction / literals / lift / missing paths / quoted keys / pipeline & trailing / malformed paths); stale assertions updated (`{a.b}` / `{x:y}` / `{a[0]}` changed from errors to valid)
+- Version 0.6.29 -> 0.6.30
+- `cargo test --bin sys`: 424 all green
+
 ## v0.6.29 (2026-10-24)
 
 ### Changed
