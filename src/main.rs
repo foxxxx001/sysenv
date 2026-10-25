@@ -1124,6 +1124,10 @@ struct MsgArgs {
     /// 提醒内容（添加模式必填）
     #[arg(value_name = "TEXT")]
     text: Option<String>,
+    /// 音乐提醒：--music 默认 Windows 开机音乐；--music=FILE 指定乐曲文件
+    /// （wav/mp3 等；用等号形式以避免与 TEXT 混淆）
+    #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true, default_missing_value = "", conflicts_with_all = ["list", "delete"])]
+    music: Option<String>,
 }
 
 #[derive(Args)]
@@ -1259,6 +1263,7 @@ fn main() -> ExitCode {
             m.list,
             m.delete.as_deref(),
             m.text.as_deref(),
+            m.music.as_deref(),
         )
         .map(|_| 0),
         Cmd::File(f) => file::cmd_file(

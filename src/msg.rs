@@ -271,6 +271,52 @@ fn cron_to_schtasks(c: &CronSpec) -> Result<Vec<String>> {
 }
 
 // ---------------------------------------------------------------------------
+// Music helpers (`--music`)
+// ---------------------------------------------------------------------------
+
+/// Candidate paths for the default "Windows startup" sound (en / zh-CN names).
+const STARTUP_SOUND_CANDIDATES: [&str; 4] = [
+    "C:\\Windows\\Media\\Windows Startup.wav",
+    "C:\\Windows\\Media\\Windows 启动.wav",
+    "C:\\Windows\\Media\\Windows Logon Sound.wav",
+    "C:\\Windows\\Media\\Windows 登录音.wav",
+];
+
+/// Resolve the music to play for a reminder.
+///   None      -> no music
+///   Some("")  -> the Windows startup sound (first existing candidate)
+///   Some(..)  -> the given music file, must exist
+fn resolve_music(music: Option<&str>) -> Result<Option<String>> {
+    match music {
+        None => Ok(None),
+        Some("") => STARTUP_SOUND_CANDIDATES
+            .iter()
+            .find(|p| Path::new(p).is_file())
+            .map(|p| Some((*p).to_string()))
+            .ok_or_else(|| {
+                anyhow::anyhow!("未找到 Windows 开机音乐（C:\\Windows\\Media\\Windows Startup.wav 等），请用 --music=FILE 指定乐曲文件")
+            }),
+        Some(p) => {
+            if !Path::new(p).is_file() {
+                bail!("乐曲文件不存在：`{p}`");
+            }
+            Ok(Some(p.to_string()))
+        }
+    }
+}
+
+/// Build the `start "" powershell ...` line that plays MUSIC asynchronously
+/// (WMPlayer.OCX COM plays wav/mp3/etc.; the process lives until playback
+/// ends, so the popup and the auto-delete are never blocked).
+fn music_line(music: &str) -> String {
+    let esc = music.replace('\'', "''");
+    format!(
+        "start \"\" powershell -NoProfile -WindowStyle Hidden -Command \"$w=New-Object -ComObject WMPlayer.OCX; $w.URL='{}'; $w.controls.play(); while($w.playState -eq 3){{Start-Sleep -Milliseconds 200}}\"",
+        esc
+    )
+}
+
+// ---------------------------------------------------------------------------
 // GBK encoding helpers (msg.exe reads its stdin in the system ANSI code page)
 // ---------------------------------------------------------------------------
 
@@ -344,6 +390,7 @@ pub fn cmd_msg(
     list: bool,
     delete: Option<&str>,
     text: Option<&str>,
+    music: Option<&str>,
 ) -> Result<()> {
     if !cfg!(windows) {
         bail!("sys msg 仅支持 Windows（依赖 schtasks 与 msg.exe）");
@@ -355,10 +402,10 @@ pub fn cmd_msg(
         return cmd_delete(n);
     }
     if daily.is_some() || once.is_some() || cron.is_some() {
-        return cmd_add(daily, once, cron, name, text);
+        return cmd_add(daily, once, cron, name, text, music);
     }
     bail!(
-        "usage:\n  sys msg --daily 20:00:02 [--name NAME] \"内容\"\n  sys msg --once 20:00:02 [--name NAME] \"内容\"\n  sys msg --cron \"0 20 * * *\" [--name NAME] \"内容\"\n  sys msg --list\n  sys msg --delete NAME"
+        "usage:\n  sys msg --daily 20:00:02 [--name NAME] [--music[=FILE]] \"内容\"\n  sys msg --once 20:00:02 [--name NAME] [--music[=FILE]] \"内容\"\n  sys msg --cron \"0 20 * * *\" [--name NAME] [--music[=FILE]] \"内容\"\n  sys msg --list\n  sys msg --delete NAME"
     );
 }
 
@@ -369,6 +416,7 @@ fn cmd_add(
     cron: Option<&str>,
     name: Option<&str>,
     text: Option<&str>,
+    music: Option<&str>,
 ) -> Result<()> {
     let text = text.ok_or_else(|| {
         anyhow::anyhow!("请提供提醒内容：sys msg --daily 20:00:02 \"内容\"")
@@ -449,18 +497,22 @@ fn cmd_add(
     let txt_gbk = encode_gbk(text)?;
     fs::write(dir.join(format!("{full}.txt")), txt_gbk)
         .with_context(|| format!("cannot write {}", dir.join(format!("{full}.txt")).display()))?;
+    let music = resolve_music(music)?;
+    let music_play = music.as_deref().map(music_line).unwrap_or_default();
     // One-shot tasks delete themselves after the popup is dismissed: msg waits
     // for the user's OK, then the batch removes the scheduled task and both
     // files. Daily/cron tasks stay. Order matters: `del "%~f0"` (the running
     // batch itself) must be the LAST line — once cmd.exe deletes the batch it
     // is executing it cannot read any further lines, so the .txt is removed
     // first. If the schtasks delete ever fails the batch exits without touching
-    // the files, so a manual `sys msg --delete` can retry.
+    // the files, so a manual `sys msg --delete` can retry. The music play line
+    // must sit on its own line (CRLF), or cmd would glue it onto the msg line
+    // and pass the whole thing to PowerShell.
     let cmd_body = match &schedule {
         Schedule::Once { .. } => format!(
-            "@echo off\r\nmsg * < \"%~dp0{full}.txt\"\r\nschtasks /Delete /TN \"{full}\" /F >nul 2>nul || goto :eof\r\ndel \"%~dp0{full}.txt\"\r\ndel \"%~f0\"\r\n"
+            "@echo off\r\n{music_play}\r\nmsg * < \"%~dp0{full}.txt\"\r\nschtasks /Delete /TN \"{full}\" /F >nul 2>nul || goto :eof\r\ndel \"%~dp0{full}.txt\"\r\ndel \"%~f0\"\r\n"
         ),
-        _ => format!("@echo off\r\nmsg * < \"%~dp0{full}.txt\"\r\n"),
+        _ => format!("@echo off\r\n{music_play}\r\nmsg * < \"%~dp0{full}.txt\"\r\n"),
     };
     fs::write(dir.join(format!("{full}.cmd")), cmd_body)
         .with_context(|| format!("cannot write {}", dir.join(format!("{full}.cmd")).display()))?;
@@ -498,6 +550,9 @@ fn cmd_add(
     println!("已创建定时提醒任务 {full}");
     println!("  时间：{desc}");
     println!("  内容：{text}");
+    if let Some(m) = &music {
+        println!("  音乐：{m}");
+    }
     Ok(())
 }
 
@@ -661,6 +716,25 @@ mod tests {
             vec!["\\sysmsg-daily-200002", "2026-10-27 03:00:00", "Ready"]
         );
         assert_eq!(parse_csv_line(r#""a,b","c""#), vec!["a,b", "c"]);
+    }
+
+    #[test]
+    fn music_resolve_and_line_escaping() {
+        // None -> no music.
+        assert!(resolve_music(None).unwrap().is_none());
+        // Some("") -> the Windows startup sound candidate must exist on a
+        // real Windows box; on CI without C:\Windows\Media this errors.
+        match resolve_music(Some("")) {
+            Ok(Some(p)) => assert!(Path::new(&p).is_file()),
+            Err(e) => assert!(e.to_string().contains("未找到 Windows 开机音乐")),
+            Ok(None) => panic!("default music must resolve to Some"),
+        }
+        // A given file must exist.
+        assert!(resolve_music(Some("Z:\\no\\such\\song.mp3")).is_err());
+        // The play line escapes single quotes and keeps the path intact.
+        let line = music_line("C:\\my music\\song's.mp3");
+        assert!(line.starts_with("start \"\" powershell -NoProfile -WindowStyle Hidden -Command \"$w=New-Object -ComObject WMPlayer.OCX; $w.URL='C:\\my music\\song''s.mp3';"));
+        assert!(line.ends_with("while($w.playState -eq 3){Start-Sleep -Milliseconds 200}\""));
     }
 
     #[test]
