@@ -2,6 +2,13 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.31 (2026-10-25)
+
+### Changed
+- **Dead-code cleanup** (src/szfdc.rs removed; src/ai.rs, src/net.rs, src/chat.rs, src/dasel.rs): all 21 `dead_code` warnings from the v0.6.30 release build cleared — the whole szfdc.rs module (Shenzhen housing lookup; its only entry point `report` was never wired into main.rs) is `git rm`'d; ai.rs drops three test-only no-arg wrappers `config_format_list` / `config_existing_list` / `software_config_path` (the `_with` variants and `config_file_name` stay) plus 2 dependent tests; net.rs drops `extract_addresses` (its underlying `extract_address_spans` stays) and its 4 dedicated tests, plus the thin `cmd_net` wrapper (production goes through `cmd_net_t`), with 30 test calls migrated to `cmd_net_t(..., None, "4k")`; chat.rs drops zero-reference `builtin_free_config`; dasel.rs drops zero-reference `DataOpts`
+- Release build is now warning-free; `cargo test --bin sys`: 424 -> 418 all green (6 tests that only exercised removed test-only helpers deleted)
+- Version 0.6.30 -> 0.6.31
+
 ## v0.6.30 (2026-10-25)
 
 ### Changed

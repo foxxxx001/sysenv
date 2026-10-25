@@ -2,6 +2,13 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.31（2026-10-25）
+
+### 变更
+- **死代码清理**（src/szfdc.rs 删除；src/ai.rs / src/net.rs / src/chat.rs / src/dasel.rs）：清除 v0.6.30 release 构建暴露的全部 21 个 dead_code 符号——szfdc.rs 整模块删除（深圳房产查询，唯一入口 `report` 从未被 main.rs 接线），main.rs 删 `mod szfdc;`；ai.rs 删除三个仅测试引用的无参包装 `config_format_list` / `config_existing_list` / `software_config_path`（保留各自 `_with` 变体与 `config_file_name`）及 2 个关联测试；net.rs 删除 `extract_addresses`（保留底层 `extract_address_spans`）及其 4 个专属测试、删除纯包装 `cmd_net`（生产走 `cmd_net_t`），30 处测试调用迁移为 `cmd_net_t(..., None, "4k")`；chat.rs 删除零引用 `builtin_free_config`；dasel.rs 删除零引用 `DataOpts`
+- release 构建 dead_code warning 清零；`cargo test --bin sys`：424 -> 418 项全绿（删除 6 个仅测试引用死代码的专属测试）
+- 版本 0.6.30 -> 0.6.31
+
 ## v0.6.30（2026-10-25）
 
 ### 变更
