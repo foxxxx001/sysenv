@@ -15,7 +15,6 @@ mod path;
 mod short;
 mod server;
 mod store;
-mod szfdc;
 mod task;
 
 use clap::{Args, Parser, Subcommand};

@@ -118,11 +118,6 @@ fn extract_address_spans(line: &str) -> Vec<UrlSpan> {
     out
 }
 
-/// Extract the normalized http(s) addresses from one line (in order).
-pub fn extract_addresses(line: &str) -> Vec<String> {
-    extract_address_spans(line).into_iter().map(|s| s.url).collect()
-}
-
 /// Characters that terminate an address in running text (trimmed from the end).
 fn is_trailing_punct(c: char) -> bool {
     matches!(
@@ -1350,21 +1345,10 @@ fn cmd_test(
 // Entry point
 // ---------------------------------------------------------------------------
 
-/// `sys net -i FILE [-t domain|tv|tvs|file|test] [-o FILE] [--timeout SECONDS] [-x SUFFIX ...] [--sort KEY ...]` or `sys net -t info -n DOMAIN ...`
-pub fn cmd_net(
-    input: &Path,
-    kind: NetType,
-    output: Option<&Path>,
-    timeout_secs: f64,
-    exclude: &[String],
-    sort: &[String],
-) -> Result<()> {
-    cmd_net_t(input, kind, output, timeout_secs, exclude, sort, None, "4k")
-}
-
-/// Like `cmd_net`, with an explicit parallelism hint for `-t tv|tvs`
-/// (`None` = number of CPU cores) and the `--words` keyword used for the
-/// `name` statistic (default `"4k"`).
+/// Entry point for `sys net -i FILE [-t domain|tv|tvs|file|test] [-o FILE]
+/// [--timeout SECONDS] [-x SUFFIX ...] [--sort KEY ...]` / `-t info`: an
+/// explicit parallelism hint for `-t tv|tvs` (`None` = number of CPU cores)
+/// and the `--words` keyword used for the `name` statistic (default `"4k"`).
 pub fn cmd_net_t(
     input: &Path,
     kind: NetType,
@@ -1964,12 +1948,6 @@ mod tests {
     // --- parsing ---
 
     #[test]
-    fn extracts_multiple_addresses_per_line() {
-        let urls = extract_addresses("see http://a.com/x, then https://b.com/y! and more");
-        assert_eq!(urls, vec!["http://a.com/x", "https://b.com/y"]);
-    }
-
-    #[test]
     fn skips_comments_and_empty_lines() {
         let path = temp_file("comments");
         std::fs::write(
@@ -1980,27 +1958,6 @@ mod tests {
         let urls = read_addresses(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(urls, vec!["http://a.com", "http://b.com", "https://c.com"]);
-    }
-
-    #[test]
-    fn trims_trailing_punctuation() {
-        assert_eq!(extract_addresses("(http://a.com/path)."), vec!["http://a.com/path"]);
-        assert_eq!(
-            extract_addresses("http://a.com/x?a=1&b=2;"),
-            vec!["http://a.com/x?a=1&b=2"]
-        );
-    }
-
-    #[test]
-    fn keeps_query_and_fragment() {
-        let urls = extract_addresses("go http://a.com/api?x=1&y=two#frag now");
-        assert_eq!(urls, vec!["http://a.com/api?x=1&y=two#frag"]);
-    }
-
-    #[test]
-    fn ignores_http_like_words() {
-        assert!(extract_addresses("the http client is nice").is_empty());
-        assert!(extract_addresses("no scheme: https-not-a-url").is_empty());
     }
 
     #[test]
@@ -2111,7 +2068,7 @@ mod tests {
         assert!(lines.last().unwrap().contains("2 of 3 domains reachable"));
     }
 
-    // --- end-to-end via cmd_net ---
+    // --- end-to-end via cmd_net_t ---
 
     #[test]
     fn cmd_json_writes_passed_urls_to_output() {
@@ -2119,7 +2076,7 @@ mod tests {
         let input = temp_file("in-json");
         let out = temp_file("out-json");
         std::fs::write(&input, format!("probe {url} now\n")).unwrap();
-        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Json, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -2138,7 +2095,7 @@ mod tests {
         let input = temp_file("in-file");
         let out = temp_file("out-file");
         std::fs::write(&input, format!("{url}\n")).unwrap();
-        cmd_net(&input, NetType::File, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::File, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -2155,7 +2112,7 @@ mod tests {
         let input = temp_file("in-mix");
         let out = temp_file("out-mix");
         std::fs::write(&input, format!("{text_url}\n{dead_url}\n")).unwrap();
-        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Json, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -2168,7 +2125,7 @@ mod tests {
         let input = temp_file("in-json2file");
         let out = temp_file("out-json2file");
         std::fs::write(&input, format!("{json_url}\n")).unwrap();
-        cmd_net(&input, NetType::File, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::File, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -2179,7 +2136,7 @@ mod tests {
     fn no_addresses_is_an_error() {
         let input = temp_file("empty");
         std::fs::write(&input, "# only comments\n").unwrap();
-        let err = cmd_net(&input, NetType::Domain, None, 10.0, &[], &[]).unwrap_err();
+        let err = cmd_net_t(&input, NetType::Domain, None, 10.0, &[], &[], None, "4k").unwrap_err();
         let _ = std::fs::remove_file(&input);
         assert!(err.to_string().contains("no http(s) addresses"));
     }
@@ -2188,7 +2145,7 @@ mod tests {
     fn invalid_timeout_is_rejected() {
         let input = temp_file("tmo");
         std::fs::write(&input, "http://a.com\n").unwrap();
-        let err = cmd_net(&input, NetType::Domain, None, 0.0, &[], &[]).unwrap_err();
+        let err = cmd_net_t(&input, NetType::Domain, None, 0.0, &[], &[], None, "4k").unwrap_err();
         let _ = std::fs::remove_file(&input);
         assert!(err.to_string().contains("--timeout"));
     }
@@ -2213,7 +2170,7 @@ mod tests {
             format!("# comment stays\n\n{good}\n{bad}\nplain text line without url\n"),
         )
         .unwrap();
-        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Test, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -2232,7 +2189,7 @@ mod tests {
         let input = temp_file("test-in2");
         let out = temp_file("test-out2");
         std::fs::write(&input, format!("see {bad}, and {good} now\n")).unwrap();
-        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Test, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -2248,7 +2205,7 @@ mod tests {
         let input = temp_file("test-in3");
         let out = temp_file("test-out3");
         std::fs::write(&input, format!("{bad1} and {bad2}\n")).unwrap();
-        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Test, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -2303,13 +2260,13 @@ mod tests {
         let input = temp_file("test-in-x1");
         let out_keep = temp_file("test-out-x1");
         std::fs::write(&input, format!("{m3u}\n")).unwrap();
-        cmd_net(&input, NetType::Test, Some(&out_keep), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Test, Some(&out_keep), 10.0, &[], &[], None, "4k").unwrap();
         let kept = std::fs::read_to_string(&out_keep).unwrap();
         assert!(kept.contains(&m3u), "no -x: reachable URL kept: {kept:?}");
 
         // With -x m3u the line is deleted without probing.
         let out_del = temp_file("test-out-x2");
-        cmd_net(&input, NetType::Test, Some(&out_del), 10.0, &["m3u".to_string()], &[]).unwrap();
+        cmd_net_t(&input, NetType::Test, Some(&out_del), 10.0, &["m3u".to_string()], &[], None, "4k").unwrap();
         let deleted = std::fs::read_to_string(&out_del).unwrap();
         assert!(
             deleted.trim().is_empty(),
@@ -2336,13 +2293,15 @@ mod tests {
             format!("see {m3u} and {txt} now\n{upper}\n{zip}\n"),
         )
         .unwrap();
-        cmd_net(
+        cmd_net_t(
             &input,
             NetType::Test,
             Some(&out),
             10.0,
             &["m3u".to_string(), "zip".to_string()],
             &[],
+            None,
+            "4k",
         )
         .unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
@@ -2366,13 +2325,15 @@ mod tests {
         std::fs::write(&input, "https://example.com/\n").unwrap();
         // -x is ignored in json mode (a warning is printed, no error).
         let out = temp_file("test-out-x4");
-        cmd_net(
+        cmd_net_t(
             &input,
             NetType::Json,
             Some(&out),
             10.0,
             &["m3u".to_string()],
             &[],
+            None,
+            "4k",
         )
         .unwrap();
         let _ = std::fs::remove_file(&input);
@@ -2396,7 +2357,7 @@ mod tests {
              ftp://d.com/ignored https-not-a-url http://\n",
         )
         .unwrap();
-        cmd_net(&input, NetType::Url, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Url, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -2419,7 +2380,7 @@ mod tests {
         let input = temp_file("url-in2");
         let out = temp_file("url-out2");
         std::fs::write(&input, "http://a.com/x\nhttp://a.com/x\nhttps://b.com/y\n").unwrap();
-        cmd_net(&input, NetType::Url, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Url, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -2434,13 +2395,15 @@ mod tests {
         let input = temp_file("url-in3");
         let out = temp_file("url-out3");
         std::fs::write(&input, "HTTP://Example.COM/x\nplain text line\n").unwrap();
-        cmd_net(
+        cmd_net_t(
             &input,
             NetType::Url,
             Some(&out),
             10.0,
             &["m3u".to_string()],
             &["count".to_string()],
+            None,
+            "4k",
         )
         .unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
@@ -2456,7 +2419,7 @@ mod tests {
         let input = temp_file("url-in4");
         let out = temp_file("url-out4");
         std::fs::write(&input, "# nothing here\nplain text\n").unwrap();
-        cmd_net(&input, NetType::Url, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Url, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -2481,7 +2444,7 @@ mod tests {
         let input = temp_file("test-in-d1");
         let out = temp_file("test-out-d1");
         std::fs::write(&input, format!("{good}\n{good}\n")).unwrap();
-        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Test, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -2495,7 +2458,7 @@ mod tests {
         let input = temp_file("test-in-d2");
         let out = temp_file("test-out-d2");
         std::fs::write(&input, format!("{good} {good}\n")).unwrap();
-        cmd_net(&input, NetType::Test, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Test, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -2510,7 +2473,7 @@ mod tests {
         let input = temp_file("test-in-d3");
         let out = temp_file("test-out-d3");
         std::fs::write(&input, format!("{good}\n{good}\n")).unwrap();
-        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Json, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -2822,7 +2785,7 @@ mod tests {
         let input = temp_file("in-tv-lenient");
         let out = temp_file("out-tv-lenient");
         std::fs::write(&input, format!("{url}\n")).unwrap();
-        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Json, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -2837,7 +2800,7 @@ mod tests {
         let input = temp_file("in-tv-notv");
         let out = temp_file("out-tv-notv");
         std::fs::write(&input, format!("{url}\n")).unwrap();
-        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Json, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -2895,13 +2858,15 @@ mod tests {
         let input = temp_file("in-sort-c");
         let out = temp_file("out-sort-c");
         std::fs::write(&input, format!("{one}\n{three}\n")).unwrap();
-        cmd_net(
+        cmd_net_t(
             &input,
             NetType::Json,
             Some(&out),
             10.0,
             &[],
             &["count".to_string()],
+            None,
+            "4k",
         )
         .unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
@@ -2933,7 +2898,7 @@ mod tests {
         let out = temp_file("out-sort-n");
         // input order: b (name=1) first, a (count=2) second
         std::fs::write(&input, format!("{b}\n{a}\n")).unwrap();
-        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Json, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -2965,13 +2930,15 @@ mod tests {
         let out = temp_file("out-sort-m");
         // input order: j2, j3, j1
         std::fs::write(&input, format!("{j2}\n{j3}\n{j1}\n")).unwrap();
-        cmd_net(
+        cmd_net_t(
             &input,
             NetType::Json,
             Some(&out),
             10.0,
             &[],
             &["count".to_string(), "name".to_string()],
+            None,
+            "4k",
         )
         .unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
@@ -3004,13 +2971,15 @@ mod tests {
         let input = temp_file("in-sort-s");
         let out = temp_file("out-sort-s");
         std::fs::write(&input, format!("{jslow}\n{jfast}\n")).unwrap();
-        cmd_net(
+        cmd_net_t(
             &input,
             NetType::Json,
             Some(&out),
             10.0,
             &[],
             &["speed".to_string()],
+            None,
+            "4k",
         )
         .unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
@@ -3136,7 +3105,7 @@ mod tests {
         let input = temp_file("in-note2");
         let out = temp_file("out-note2");
         std::fs::write(&input, format!("{tv}\t#二月红接口\n")).unwrap();
-        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Json, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -3152,7 +3121,7 @@ mod tests {
         let input = temp_file("in-note3");
         let out = temp_file("out-note3");
         std::fs::write(&input, format!("{multi}\t#接口A\n")).unwrap();
-        cmd_net(&input, NetType::Tvs, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Tvs, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let content = std::fs::read_to_string(&out).unwrap();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&out);
@@ -3169,7 +3138,7 @@ mod tests {
         let out = temp_file("out-words");
         std::fs::write(&input, format!("{tv}\n")).unwrap();
         // Default --words 4k: label is 4k=2.
-        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Json, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let dflt = std::fs::read_to_string(&out).unwrap();
         assert!(dflt.contains("# count=3 4k=2"), "{dflt}");
         // Custom --words: the label shows the keyword and counts its matches.
@@ -3197,7 +3166,7 @@ mod tests {
         let out = temp_file("out-par");
         std::fs::write(&input, format!("{tv3}\n{tv1}\n")).unwrap();
         // Serial (default threads) vs explicit threads=1 must agree.
-        cmd_net(&input, NetType::Json, Some(&out), 10.0, &[], &[]).unwrap();
+        cmd_net_t(&input, NetType::Json, Some(&out), 10.0, &[], &[], None, "4k").unwrap();
         let serial = std::fs::read_to_string(&out).unwrap();
         cmd_net_t(&input, NetType::Json, Some(&out), 10.0, &[], &[], Some(1), "4k").unwrap();
         let parallel = std::fs::read_to_string(&out).unwrap();

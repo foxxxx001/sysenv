@@ -175,18 +175,6 @@ fn free_providers(openrouter_key: Option<String>) -> Vec<Provider> {
     providers
 }
 
-/// In-memory free Config: kilo-auto/free and blockrun/free always;
-/// openrouter/free only when `OPENROUTER_API_KEY` is set in the environment.
-pub(crate) fn builtin_free_config() -> Config {
-    let key = std::env::var("OPENROUTER_API_KEY").ok();
-    Config {
-        model: None,
-        stream: false,
-        providers: free_providers(key),
-        free: true,
-    }
-}
-
 /// Parse a `--free[=ROUTER]` selector to the matching built-in provider name.
 /// Accepts kilo / kilo-auto / kilo-auto/free, blockrun / blockrun/free and
 /// openrouter / openrouter/free (case-insensitive); unknown values are

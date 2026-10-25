@@ -2166,14 +2166,6 @@ fn prune_at(v: &mut Value, level: usize, max: usize) {
 // Command
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DataOpts {
-    pub input: Option<DataFormat>,
-    pub output: Option<DataFormat>,
-    pub compact: bool,
-    pub root: bool,
-}
-
 /// Keep only the first `limit` elements of the root array (csv / table input
 /// parses to an array of rows). Non-array roots are rejected so a forgotten
 /// `--limit` is reported instead of silently ignored.

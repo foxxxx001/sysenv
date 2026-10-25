@@ -4082,11 +4082,6 @@ fn export_trae(cfg: &chat::Config, pairs: &[(usize, usize)]) -> Result<String> {
 /// `-f` path when given): the file must exist (a missing file is reported and
 /// nothing happens), a `.bak-*` copy is made first, then the selected models
 /// that are not already present are added and reported.
-/// All export formats and their default config file paths for `--list`.
-fn config_format_list() -> Vec<(&'static str, Option<PathBuf>)> {
-    config_format_list_with(None)
-}
-
 /// The formats plus their config paths; `src` overrides the location: the
 /// software's usual config file name is then looked up directly inside `src`
 /// (used when an agent is installed at a non-default place).
@@ -4095,12 +4090,6 @@ fn config_format_list_with(src: Option<&Path>) -> Vec<(&'static str, Option<Path
         .iter()
         .map(|f| (*f, software_config_path_with(src, f)))
         .collect()
-}
-
-/// Every format whose default config file actually exists on this machine
-/// (used by `--list`: only existing configs are shown).
-fn config_existing_list() -> Vec<(&'static str, PathBuf)> {
-    config_existing_list_with(None)
 }
 
 fn config_existing_list_with(src: Option<&Path>) -> Vec<(&'static str, PathBuf)> {
@@ -5202,12 +5191,6 @@ fn merge_zcode_models(
             .with_context(|| format!("cannot write {}", path.display()))?;
     }
     Ok(added)
-}
-
-/// Default config file of the target software for `ai config` exports.
-/// Paths are the tools' usual conventions; `-f FILE` always overrides them.
-fn software_config_path(format: &str) -> Option<PathBuf> {
-    software_config_path_with(None, format)
 }
 
 /// Default config file for `format`, or the file named after the format's
@@ -7010,66 +6993,6 @@ mod tests {
     }
 
     #[test]
-    fn config_format_list_covers_every_supported_format() {
-        let list = config_format_list();
-        let names: Vec<&str> = list.iter().map(|(n, _)| *n).collect();
-        assert_eq!(
-            names,
-            vec![
-                "codex",
-                "opencode",
-                "litellm",
-                "freellmapi",
-                "codebuddy",
-                "workbuddy",
-                "trae",
-                "zcoder"
-            ]
-        );
-        // every entry has a default path (freellmapi is cwd-relative)
-        assert!(list.iter().all(|(_, p)| p.is_some()));
-        // and the paths match the software_config_path mapping
-        let home = std::env::var_os("USERPROFILE")
-            .or_else(|| std::env::var_os("HOME"))
-            .map(PathBuf::from)
-            .unwrap();
-        assert_eq!(
-            list.iter().find(|(n, _)| *n == "workbuddy").unwrap().1,
-            Some(home.join(".workbuddy").join("models.json"))
-        );
-        assert_eq!(
-            list.iter().find(|(n, _)| *n == "zcoder").unwrap().1,
-            Some(home.join(".zcode").join("cli").join("config.json"))
-        );
-    }
-
-    #[test]
-    fn config_existing_list_filters_missing_files() {
-        // every returned path must actually exist and be a subset of the full
-        // list (same names, same order); what is filtered depends on the host
-        let full = config_format_list();
-        let existing = config_existing_list();
-        assert!(existing.len() <= full.len());
-        let full_names: Vec<&str> = full.iter().map(|(n, _)| *n).collect();
-        let existing_names: Vec<&str> = existing.iter().map(|(n, _)| *n).collect();
-        // subset in the same relative order
-        let mut it = full_names.iter();
-        for name in &existing_names {
-            assert!(it.any(|n| n == name), "{name} missing from full list");
-        }
-        for (name, path) in &existing {
-            assert!(path.exists(), "{name} default path should exist: {}", path.display());
-        }
-        // the paths are exactly the existing entries of the full list
-        for (name, path) in &existing {
-            assert_eq!(
-                full.iter().find(|(n, _)| n == name).unwrap().1.as_deref(),
-                Some(path.as_path())
-            );
-        }
-    }
-
-    #[test]
     fn backup_file_copies_with_suffix_and_never_overwrites() {
         let dir = std::env::temp_dir().join(format!("sysenv-backup-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -7448,15 +7371,6 @@ mod tests {
             );
         }
         assert_eq!(software_config_path_with(Some(&dir), "nope"), None);
-        // without --src the home-relative convention still applies
-        let home = std::env::var_os("USERPROFILE")
-            .or_else(|| std::env::var_os("HOME"))
-            .map(PathBuf::from)
-            .unwrap();
-        assert_eq!(
-            software_config_path("workbuddy"),
-            Some(home.join(".workbuddy").join("models.json"))
-        );
     }
 
     #[test]
