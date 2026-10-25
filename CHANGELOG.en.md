@@ -2,6 +2,15 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.32 (2026-10-25)
+
+### Added
+- **`sys data` value functions on projection elements** (src/dasel.rs): any value expression (path or literal) of the object-construction projection `{...}` may end in a chain of string functions — `key.split(",")` (string -> array; an empty `""` separator splits per character), `arr.join("|")` (array -> string; numbers / booleans as-is, null as "", object / array elements error), `key.replace("a","b")` (replace every occurrence), `key.substr(start,length)` (JS `substr` semantics: a negative start counts from the end, a length beyond the end truncates). They run left to right (`key.split(",").join("|")`); literals take functions after a dot (`"a,b,c".substr(0,3)` -> `"a,b"`), and the comma form `"newKey","a,b,c",substr(0,3)` is equivalent (merged only when the value is followed by a function call, so `{"a","b"}` keeps its two-quoted-field semantics). Type mismatches (split on a number / replace on an array / a function on a null missing path), unknown functions, bad argument counts and bare function elements all error; `sys data --help` gains item 7 VALUE FUNCTIONS
+- **`sys data` `[]` shorthand for `[*]`** (src/dasel.rs): `list[]` / `list[ ]` is equivalent to `list[*]` (every element), so `sys data '[].filter(...)'` == `'[*].filter(...)'`; read paths only — write paths reject it exactly like `[*]`; the selector syntax table notes the `list[]` shorthand
+- 7 new unit tests (user-example four functions / chained & literal functions / function semantics / function errors / comma-form compatibility / `list[]` parsing / `[].filter` on a root array)
+- Version 0.6.31 -> 0.6.32
+- `cargo test --bin sys`: 416 -> 421 all green
+
 ## v0.6.31 (2026-10-25)
 
 ### Changed

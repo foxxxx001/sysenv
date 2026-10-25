@@ -2,6 +2,15 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.32（2026-10-25）
+
+### 新增
+- **`sys data` 投影字段值函数链**（src/dasel.rs）：对象构造投影 `{...}` 的任意值表达式（路径或字面量）可接字符串函数链——`key.split(",")`（字符串 -> 数组，`""` 空分隔符逐字符）、`arr.join("|")`（数组 -> 字符串，数字 / 布尔原样、null 空串、对象 / 数组元素报错）、`key.replace("a","b")`（全量替换）、`key.substr(start,length)`（JS `substr` 语义：负 start 从末尾数、length 超界截断）；从左到右依序应用（`key.split(",").join("|")`）；字面量可带函数（`"a,b,c".substr(0,3)` -> `"a,b"`），逗号形式 `"newKey","a,b,c",substr(0,3)` 等价（仅当值后跟函数调用时合并，`{"a","b"}` 两个引号保留字段语义不变）；类型不符（数字 split / 数组 replace / 缺失路径 null 上函数）与未知函数 / 参数错误 / 独立函数元素均报错；`sys data --help` 新增第 7 项 VALUE FUNCTIONS
+- **`sys data` 选择器 `[]` 简写**（src/dasel.rs）：`list[]` / `list[ ]` 等价 `list[*]`（every element），`sys data '[].filter(...)'` == `'[*].filter(...)'`；仅读取路径生效，写入路径与 `[*]` 一致报错；selector 语法表补 `list[]` 简写
+- 新增 7 个单元测试（用户示例四函数 / 链式与字面量函数 / 函数语义 / 函数错误 / 逗号形式兼容 / `list[]` 解析 / `[].filter` 根数组等价）
+- 版本 0.6.31 -> 0.6.32
+- `cargo test --bin sys`：416 -> 421 项全绿
+
 ## v0.6.31（2026-10-25）
 
 ### 变更
