@@ -2,6 +2,15 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.33 (2026-10-25)
+
+### Fixed
+- **`sys file` options now work in any position** (src/file.rs): clap's `allow_hyphen_values` swallows every `-`-prefixed token after the first positional into ARGS. Previously only `-l`/`-n`/`-md5`/`-sha`/`--enc` were re-scanned, so trailing `-e/-i/-t/-w/-c` failed with `too many arguments` (e.g. `sys file Scrcpy . -e md -e txt`), and a trailing `-i` silently turned a 2-arg search into the 3-arg replace mode (`sys file Scrcpy . -i` -> `path '-i' does not exist`). A new `split_filter_args` re-scan pulls the swallowed `-e/--ext EXT`, `-i`, `-t`, `-w`, `-c NUM` back into the parsed options (`-c` consumes the next token and must be numeric; missing/invalid values error)
+- **1-arg rule** (user constraint): an existing local file is displayed; anything else is treated as a string search (the old "has an extension -> display" `looks_like_file` heuristic is gone, so a missing `me.txt` is searched instead of erroring "not a file")
+- **3-arg rule** (user constraint): the third argument must be an existing local path (file or directory; `.` = the current directory), otherwise `replace path ... does not exist` is reported
+- 1 new unit test (`split_filter_args_any_position`: trailing / long forms / `-c` value / missing and non-numeric errors / unknown tokens untouched); `cargo test --bin sys`: 421 -> 422 all green
+- Version 0.6.32 -> 0.6.33
+
 ## v0.6.32 (2026-10-25)
 
 ### Added

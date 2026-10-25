@@ -256,12 +256,6 @@ fn strip_quotes(s: &str) -> Option<&str> {
     None
 }
 
-/// True when a single-arg token carries a file extension (`me.txt`, `a.b.c`,
-/// `D:\x\y.log`); hidden names like `.env` have none and stay a search pattern.
-fn looks_like_file(s: &str) -> bool {
-    Path::new(s.trim()).extension().is_some()
-}
-
 /// Read a file for display (binary-safe, lossy UTF-8).
 fn read_showable(name: &str) -> Result<String> {
     let p = Path::new(name);
@@ -793,6 +787,66 @@ fn split_output_flag_args(args: &[String], line_count: bool, line_numbers: bool)
     (count, numbers, rest)
 }
 
+/// Re-scan ARGS for the option tokens that clap's `allow_hyphen_values` swallows
+/// once positional values have begun (`-e/--ext EXT`, `-i`, `-t`, `-w`,
+/// `-c NUM`), and merge them into the parsed option values so these options
+/// work in any position, exactly like `-l`/`-n` above. A trailing `-i`/`-t`/`-w`
+/// would otherwise be misread as the REPLACEMENT / PATH of the replace mode.
+/// The tokens left over are the real positional arguments (PATTERN [REPLACEMENT]
+/// [PATH]).
+#[allow(clippy::too_many_arguments)]
+fn split_filter_args<'a>(
+    args: &'a [&'a str],
+    mut exts: Vec<String>,
+    mut ignore_case: bool,
+    mut text_only: bool,
+    mut word: bool,
+    mut context: usize,
+) -> Result<(Vec<String>, bool, bool, bool, usize, Vec<&'a str>)> {
+    let mut rest: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i] {
+            "-e" | "--ext" => {
+                let v = args
+                    .get(i + 1)
+                    .copied()
+                    .ok_or_else(|| anyhow::anyhow!("`{}` requires an extension (e.g. -e md)", args[i]))?;
+                exts.push(v.to_string());
+                i += 2;
+            }
+            "-i" | "--ignore-case" => {
+                ignore_case = true;
+                i += 1;
+            }
+            "-t" | "--text-only" => {
+                text_only = true;
+                i += 1;
+            }
+            "-w" | "--word" => {
+                word = true;
+                i += 1;
+            }
+            "-c" | "--context" => {
+                let v = args
+                    .get(i + 1)
+                    .copied()
+                    .ok_or_else(|| anyhow::anyhow!("`{}` requires a number (e.g. -c 3)", args[i]))?;
+                let n: usize = v
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("`{}` requires a number, got `{v}`", args[i]))?;
+                context = n;
+                i += 2;
+            }
+            _ => {
+                rest.push(args[i]);
+                i += 1;
+            }
+        }
+    }
+    Ok((exts, ignore_case, text_only, word, context, rest))
+}
+
 /// Validate `expected` against `computed`: format must be `hex_len()` lowercase
 /// hex chars; equal values return Ok, otherwise a mismatch error.
 fn verify_hash(algo: HashAlgo, computed: &str, expected: &str) -> Result<()> {
@@ -1069,9 +1123,27 @@ pub fn cmd_file(
     // which would otherwise be misread as a path or replacement string.
     let (line_count, line_numbers, args) =
         split_output_flag_args(args, opts.line_count, opts.line_numbers);
+    // `-e` / `-i` / `-t` / `-w` / `-c` are real clap options, but once positional
+    // values have begun `allow_hyphen_values` swallows a trailing occurrence into
+    // ARGS too (`sys file Scrcpy . -e md -e txt`). Re-scan them so they work in
+    // any position; a trailing `-i` would otherwise be misread as the REPLACEMENT
+    // or PATH of the 3-arg replace mode.
+    let (exts, ignore_case, text_only, word, context, args) = split_filter_args(
+        &args,
+        opts.exts.clone(),
+        opts.ignore_case,
+        opts.text_only,
+        opts.word,
+        opts.context,
+    )?;
     let mut opts = opts;
     opts.line_count = line_count;
     opts.line_numbers = line_numbers;
+    opts.exts = exts;
+    opts.ignore_case = ignore_case;
+    opts.text_only = text_only;
+    opts.word = word;
+    opts.context = context;
     if line_count {
         return match args.len() {
             0 => count_stdin(None, &opts),
@@ -1103,8 +1175,8 @@ pub fn cmd_file(
             if let Some(inner) = strip_quotes(&args[0]) {
                 // Quoted string: force the search meaning ("me.txt" -> search).
                 search_stdin(inner, &opts)
-            } else if looks_like_file(&args[0]) {
-                // Token with an extension (me.txt) -> display the file.
+            } else if Path::new(&args[0]).is_file() {
+                // An existing local file -> display its text.
                 let text = read_showable(&args[0])?;
                 print!("{text}");
                 if !text.ends_with('\n') {
@@ -1112,11 +1184,24 @@ pub fn cmd_file(
                 }
                 Ok(())
             } else {
+                // Not an existing file -> treat the token as a search string.
                 search_stdin(&args[0], &opts)
             }
         }
         2 => search_path(&args[0], &args[1], &opts),
-        3 => replace_path(&args[0], &args[1], &args[2], &opts),
+        3 => {
+            // The replace target must already exist as a local path (a file or
+            // a directory; `.` = the current directory). Never replace into a
+            // path that does not exist.
+            let p = Path::new(&args[2]);
+            if !p.is_file() && !p.is_dir() {
+                bail!(
+                    "replace path `{}` does not exist (expected an existing file or directory, `.` = current dir)",
+                    args[2]
+                );
+            }
+            replace_path(&args[0], &args[1], &args[2], &opts)
+        }
         _ => bail!("too many arguments (expected PATTERN [REPLACEMENT] [PATH])"),
     }
 }
@@ -1513,6 +1598,54 @@ mod tests {
     }
 
     #[test]
+    fn split_filter_args_any_position() {
+        // 尾置 -e / -i / -t / -w / -c（clap allow_hyphen_values 吞进 ARGS 的形态）→ 剥离并合并
+        let v = vec!["Scrcpy", ".", "-e", "md", "-e", "txt"];
+        let (exts, ic, tt, w, ctx, rest) = split_filter_args(&v, vec![], false, false, false, 0).unwrap();
+        assert_eq!(exts, vec!["md", "txt"]);
+        assert!(!ic);
+        assert!(!tt);
+        assert!(!w);
+        assert_eq!(ctx, 0);
+        assert_eq!(rest, vec!["Scrcpy", "."]);
+
+        // 尾置 -i：不再被误读为替换模式的 REPLACEMENT / PATH
+        let v = vec!["Scrcpy", ".", "-i"];
+        let (_exts, ic, tt, w, ctx, rest) = split_filter_args(&v, vec![], false, false, false, 0).unwrap();
+        assert!(ic);
+        assert!(!tt);
+        assert!(!w);
+        assert_eq!(ctx, 0);
+        assert_eq!(rest, vec!["Scrcpy", "."]);
+
+        // -c NUM 消费下一 token；数值非法 / 缺值报错
+        let v = vec!["a.txt", "-c", "2"];
+        let (_exts, _ic, _tt, _w, ctx, rest) = split_filter_args(&v, vec![], false, false, false, 0).unwrap();
+        assert_eq!(ctx, 2);
+        assert_eq!(rest, vec!["a.txt"]);
+        assert!(split_filter_args(&vec!["a", "-c", "x"], vec![], false, false, false, 0).is_err());
+        assert!(split_filter_args(&vec!["a", "-e"], vec![], false, false, false, 0).is_err());
+        assert!(split_filter_args(&vec!["-c"], vec![], false, false, false, 0).is_err());
+
+        // 长旗标同样识别
+        let v = vec!["--ext", "rs", "src", "--word", "-i"];
+        let (exts, ic, _tt, w, ctx, rest) = split_filter_args(&v, vec![], false, false, false, 0).unwrap();
+        assert_eq!(exts, vec!["rs"]);
+        assert!(ic);
+        assert!(w);
+        assert_eq!(ctx, 0);
+        assert_eq!(rest, vec!["src"]);
+
+        // 前部已被 clap 解析（不在 ARGS 中）→ 原样保留；未知 token（含 -x / -l）不消费
+        let v = vec!["动漫", "D:\\x", "-x", "-l"];
+        let (exts, ic, tt, w, ctx, rest) = split_filter_args(&v, vec!["py".to_string()], true, true, true, 3).unwrap();
+        assert_eq!(exts, vec!["py"]);
+        assert!(ic && tt && w);
+        assert_eq!(ctx, 3);
+        assert_eq!(rest, vec!["动漫", "D:\\x", "-x", "-l"]);
+    }
+
+    #[test]
     fn verify_hash_compare_rules() {
         // 大小写不敏感的相等
         assert!(verify_hash(HashAlgo::Md5, "900150983cd24fb0d6963f7d28e17f72", "900150983CD24FB0D6963F7D28E17F72").is_ok());
@@ -1629,15 +1762,6 @@ mod tests {
         assert_eq!(strip_quotes("hello"), None);
         assert_eq!(strip_quotes("\"unbalanced"), None);
         assert_eq!(strip_quotes(""), None);
-        // 后缀判断：有扩展名 → 文件显示；无扩展名 / 隐藏名 → 搜索
-        assert!(looks_like_file("me.txt"));
-        assert!(looks_like_file("a.b.c"));
-        assert!(looks_like_file(r"D:\x\y.log"));
-        assert!(looks_like_file("note.md"));
-        assert!(!looks_like_file("hello"));
-        assert!(!looks_like_file("hello world"));
-        assert!(!looks_like_file(".env"));
-        assert!(!looks_like_file("README"));
     }
 
     #[test]

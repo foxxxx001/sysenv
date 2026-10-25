@@ -2,6 +2,15 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.33（2026-10-25）
+
+### 修复
+- **`sys file` 选项任意位置生效**（src/file.rs）：clap `allow_hyphen_values` 会把首位置参数之后的选项 token 吞进 ARGS——此前只有 -l/-n/-md5/-sha/--enc 等做了重扫，-e/-i/-t/-w/-c 尾置会报 `too many arguments`（如 `sys file Scrcpy . -e md -e txt`），且 `-i` 尾置会把 2 参数搜索静默误判为 3 参数替换模式（`sys file Scrcpy . -i` → path `-i` does not exist）；新增 `split_filter_args` 重扫，把被吞的 `-e/--ext EXT`、`-i`、`-t`、`-w`、`-c NUM` 剥离回选项（`-c` 消费下一 token 且须为数字，缺值 / 非法报错），选项任意位置均生效
+- **1 参数新规则**（用户约束）：参数是本地存在的文件 → 查看文件内容；否则按 string 搜索（删除原"带扩展名即显示"的 `looks_like_file` 启发式，不存在的 `me.txt` 不再报 "not a file"，改为搜索）
+- **3 参数新规则**（用户约束）：第三个参数必须是本地存在的路径（文件或目录，`.` = 当前目录），不存在则报 `replace path ... does not exist`
+- 新增 1 个单元测试（`split_filter_args_any_position`：尾置 / 长旗标 / -c 取值 / 缺值与非数字报错 / 未知 token 不消费）；`cargo test --bin sys`：421 -> 422 项全绿
+- 版本 0.6.32 -> 0.6.33
+
 ## v0.6.32（2026-10-25）
 
 ### 新增

@@ -1034,7 +1034,8 @@ struct FileArgs {
         allow_hyphen_values = true,
         long_help = r#"The mode is chosen by how many arguments are given. Flag-like tokens
 (-md5 / -sha / --enc / -l / -n / -S / --newer / --older / -d) are absorbed
-into ARGS and may appear at any position:
+into ARGS and may appear at any position; the search options -e/-i/-t/-w/-c
+are re-scanned from ARGS as well, so they also work in any position:
 
   1 arg   `sys file PATTERN`          search PATTERN in stdin (piped); a quoted
           string ("me.txt") forces the search meaning, a bare token with an
