@@ -2,6 +2,16 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.37 (2026-10-25)
+
+### Fixed
+- **`sys data filter` is in-place now, so `-w` writes back the filtered document** (src/dasel.rs): `filter` was previously read-only (it returned the filtered array but never modified the document), and `-w` wrote back the raw document as read — `sys data 'sites.filter(type==1)' -f 4k.json -w aaa.json` produced an aaa.json whose `sites` was still the full list (including type==3); `apply_filter` now filters in place (mirroring `apply_remove`: parse_selector + array_mut_at locates the mutable node), so `-w` writes back the filtered full document (sites keeps only the matching elements, other fields like lives / parses / flags are preserved); the `[*]` / `[]` root-array wildcard paths filter the root array itself in place, nested `a[*]` still errors; stdout behaviour without `-w` is unchanged (still the filtered array); bare predicates (csv / table / jsonl root-array auto-filter) are in-place too; 1 new unit test and 2 strengthened, `cargo test --bin sys`: 437 -> 438 all green
+
+### Changed
+- **`sys data --sample` truncates recursively: every array (including nested) keeps only its first element** (src/dasel.rs, user request): v0.6.36 only sampled top-level arrays and kept nested arrays inside the kept element complete; now sampling is recursive — every array in the document keeps only its first element (object root keeps one element per array field, array root keeps its first element, nested arrays are truncated the same way) for a minimal flat sample; `sample_top_level` renamed to `sample_document` (recursive implementation); help text updated
+
+- Version 0.6.36 -> 0.6.37
+
 ## v0.6.36 (2026-10-25)
 
 ### Fixed

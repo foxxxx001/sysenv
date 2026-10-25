@@ -2,6 +2,16 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.37（2026-10-25）
+
+### 修复
+- **`sys data filter` 就地过滤，`-w` 写回过滤后的文档**（src/dasel.rs）：此前 `filter` 是只读查询（返回过滤结果但不修改文档），`-w` 写回的是读取后的原始文档——`sys data 'sites.filter(type==1)' -f 4k.json -w aaa.json` 得到的 aaa.json 里 sites 仍是完整列表（含 type==3）；`apply_filter` 改为就地过滤（对齐 `apply_remove`：parse_selector + array_mut_at 定位可变节点），`-w` 写回过滤后的完整文档（sites 只剩匹配元素，lives / parses / flags 等其他字段保留）；`[*]` / `[]` 根数组通配路径就地过滤根数组本身，嵌套 `a[*]` 仍报错；无 `-w` 时 stdout 行为不变（仍输出过滤数组）；裸谓词（csv / table / jsonl 根数组自动过滤）同样就地生效；新增 1 个单元测试并增强 2 个，`cargo test --bin sys`：437 -> 438 项全绿
+
+### 变更
+- **`sys data --sample` 递归截断：所有列表（含嵌套）都只取第一个**（src/dasel.rs，用户要求）：v0.6.36 只截顶层列表、保留元素内部嵌套数组保持完整；现改为递归截断——文档内所有列表都只保留第一个元素（对象根每数组字段留首元素、数组根留首元素、嵌套列表同样截断），便于样本尽量小且结构扁平；`sample_top_level` 改名 `sample_document` 递归实现；帮助文档同步
+
+- 版本 0.6.36 -> 0.6.37
+
 ## v0.6.36（2026-10-25）
 
 ### 修复
