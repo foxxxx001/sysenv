@@ -12,7 +12,6 @@ mod lock;
 mod log;
 mod net;
 mod path;
-mod short;
 mod server;
 mod store;
 mod task;
@@ -55,7 +54,6 @@ Examples:
   sys task kill 1234
   sys log --file app.log -f
   sys log --file app.log --level error --search timeout
-  sys short
   sys http pie.dev/get name=John"
 )]
 struct Cli {
@@ -158,8 +156,6 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     /// yaml output is colorized jq-style (key blue, value green).
     #[command(alias = "dasel")]
     Data(DataArgs),
-    /// Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask/sfile)
-    Short(ShortArgs),
 }
 
 #[derive(Args)]
@@ -1113,19 +1109,6 @@ struct LogArgs {
 }
 
 #[derive(Args)]
-struct ShortArgs {
-    /// Install the shims into this directory instead of the managed bin directory
-    #[arg(long, value_name = "DIR")]
-    dir: Option<PathBuf>,
-    /// Overwrite existing shims
-    #[arg(short = 'f', long)]
-    force: bool,
-    /// Do not persist the PATH addition; print a snippet instead
-    #[arg(long)]
-    temporary: bool,
-}
-
-#[derive(Args)]
 struct HttpArgs {
     /// Print parameter descriptions and examples, then exit (use `sys help http` for clap help)
     #[arg(long)]
@@ -1259,7 +1242,6 @@ fn main() -> ExitCode {
         )
         .map(|_| 0),
         Cmd::Task(t) => run_task(t).map(|_| 0),
-        Cmd::Short(s) => run_short(s).map(|_| 0),
         Cmd::Log(l) => log::cmd_log(
             l.file.as_deref(),
             l.level.as_deref(),
@@ -1423,10 +1405,6 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             g.src.as_deref(),
         ),
     }
-}
-
-fn run_short(s: ShortArgs) -> anyhow::Result<()> {
-    short::cmd_short(s.dir, s.force, s.temporary)
 }
 
 fn run_net(n: NetArgs) -> anyhow::Result<()> {

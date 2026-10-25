@@ -32,7 +32,6 @@ ls -l dist/
 echo "== smoke =="
 ./dist/sysenv-linux-x86_64_v0.2.1 --version
 ./dist/sysenv-linux-x86_64_v0.2.1 ai model gpt-4.1 -o csv | tail -n 1 | cut -c1-80
-./dist/sysenv-linux-x86_64_v0.2.1 short --dir /tmp/shx --temporary --force > /dev/null 2>&1 && echo "short ok"
 
 if [ -f "$HOME/.cargo/config.toml.orig" ]; then mv "$HOME/.cargo/config.toml.orig" "$HOME/.cargo/config.toml"; fi
 if [ -f "$HOME/.cargo/config.orig" ]; then mv "$HOME/.cargo/config.orig" "$HOME/.cargo/config"; fi

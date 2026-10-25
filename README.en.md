@@ -8,7 +8,6 @@ A cross-platform (Windows / Ubuntu) system Http client & AI model lookup & PATH 
 - **Environment variables**: read / set / unset / list system variables, optionally persisted or session-only
 - **AI model lookup**: query model & provider information from models.dev by name
 - **httpie-compatible HTTP client**: flags follow httpie conventions
-- **Shortcut shims**: install `spath / senv / slink / shttp / sai / stask / sfile` short commands with one command
 - **Log viewer**: `sys log` — a colored less-style log viewer that parses Nginx / Linux / Windows / Log4j-style logs: timestamps in orange, level gradient (green for info and below, red from warning up), app markers in dark yellow; `--level` filter, `--search` (n/u jump), `--line` / `--newer` positioning, `-f` follow
 
 ```
@@ -23,7 +22,6 @@ Commands:
   http   httpie-compatible HTTP client: http [flags] [METHOD] URL [ITEM...]
   ai     Query the models.dev database of AI models & providers
   task   Query and kill processes (list PID/name/path; kill by PID or name)
-  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask/sfile)
   data   Query / modify / convert structured data (JSON/YAML/TOML/CSV/MD/TABLE), dasel-compatible
   log    Colored less-style log viewer: parse timestamps/levels/app markers, filters, search, -f follow
 ```
@@ -45,7 +43,6 @@ Commands:
 | Data query / modify | `data` / `dasel` | dasel-compatible: selector reads `a.b[0]` / `list[*]` / `m["中文键"]` / root arrays `[0]` (`[0].PID` / `[-1]` / `[*]`; `[*].filter(pred)` filters the whole table, e.g. `ps | sys data -i table '[*].filter(Id==7360)'` — and for csv/table a **bare comparison predicate auto-filters**: `ps | sys data -i table 'Id==7360'` works directly); **Python-style list slices** `list[:2]` / `list[1:3]` / `list[1:]` / `list[-2:]` / `list[::2]` / `list[::-1]` (omitted bounds use defaults, negative indices count from the end, step may be negative, step 0 errors; read-only — plain selectors, `|count()` pipelines and projection left sides work, while `PATH = ...` writes and filter/search/remove paths reject it, e.g. `sys data 'sites[:5]|count()'` counts the first 5 sites); `PATH = VALUE` writes (`= null` deletes, `+=` / `-=` / `*=` / `/=` ops; **`PATH = @FILE`** loads a file as the value — format by extension json/jsonl/yaml/toml/csv/md, unknown extensions fall back to JSON → YAML → plain text, e.g. `cat 4k.json | sys data 'wallpaper=@file.json' --root`; **`PATH = strenv(NAME)`** reads an environment variable as a string value — an unset variable is an error, e.g. `cat 4k.json | sys data 'wallpaper=strenv(ROOT)' --root`); function expressions `list.filter(pred)` / `list.remove(pred)` / `search(pred)` / `name.endsWith("x")` / **`count()` counts matched nodes** (an array result counts its elements, a single value counts 1, no match counts 0; pipeline forms `data|count()` / `data.filter(...)|count()` / `search(...)|count()`, dot form `data.count()`, bare `count()` counts the whole document — e.g. `ps | sys data -i table '[*]|count()'` counts rows, `sys data 'sites.filter(active==true)|count()'` counts active sites) (predicate language: `$this` / `$key`, field paths, `== != > >= < <= && || !`, `contains` / `startsWith` / `endsWith` / `indexOf` / `has`; e.g. `sys data 'sites.filter(type==1)'`); **jq-style key projection pipeline** `data[*]|{id,name,pricing}` — keep only the listed keys per matched element (missing keys → null), a single match emits an object, several emit an array; the left side may be a `filter` / `search` result whose array is spread per element, e.g. `sys data 'clients.filter(name==''modelscope'')|{id,name}' -f config.yaml`; `--depth N` (default 1) removes nodes deeper than N levels; JSON / **JSONL** / YAML / TOML / CSV / MD / **TABLE** interconversion — **`-i jsonl`** (JSON Lines: one JSON value per line parses into a **root array**, so selectors / filter / `--limit` work array-style, with bare-predicate auto-filter: `sys data -f app.log 'level=="error"'`, and `.log` content-detection fallback so no `-i` is needed); **CSV and table headers are virtualised as object keys** — for `-i csv` / `-i table` the first non-blank line is the header by default (query by column name); a second line made of `----` separators is recognised as a header underline and skipped (e.g. ps' `-------` row); `--no-header` is the only way to get `col1..colN` (never auto-inferred), `--header` forces the first line as header; table folds extra cells into the last column (COMMAND with spaces) and pads missing cells; cell types inferred (number / bool / empty / string); `-f` file (extension decides the format, `-i` overrides), `-u URL` GET fetch (default json), `-w` write back, `--root` / `--compact`, `--limit N` (array root keeps only the first N rows — with `-i csv` / `-i table` this shows only the first N data rows, header still printed; the expression runs on the truncated document); non-UTF-8 input auto-decoded (UTF-8 BOM / UTF-16 BOM / GBK / GB18030, lossy fallback last — GBK device logs read directly); tab-indented YAML normalised, CJK round-trips cleanly; replaces the removed `con` command |
 | Log viewer | `log` | colored less-style log viewer: parses Nginx / Linux / Windows / Log4j-style logs — **timestamps** (ISO / slash / nginx access / syslog / US formats, start-of-line or mid-line) in orange; **levels** (trace→info light-to-strong green, warning→error→fatal escalating red) as a gradient; **app markers** in dark yellow; `--level` filters by level (warn==warning, err==error); `--search` keyword search (line numbers + reverse highlight, n/u wrap-jump in interactive mode); `--line N` parses from line N onward (original numbers kept); `--newer TIME` shows entries at/after the given time; `-f` follows file growth with scrolling (150 ms polling, auto re-read on truncation/rotation); TTY gets a less-style interactive view (PageUp/PageDown/↑/↓/Home/End/g/G/q), pipes get plain text without ANSI |
 | HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline / curl-command export; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
-| Shortcut shims | `short` | installs seven short commands at once (spath/senv/slink/shttp/sai/stask/sfile); Windows `.cmd` / Linux sh scripts; auto PATH registration |
 
 ---
 
@@ -80,7 +77,7 @@ cargo build --release
 - **Windows**: writes the user-scope registry key `HKCU\Environment` by default (inherited by every new process); `--scope machine` writes `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment` (administrator required).
 - **Ubuntu**: writes managed files under `~/.config/sys/` and auto-injects them into shell startup scripts so persisted variables/PATH take effect in new shells; the `machine` scope writes `/etc/environment` (root required).
 - On both platforms, `path add --save` and `env set` also **update the current process environment** (paste-ready export snippet for the current shell, registry broadcast on Windows) — persistence and immediate effect are both satisfied.
-- `path add` is current-session only by default: it updates the current process and prints a paste-ready shell snippet (`export` / `$env:`) without writing anything; add `--save` to persist. Other write operations (`path remove`, `env set/unset`, `link`, `short`) persist by default; `--temporary` makes them current-session only.
+- `path add` is current-session only by default: it updates the current process and prints a paste-ready shell snippet (`export` / `$env:`) without writing anything; add `--save` to persist. Other write operations (`path remove`, `env set/unset`, `link`) persist by default; `--temporary` makes them current-session only.
 
 ---
 
@@ -501,40 +498,9 @@ sys http --verify no https://self-signed.example  # skip certificate verificatio
 
 > Note: inside the `http` subcommand, `-h` means httpie-style "print response headers only", so use `sys http --help` for help.
 
-## 8. Shortcut shims (`short`)
-
-### Features
-
-- Installs short shims for **all subcommands** with one command, usable from any directory afterwards
-- Windows generates `.cmd` shims (`@echo off` + forwarding), Ubuntu generates executable `sh` scripts (`chmod 755`); both forward every argument
-- Installs into the managed bin directory (shared with `link`) by default and **persists it into PATH automatically**; `--temporary` only prints a snippet
-- `--dir` selects the directory, `-f/--force` overwrites existing shims
-- Shims forward `%*` / `"$@"` — unlimited argument count, safe with special characters
-
-| Short command | Equivalent |
-| --- | --- |
-| `spath` | `sys path` |
-| `senv` | `sys env` |
-| `slink` | `sys link` |
-| `shttp` | `sys http` |
-| `sai` | `sys ai` |
-| `stask` | `sys task` |
-| `sfile` | `sys file` |
-
-> Note: the `data` / `dasel` and `log` subcommands have **no shims** (no `sdata` / `slog`); use them by their full names. The `con` subcommand was removed in v0.5.10 (superseded by `data`), the `search` subcommand in v0.5.11.
-
-### Examples
-
-```
-sys short              # install all 7 shims into the managed dir and register PATH
-sys short --dir ~/bin  # custom directory
-sys short -f           # overwrite existing shims
-sys short --temporary  # no PATH persistence, print a paste-ready snippet
-```
-
 ---
 
-## 9. Network probing (`net`)
+## 8. Network probing (`net`)
 
 Reads http(s) addresses from a file and probes each one for reachability and response format.
 
@@ -594,7 +560,7 @@ sys net -t info -n a.com -n b.com          # query several domains at once
 
 ---
 
-## 10. Log viewer (`log`)
+## 9. Log viewer (`log`)
 
 A colored less-style log viewer: `sys log --file app.log [--level LEVEL] [--search KW] [--line N] [--newer TIME] [-f]`. It parses each entry's **timestamp** (many common formats), **log level** and **app marker** and colors them semantically; on a TTY it enters a full-screen interactive view (like less), while pipes / redirects get plain text (no ANSI).
 
@@ -651,4 +617,4 @@ type app.log | sys log --level error            # piped input (plain text, no AN
 - `cargo test`: 26 unit tests on Windows, 23 on Linux (platform-specific cases gated by `cfg`)
 - `cargo check`, `cargo test`, `cargo build --release` and end-to-end smoke tests have been run on both Windows (msvc) and Ubuntu (real WSL)
 - End-to-end coverage: PATH CRUD & registry restore, link fallback chain, env persistence/temporary mode, full http flag smoke tests, live models.dev fetch with canonical preference, and actual execution of the five shims
-- `dev/` ships local smoke tooling: `test_server.ps1` (HttpListener test server on port 18899), `smoke_http.ps1` / `smoke_http2.ps1`, `test_body.json`
+- `dev/` ships local smoke tooling: `test_server.ps1` (HttpListener test server on port 18899), `smoke_http.ps1` / `smoke_http2.ps1`, `test_body.json`

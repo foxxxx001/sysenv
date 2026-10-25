@@ -34,7 +34,7 @@ Commands:
   http   httpie-compatible HTTP client: http [flags] [METHOD] URL [ITEM...]
   ai     Query AI model info (DataLearner), provider info (models.dev), inspect the config (info), chat with configured providers
   task   Query and kill processes (list PID/name/path; kill by PID or name)
-  short  Install shell shims for every subcommand (spath/senv/slink/shttp/sai/stask/sfile)
+
   data   Query / modify / convert structured data (JSON/JSONL/YAML/TOML/CSV/MD/TABLE), dasel-compatible (alias dasel)
   log    Colored less-style log viewer: parse timestamps/levels/app markers, filters, search, -f follow
 ```
@@ -56,11 +56,11 @@ Commands:
 | AI 模型查询   | `ai`                 | `ai model`（models.dev：226 个 Provider、8000+ 模型；24h 缓存；canonical 优选；无参列出全部；`--date` / `--open` / `--model-type`（支持逗号多值取交集）/ `--search / --list / --json / --refresh`）；`ai cn-model`（datalearner：1039 个中文模型；`--date` / `--model-type` 过滤；精确命中附带详情页上下文长度、模态与**参数规模（参数量）**）；`ai info`（本地配置查询：`info provider` 列出 name/api_base/api_key/docs/console/sample（sample 为该 provider models 接口的示例请求，如 `https://openrouter.ai/api/v1/models  Authorization:"Bearer sk-sample"`）、`info model` 列出 `{provider}:{name}` 模型清单、`info sale-price` 抓官网定价页、`info list-model` / `info models` 用 provider 的 models 接口查可用模型（同 `sys ai chat --query-model`）；`info providers/models` 支持 `--free` 显示内置免费路由）；`ai price`（models.dev 价格，`--src openrouter` 换 openrouter.ai 目录，见命令参考）；`ai balance`（独立子命令，minimax / agnes / alibaba-cn / deepseek / tencent 用 api_key 查官方余额，其余给控制台地址）；`ai config`（导出配置为 codex / opencode / litellm / freellmapi / codebuddy / workbuddy / trae / zcoder 格式，支持 `-m` 多模型选择（与 chat 同格式）、`--show` 预览目标配置文件地址与内容、`-f` 写文件且写入前自动备份、`--update` 就地合并更新默认配置文件且先备份、`--import` 从 codebuddy / workbuddy / opencode / zcoder 配置文件反向导入 Provider/模型到本地配置且先备份（新增优先、本地已有同端点 Provider 保留本地；**以 api_base 判定同一 Provider**——同端点的条目归并为同一块、不写成多个）；导出（codex/opencode/litellm/freellmapi/codebuddy/workbuddy/trae/zcoder）同样按 api_base 归并，不建立多个条目、`--src` 指定 agent 配置目录（非默认安装位置时导入/导出/更新/列表均生效）、`--list` 只列出默认配置文件实际存在的格式）；`ai chat`（多 Provider 动态加权轮询聊天，`-m` 覆盖模型、`--list-model / --list-provider`，请求前按配置的 max_input_tokens 截断超长消息，能力字段默认只读本地配置、不查询 models.dev，`--update` 显式补齐缺失的 max_input_tokens / type 并写回配置，`--free[=ROUTER]` 内置免费路由 kilo-auto/blockrun，OpenAI / Anthropic 兼容）；`ai server`（`sys ai server [ADDR]` 以 OpenAI 兼容 API 对外提供 `/v1/chat/completions` 与 `/v1/models` 服务（默认 127.0.0.1:10000，可只给端口/IP；`--help` 查询服务状态并打印配置的 provider/model））；`ai image`（OpenAI 兼容 Images API `POST /v1/images/generations` 生成图片：`-o` 保存目录 / `-n` 数量 / `-s` 尺寸 / `--url` 下载 URL 版；b64 解码保存，文件头识别 png/jpg/gif/webp，多模型加权轮询与权重奖惩同 chat） |
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
 | 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin（带扩展名如 `me.txt` 则显示文件，引号包裹强制搜索）；2 参目录树文本/源码搜索（`-e` / `-i` / `-t` / `-w` / `-c` / `-n` 行号）；3 参 OLD NEW PATH 就地替换；`-l` 统计行数（文件 / stdin / 匹配行）；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件；`-md5 FILE [MD5]` / `-sha FILE [SHA1]` 哈希与比对；`--enc SRC [DST]` 编码转换（gbk/gb2312 ↔ utf-8，默认转 utf-8，`--from` 指定源编码、缺省自动检测，DST 缺省输出 stdout） |
-| 数据查询转换  | `data` / `dasel`     | dasel 兼容**查询 / 修改 / 转换**结构化数据，七格式互转（JSON / JSONL / YAML / TOML / CSV / MD / TABLE）：选择器（`a.b[0]` / `list[*]` / `m["中文键"]` / 根数组，含 **Python 式切片** `[:2]` `[1:3]` `[-2:]` `[::2]` `[::-1]`）、赋值（`= VALUE` / `= null` 删除 / `= @FILE` / `= strenv(NAME)` / `+= -= *= /=`）、函数（`filter` / `remove` / `search` / 字符串函数 / **`count()` 计数**）、谓词裸过滤（csv/table/jsonl 自动过滤行数组）、**jq 式键投影** `data[*]\|{id,name}`（**裸 `{k1,k2}` 直接投影根文档**：对象根只保留这些键，如 `cat 4k.json \| sys data '{wallpaper,warningText}'`；数组根逐行投影，同 `[*]\|{...}`；**深层节点管道可省**：`sites[0]{key,name}` / `sites[0].{key,name}` 等价 `sites[0]\|{key,name}`）、`--depth` 修剪、`--limit` 取前 N 行、`--header`/`--no-header` 表头控制、`-w` 写回、`-u` URL 拉取、GBK/GB18030 等**非 UTF-8 自动解码**、tab 缩进 YAML 归一、TTY 下 json/yaml jq 式上色；**完整说明与示例见第 11 节** |
+| 数据查询转换  | `data` / `dasel`     | dasel 兼容**查询 / 修改 / 转换**结构化数据，七格式互转（JSON / JSONL / YAML / TOML / CSV / MD / TABLE）：选择器（`a.b[0]` / `list[*]` / `m["中文键"]` / 根数组，含 **Python 式切片** `[:2]` `[1:3]` `[-2:]` `[::2]` `[::-1]`）、赋值（`= VALUE` / `= null` 删除 / `= @FILE` / `= strenv(NAME)` / `+= -= *= /=`）、函数（`filter` / `remove` / `search` / 字符串函数 / **`count()` 计数**）、谓词裸过滤（csv/table/jsonl 自动过滤行数组）、**jq 式键投影** `data[*]\|{id,name}`（**裸 `{k1,k2}` 直接投影根文档**：对象根只保留这些键，如 `cat 4k.json \| sys data '{wallpaper,warningText}'`；数组根逐行投影，同 `[*]\|{...}`；**深层节点管道可省**：`sites[0]{key,name}` / `sites[0].{key,name}` 等价 `sites[0]\|{key,name}`）、`--depth` 修剪、`--limit` 取前 N 行、`--header`/`--no-header` 表头控制、`-w` 写回、`-u` URL 拉取、GBK/GB18030 等**非 UTF-8 自动解码**、tab 缩进 YAML 归一、TTY 下 json/yaml jq 式上色；**完整说明与示例见第 10 节** |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
 | 网络探测      | `net`                | 从文件批量读取 http(s) 地址并探测：`-i` 读文件（`#` 注释行跳过、每行多个地址、地址截取到空格/标点）；`-t domain`（默认，连续 3 次 GET 取平均响应时间，全部测完按平均时间升序打印）/ `-t tv`（响应体须为 JSON，支持 `--sort` 统计排序；旧名 `json`）/ `-t tvs`（兼容 tv 与聚合两种 JSON：单仓 `.sites` / 多仓 `.urls` 分组输出）/ `-t file`（响应体须为普通文本）/ `-t test`（只探测可访问性，不可访问的屏幕打印错误并从源文件删除，`-o` 输出清理后的源文件行）/ `-t info`（用 `-n` 域名查 RDAP 注册信息，查不到逐层回退上层域名）；tv/file 模式每测完一个即打印 url/可用性/状态码/响应时间/格式，`-o` 把检测成功的 url 写入文件（一行一个）；`--timeout` 单次请求超时 |
 | 日志查看      | `log`                | 彩色 less 式日志查看器：解析 Nginx / Linux / Windows / Log4j 等常见日志——**时间**（ISO/斜杠/nginx access/syslog/US 多种格式，行首或行中）橙色显示；**级别**（trace→info 渐浅绿、warning→error→fatal 渐深红）渐变着色；**app 标志**深黄；`--level` 按级别过滤（warn==warning、err==error）；`--search` 关键字搜索（行号 + 反显，交互下 n/u 循环跳转）；`--line N` 从第 N 行后解析（保留原始行号）；`--newer TIME` 只显示该时间之后的日志；`-f` 追踪文件变化滚动展示（150ms 轮询，截断/轮转自动重读）；TTY 下 less 式交互（PageUp/PageDown/↑/↓/Home/End/g/G/q），管道输出纯文本无 ANSI |
-| 快捷垫片      | `short`              | 一键安装七种短命令（spath/senv/slink/shttp/sai/stask/sfile）；Windows `.cmd` / Linux sh 脚本；自动加入 PATH                                       |
+
 
 
 
@@ -120,7 +120,7 @@ cargo clean
 
 * 无论哪种平台，`path add --save`、`env set` 都会**持久化并同时更新当前进程环境**（Linux 下向父 shell 输出可粘贴的 export 片段，Windows 下注册表广播），保证 "持久化 + 当前生效" 双满足。
 
-* `path add` 默认**仅当前会话**：更新当前进程并打印可粘贴的 shell 片段（`export` / `$env:`），不写入任何持久化存储；加 `--save` 才持久化。其余写操作（`path remove`、`env set/unset`、`link`、`short`）默认持久化，加 `--temporary` 仅当前会话。
+* `path add` 默认**仅当前会话**：更新当前进程并打印可粘贴的 shell 片段（`export` / `$env:`），不写入任何持久化存储；加 `--save` 才持久化。其余写操作（`path remove`、`env set/unset`、`link`）默认持久化，加 `--temporary` 仅当前会话。
 
 
 
@@ -749,52 +749,52 @@ sys http --verify no https://self-signed.example  # 跳过证书校验
 > `sys http --help`
 > 。
 
-## 8. 快捷命令垫片（`short`）
-
-### 特性
 
 
 
-* 一键为**全部子命令**生成短命令垫片，之后任意目录直接使用
-
-* Windows 生成 `.cmd` 垫片（`@echo off` + 转发），Ubuntu 生成可执行 `sh` 脚本（`chmod 755`），均转发全部参数
-
-* 默认安装到托管 bin 目录（与 `link` 共用）并**自动持久化加入 PATH**；`--temporary` 只打印片段不写入
-
-* `--dir` 指定目录、`-f/--force` 覆盖已存在的垫片
-
-* 垫片转发 `%*` / `"$@"`，无参数数量限制，特殊字符安全
 
 
 
-| 短命令     | 等价            |
-| ------- | ------------- |
-| `spath` | `sys path` |
-| `senv`  | `sys env`  |
-| `slink` | `sys link` |
-| `shttp` | `sys http` |
-| `sai`   | `sys ai`   |
-| `stask` | `sys task` |
-| `sfile` | `sys file` |
-
-> 注：`data` / `dasel` 与 `log` 子命令**不生成垫片**（无 `sdata` / `slog`），按全名使用；`con` 子命令已删除（v0.5.10，由 `data` 取代），`search` 子命令已删除（v0.5.11）。
-
-### 示例
 
 
 
-```
-sys short              # 安装全部 7 个垫片到托管目录并自动加入 PATH
-sys short --dir ~/bin  # 指定安装目录
-sys short -f           # 覆盖已存在的垫片
-sys short --temporary  # 不持久化 PATH，只打印可粘贴的片段
-```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
 ***
 
-## 9. 网络探测（`net`）
+## 8. 网络探测（`net`）
 
 从文件中批量读取 http(s) 地址并逐条探测，判断可达性与响应格式。
 
@@ -868,7 +868,7 @@ sys net -t info -n a.com -n b.com          # 一次查多个域名
 
 ***
 
-## 10. 日志查看（`log`）
+## 9. 日志查看（`log`）
 
 彩色 less 式日志查看器：`sys log --file app.log [--level LEVEL] [--search KW] [--line N] [--newer TIME] [-f]`。解析每条日志的**时间**（多种常见格式）、**日志级别**与 **app 标志**并按语义着色；TTY 下进入全屏交互（同 less），管道 / 重定向输出纯文本（无 ANSI）。
 
@@ -913,7 +913,7 @@ type app.log | sys log --level error            # 管道输入（纯文本输出
 
 ***
 
-## 11. 数据查询与转换（`data` / `dasel`）
+## 10. 数据查询与转换（`data` / `dasel`）
 
 查询、修改、转换结构化数据，dasel 兼容子集 + 扩展（原 `sys con` 的继承者，另加 TOML / table / jsonl 与函数表达式 / 切片 / 计数 / 投影）。别名 `dasel` 等同。
 
@@ -1012,6 +1012,6 @@ sys data -f app.log '[*].filter(level=="error")' --limit 10  # 过滤 + 截断
 
 * 已分别在 Windows（msvc）与 Ubuntu（WSL 实机）完成 `cargo check`、`cargo test`、`cargo build --release` 与端到端冒烟
 
-* 端到端验证覆盖：PATH 增删改查与注册表恢复、链接回退链、环境变量持久化 / 临时模式、http 全参数冒烟、ai 真实联网抓取与 canonical 优选、short 五种垫片实际执行
+* 端到端验证覆盖：PATH 增删改查与注册表恢复、链接回退链、环境变量持久化 / 临时模式、http 全参数冒烟、ai 真实联网抓取与 canonical 优选
 
 * `dev/` 目录提供本地冒烟工具：`test_server.ps1`（HttpListener 测试服务器，端口 18899）、`smoke_http.ps1` / `smoke_http2.ps1`、`test_body.json`
