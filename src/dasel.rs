@@ -68,6 +68,13 @@
 //! `sys data -i table --limit 3` prints the first 3 rows (header included).
 //! Applied to the whole document before the expression.
 //!
+//! `--sample`: keep only the first element of every top-level array, so the
+//! document shape is visible at a glance — an object root keeps one element
+//! per array field, an array root keeps its first element only (jsonl / csv /
+//! table input yields a single sample row). Nested arrays and non-array
+//! top-level nodes are left intact. Applied to the whole document before the
+//! expression.
+//!
 //! Files and stdin are read as bytes and decoded tolerantly: UTF-8 (BOM
 //! stripped), UTF-16 (BOM), GBK, GB18030, then a lossy fallback — so legacy
 //! Windows logs (e.g. GBK device logs) can be read directly.
@@ -983,6 +990,18 @@ fn looks_like_bare_predicate(expr: &str) -> bool {
         i += 1;
     }
     false
+}
+
+/// A bare JSON scalar literal (`12`, `true`, `false`, `null`, `"abc"`) parsed
+/// as a whole expression. Such a token selects no node, so `sys data 12`
+/// rejects it up front with a clear error instead of running it as a selector
+/// (or blocking on TTY stdin). Arrays / objects are NOT scalars — they still
+/// take their normal paths (selector / projection).
+fn looks_like_scalar_literal(expr: &str) -> bool {
+    matches!(
+        serde_json::from_str::<Value>(expr.trim()),
+        Ok(Value::Number(_) | Value::Bool(_) | Value::Null | Value::String(_))
+    )
 }
 
 /// Parse `[path.]func(args)`. Returns `None` when the expression does not end
@@ -2520,6 +2539,26 @@ pub(crate) fn apply_limit(v: &mut Value, limit: usize) -> Result<()> {
     }
 }
 
+/// `--sample`: keep only the first element of every top-level array so the
+/// document shape is visible at a glance (quick format check). A top-level
+/// node is a direct child of the root: on an object root every field whose
+/// value is an array is truncated to its first element; on an array root only
+/// the first element is kept. Non-array top-level nodes (objects, scalars)
+/// and arrays nested inside a kept element are left intact.
+fn sample_top_level(v: &mut Value) {
+    match v {
+        Value::Object(m) => {
+            for c in m.values_mut() {
+                if let Value::Array(a) = c {
+                    a.truncate(1);
+                }
+            }
+        }
+        Value::Array(a) => a.truncate(1),
+        _ => {}
+    }
+}
+
 /// Decode raw input bytes into text, tolerating the legacy encodings found in
 /// Windows-produced files (e.g. GBK device logs). Order:
 /// 1. a UTF-8 BOM is an explicit declaration — strip it and decode as UTF-8;
@@ -2590,9 +2629,23 @@ pub fn cmd_data(
     depth: Option<usize>,
     table_header: Option<bool>,
     limit: Option<usize>,
+    sample: bool,
 ) -> Result<()> {
     if file.is_some() && url.is_some() {
         bail!("-f/--file and -u/--url cannot be combined");
+    }
+    // 0. A bare JSON scalar literal (`12`, `true`, `null`, `"abc"`) is not a
+    // valid expression — it selects no node. Reject it before stdin is read so
+    // a stray token like `sys data 12` errors clearly instead of behaving as a
+    // selector (or blocking on TTY input).
+    if let Some(e) = expr {
+        let t = e.trim();
+        if looks_like_scalar_literal(t) {
+            bail!(
+                "`{t}` is a literal value, not an expression — select a node with \
+                 a path (e.g. `a.b`, `list[0]`) or assign with `PATH = {t}`"
+            );
+        }
     }
     // 1. Read the input: -f FILE, else -u URL (GET), else stdin.
     let (text, source_fmt) = match (file, url) {
@@ -2639,6 +2692,13 @@ pub fn cmd_data(
             }
             return Ok(());
         }
+    }
+
+    // 2.6. --sample: keep only the first element of every top-level array, so
+    // the document shape is visible at a glance (applied before the
+    // expression, like --limit / --depth).
+    if sample {
+        sample_top_level(&mut v);
     }
 
     // 3. Output format: -o, else input format.
@@ -3763,6 +3823,124 @@ mod tests {
         let mut v = parse_input("1 2\n3 4\n5 6\n", DataFormat::Table, Some(false)).unwrap();
         apply_limit(&mut v, 1).unwrap();
         assert_eq!(serialize_output(&v, DataFormat::Table, false).unwrap(), "col1 col2\n1    2   \n");
+    }
+
+    // ------------------------------------------------------------------
+    // --sample: keep only the first element of every top-level array
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn sample_top_level_truncates_object_field_arrays() {
+        let mut v = json!({
+            "users": [{"id": 1}, {"id": 2}, {"id": 3}],
+            "tags": ["a", "b", "c"],
+            "meta": {"x": 1},
+            "count": 7,
+            "empty": [],
+        });
+        sample_top_level(&mut v);
+        assert_eq!(
+            v,
+            json!({
+                "users": [{"id": 1}],
+                "tags": ["a"],
+                "meta": {"x": 1},
+                "count": 7,
+                "empty": [],
+            })
+        );
+    }
+
+    #[test]
+    fn sample_top_level_truncates_root_array_and_keeps_scalars() {
+        let mut v = json!([{"A": 1}, {"A": 2}, {"A": 3}]);
+        sample_top_level(&mut v);
+        assert_eq!(v, json!([{"A": 1}]));
+        // An empty root array stays empty; scalar roots are untouched.
+        let mut v = json!([]);
+        sample_top_level(&mut v);
+        assert_eq!(v, json!([]));
+        let mut v = json!("rows");
+        sample_top_level(&mut v);
+        assert_eq!(v, json!("rows"));
+        let mut v = json!(42);
+        sample_top_level(&mut v);
+        assert_eq!(v, json!(42));
+    }
+
+    #[test]
+    fn sample_keeps_nested_arrays_untouched() {
+        // Only top-level arrays are sampled; arrays nested inside a kept
+        // element (or under a non-array field) stay complete, so one full
+        // record shows the format.
+        let mut v = json!({
+            "users": [{"id": 1, "posts": [1, 2, 3]}, {"id": 2, "posts": [4, 5]}],
+            "groups": {"items": ["x", "y", "z"]},
+        });
+        sample_top_level(&mut v);
+        assert_eq!(
+            v,
+            json!({
+                "users": [{"id": 1, "posts": [1, 2, 3]}],
+                "groups": {"items": ["x", "y", "z"]},
+            })
+        );
+    }
+
+    #[test]
+    fn sample_flows_through_parse_serialize() {
+        // `sys data -i table --sample` core path: header + first data row.
+        let mut v = parse_input("A B\n1 2\n3 4\n5 6\n", DataFormat::Table, None).unwrap();
+        sample_top_level(&mut v);
+        assert_eq!(serialize_output(&v, DataFormat::Table, false).unwrap(), "A B\n1 2\n");
+        // Object root with an array field, JSON round-trip (compact).
+        let mut v = parse_input(r#"{"users":[{"id":1},{"id":2}],"ok":true}"#, DataFormat::Json, None).unwrap();
+        sample_top_level(&mut v);
+        assert_eq!(serialize_output(&v, DataFormat::Json, true).unwrap(), "{\"users\":[{\"id\":1}],\"ok\":true}\n");
+    }
+
+    // ------------------------------------------------------------------
+    // Scalar literals as expressions: `sys data 12` must error clearly
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn looks_like_scalar_literal_true_for_scalars() {
+        for e in ["12", "-3.5", "true", "false", "null", r#""abc""#, " 12 ", r#""12""#] {
+            assert!(looks_like_scalar_literal(e), "expr: {e}");
+        }
+    }
+
+    #[test]
+    fn looks_like_scalar_literal_false_for_paths_and_composites() {
+        for e in [
+            "a.b",
+            "list[0]",
+            "m[\"12\"]", // quoted key access to a numeric key — not a scalar
+            "a=1",
+            "= 12",
+            "[1,2]",
+            r#"{"a":1}"#,
+            "12x",
+            "a.b == 1",
+        ] {
+            assert!(!looks_like_scalar_literal(e), "expr: {e}");
+        }
+    }
+
+    #[test]
+    fn cmd_data_rejects_scalar_literal_expr() {
+        // `sys data 12` — the literal check runs before any stdin read.
+        let err = cmd_data(Some("12"), None, None, None, None, None, false, false, None, None, None, false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("`12` is a literal value"), "err: {err}");
+        assert!(err.contains("PATH = 12"), "err: {err}");
+        // Assignments and paths still pass the literal check.
+        assert!(cmd_data(Some("a = 12"), None, None, None, None, None, false, false, None, None, None, false).is_err());
+        let err = cmd_data(Some("a.b"), None, None, None, Some("json"), None, false, false, None, None, None, false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("matched nothing") || err.contains("empty input"), "err: {err}");
     }
 
     // ------------------------------------------------------------------

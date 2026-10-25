@@ -116,34 +116,45 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     /// `--list` shows every `sysmsg-` task, `--delete NAME` removes one
     Msg(MsgArgs),
     /// Query / modify / convert structured data (JSON / JSONL / YAML / TOML / CSV / MD / TABLE), dasel-compatible
-    /// (alias `dasel`): `sys data [EXPR] [-f FILE | -u URL] [-i FMT] [-o FMT] [-w FILE] [--compact] [--root] [--depth [N]] [--limit N] [--header|--no-header]`
+    /// (alias `dasel`): `sys data [EXPR] [-f FILE | -u URL] [-i FMT] [-o FMT] [-w FILE] [--compact] [--root] [--depth [N]] [--limit N] [--sample] [--header|--no-header]`
     ///
     /// EXPR is one of:
-    ///   PATH                 print the value(s) at PATH (selector syntax below)
-    ///   PATH = VALUE         set; `= null` deletes; `PATH = @FILE` reads &
-    ///                        parses a file as the value, `PATH = strenv(NAME)`
-    ///                        reads an environment variable as a string
-    ///   PATH += / -= / *= / /= N   numeric update (or string append for +=)
-    ///   path.filter(pred)    keep matching array elements
-    ///   path.remove(pred)    delete matching array elements
-    ///   search(pred)         recursively collect every node matching pred
-    ///   name.endsWith("x")   string / key functions: contains / startsWith /
-    ///                        endsWith / indexOf / has
-    ///   expr|count()         count matched nodes (array = element count,
-    ///                        single value = 1, none = 0)
-    ///   path|{k1,k2}         jq-style key projection (also after filter/search)
-    ///   {k1,k2}              bare projection on the root document: an object
-    ///                        root keeps only those keys, an array root
-    ///                        projects every row (like [*]|{k1,k2})
-    ///   path{k1,k2}          deep-node projection, pipe optional:
-    ///                        `sites[0]{key,name}` (also
-    ///                        `sites[0].{key,name}`) == `sites[0]|{key,name}`
-    ///   {k1,"n":v,a.b}       object construction: new fields from literals /
-    ///                        selector paths, bare paths lift child nodes up
-    ///                        (e.g. {a.b} -> "b": ...), missing paths -> null
-    ///   PRED                 bare predicate on csv / table / jsonl input
-    ///                        auto-filters the row array (e.g. `Id==7360`)
-    ///   (omitted)            pure format conversion, e.g. `sys data -i yaml -o json < in.yaml`
+    ///
+    ///   PATH — print the value(s) at PATH (selector syntax below)
+    ///
+    ///   PATH = VALUE — set; `= null` deletes; `PATH = @FILE` reads & parses a
+    ///   file as the value; `PATH = strenv(NAME)` reads an environment variable
+    ///
+    ///   PATH += / -= / *= / /= N — numeric update (or string append for +=)
+    ///
+    ///   path.filter(pred) — keep matching array elements
+    ///
+    ///   path.remove(pred) — delete matching array elements
+    ///
+    ///   search(pred) — recursively collect every node matching pred
+    ///
+    ///   name.endsWith("x") — string / key functions: contains / startsWith /
+    ///   endsWith / indexOf / has
+    ///
+    ///   expr|count() — count matched nodes (array = element count, single
+    ///   value = 1, none = 0)
+    ///
+    ///   path|{k1,k2} — jq-style key projection (also after filter / search)
+    ///
+    ///   {k1,k2} — bare projection on the root document: an object root keeps
+    ///   only those keys, an array root projects every row (like [*]|{k1,k2})
+    ///
+    ///   path{k1,k2} — deep-node projection, pipe optional:
+    ///   `sites[0]{key,name}` (also `sites[0].{key,name}`) == `sites[0]|{key,name}`
+    ///
+    ///   {k1,"n":v,a.b} — object construction: new fields from literals /
+    ///   selector paths, bare paths lift child nodes up (e.g. {a.b} -> "b"),
+    ///   missing paths -> null
+    ///
+    ///   PRED — bare predicate on csv / table / jsonl input auto-filters the
+    ///   row array (e.g. `Id==7360`)
+    ///
+    ///   (omitted) — pure format conversion, e.g. `sys data -i yaml -o json < in.yaml`
     ///
     /// Selector syntax: dotted keys `a.b`, array index `list[0]` / `list[-1]`,
     /// wildcard `list[*]`, Python-style slices `list[:2]` / `list[1:3]` /
@@ -167,7 +178,8 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
 #[derive(Args)]
 struct DataArgs {
     /// The expression to run on the document (omitted = pure format
-    /// conversion, e.g. `sys data -i yaml -o json < in.yaml`):
+    /// conversion, e.g. `sys data -i yaml -o json < in.yaml`).
+    ///
     /// 1. SELECTOR — print the value(s) at PATH. Dotted keys `a.b`, array
     ///    index `list[0]` / `list[-1]` (negative counts from the end),
     ///    wildcard `list[*]`, Python-style slices `list[:2]` / `list[1:3]` /
@@ -175,6 +187,7 @@ struct DataArgs {
     ///    plain queries, `|count()` pipelines and projection left sides; not
     ///    in writes or filter/search/remove paths), quoted keys `m["中文键"]`,
     ///    root-array `[0]` / `[-1]` / `[*]`.
+    ///
     /// 2. ASSIGNMENT — `PATH = VALUE` (JSON literal or plain text; `= null`
     ///    deletes the key/element), `PATH = @FILE` (read & parse a file as
     ///    the value: format by extension, then JSON/YAML, then the text
@@ -182,6 +195,7 @@ struct DataArgs {
     ///    a string; an unset variable is an error), arithmetic updates
     ///    `PATH += N` / `-=` / `*=` / `/=` (numeric; `+=` also appends
     ///    strings).
+    ///
     /// 3. FUNCTIONS — `path.filter(pred)` keeps the matching array elements,
     ///    `path.remove(pred)` deletes them, `search(pred)` recursively
     ///    collects every node matching pred, string / key functions
@@ -190,10 +204,12 @@ struct DataArgs {
     ///    `filter(...)|count()`, `search(...)|count()`, `path.count()` or
     ///    bare `count()` (array = element count, single value = 1, no match
     ///    = 0).
+    ///
     /// 4. PREDICATE — a bare comparison / method predicate on csv / table /
     ///    jsonl input auto-filters the root row array, e.g. `Id==7360` or
     ///    `Name.contains("x")` (same as `[*].filter(...)`); on an object
     ///    root it stays a scalar string function.
+    ///
     /// 5. PROJECTION — `path|{k1,k2}` keeps only the listed keys of every
     ///    matched node (missing keys -> null); the left side may also be a
     ///    filter / search call, whose array result is spread element-wise.
@@ -203,6 +219,7 @@ struct DataArgs {
     ///    projects every row (same as `[*]|{k1,k2}`). The pipe may also be
     ///    omitted on a deep node: `sites[0]{key,name}` /
     ///    `sites[0].{key,name}` == `sites[0]|{key,name}`.
+    ///
     /// 6. OBJECT CONSTRUCTION — every element of `{...}` may additionally be
     ///    `"newKey":<json literal>` (insert a literal value, e.g.
     ///    `{"name":"Mike"}`), `"newKey":path` (copy the value at a selector
@@ -213,6 +230,7 @@ struct DataArgs {
     ///    null / nested objects and arrays. Works bare, after a pipe and as a
     ///    trailing projection, e.g.
     ///    `cat f.json | sys data '{"name":"Mike",key1,key2.child1,"country":key3.key2}'`.
+    ///
     /// 7. VALUE FUNCTIONS — any value expression (path or literal) may end in
     ///    a chain of string functions: `key.split(",")` (string -> array),
     ///    `arr.join("|")` (array -> string), `key.replace("a","b")`
@@ -224,6 +242,7 @@ struct DataArgs {
     ///    Type mismatches and functions on a missing path (null) error, e.g.
     ///    `cat f.json | sys data '{"arr1":key1.split(","),key2.substr(0,1),
     ///    key3.replace("a","b"),"newkey1","a,b,c",substr(0,3)}'`.
+    ///
     /// Predicate language: `$this` / `$key`, field paths (`name`, `a.b[0]`,
     /// `m["中文键"]`), literals (numbers, single/double-quoted strings, true /
     /// false / null), `== != > >= < <= && || !`, and contains / startsWith /
@@ -281,6 +300,13 @@ struct DataArgs {
     /// included).
     #[arg(long, value_name = "N")]
     limit: Option<usize>,
+    /// Keep only the first element of every top-level array, so the document
+    /// shape is visible at a glance (quick format check): an object root
+    /// keeps one element per array field, an array root keeps its first
+    /// element only. Nested arrays and non-array top-level nodes are left
+    /// intact. Applied to the whole document before the expression.
+    #[arg(long)]
+    sample: bool,
 }
 
 #[derive(Args)]
@@ -1297,6 +1323,7 @@ fn main() -> ExitCode {
                 _ => None,
             },
             d.limit,
+            d.sample,
         )
         .map(|_| 0),
         Cmd::Task(t) => run_task(t).map(|_| 0),
