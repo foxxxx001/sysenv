@@ -2,6 +2,13 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.34（2026-10-25）
+
+### 修复
+- **`sys file` 属性过滤器尾置任意位置**（src/file.rs）：v0.6.33 遗留的同类缺口——`-S SIZE` / `--newer TIME` / `--older TIME` / `-d NUM` 尾置时仍被 clap `allow_hyphen_values` 吞进 ARGS（如 `sys file . -S 2k` 会误判为替换模式报 path `2k` does not exist）；新增 `split_attr_args` 重扫剥离（`-S/--size` 走 parse_size、`--newer/--older` 走 parse_datetime、`-d/--max-depth` 走 usize 解析，缺值 / 非法均报错，口径与前置一致），`has_filter` 移到全部选项合并之后计算，尾置过滤器同样触发按大小 / 时间 / 深度列文件
+- 新增 1 个单元测试（`split_attr_args_any_position`：尾置 -S/--newer/--older/-d / 缺值与非法报错 / 前部已解析原样保留 / 未知 token 不消费）；`cargo test --bin sys`：422 -> 423 项全绿
+- 版本 0.6.33 -> 0.6.34
+
 ## v0.6.33（2026-10-25）
 
 ### 修复

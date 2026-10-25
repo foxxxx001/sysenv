@@ -2,6 +2,13 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.34 (2026-10-25)
+
+### Fixed
+- **`sys file` attribute filters work in any position** (src/file.rs): the same v0.6.33 gap remained for `-S SIZE` / `--newer TIME` / `--older TIME` / `-d NUM` — a trailing filter was still swallowed into ARGS by clap's `allow_hyphen_values` (e.g. `sys file . -S 2k` was misread as the replace mode and failed with `path '2k' does not exist`). A new `split_attr_args` re-scan pulls them back (`-S/--size` via parse_size, `--newer/--older` via parse_datetime, `-d/--max-depth` as usize; missing/invalid values error with the same wording as leading options), and `has_filter` is now computed after all re-scans so a trailing filter triggers the size/time/depth file listing
+- 1 new unit test (`split_attr_args_any_position`: trailing `-S`/`--newer`/`--older`/`-d`, missing/invalid value errors, leading-parsed values untouched, unknown tokens preserved); `cargo test --bin sys`: 422 -> 423 all green
+- Version 0.6.33 -> 0.6.34
+
 ## v0.6.33 (2026-10-25)
 
 ### Fixed

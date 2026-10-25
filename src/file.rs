@@ -847,6 +847,66 @@ fn split_filter_args<'a>(
     Ok((exts, ignore_case, text_only, word, context, rest))
 }
 
+/// Re-scan ARGS for the attribute-filter options that clap's
+/// `allow_hyphen_values` swallows once positional values have begun (`-S SIZE`,
+/// `--newer TIME`, `--older TIME`, `-d NUM`), and merge them into the parsed
+/// option values so these filters work in any position, exactly like the search
+/// options above. A trailing `-S 2k` would otherwise be misread as the
+/// REPLACEMENT / PATH of the replace mode.
+#[allow(clippy::too_many_arguments)]
+fn split_attr_args<'a>(
+    args: &'a [&'a str],
+    mut min_size: Option<u64>,
+    mut newer: Option<i64>,
+    mut older: Option<i64>,
+    mut max_depth: Option<usize>,
+) -> Result<(Option<u64>, Option<i64>, Option<i64>, Option<usize>, Vec<&'a str>)> {
+    let mut rest: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i] {
+            "-S" | "--size" => {
+                let v = args
+                    .get(i + 1)
+                    .copied()
+                    .ok_or_else(|| anyhow::anyhow!("`{}` requires a size (e.g. -S 2m)", args[i]))?;
+                min_size = Some(parse_size(v)?);
+                i += 2;
+            }
+            "--newer" => {
+                let v = args.get(i + 1).copied().ok_or_else(|| {
+                    anyhow::anyhow!("`{}` requires a time (YYYY-MM-DD [HH:MM[:SS]])", args[i])
+                })?;
+                newer = Some(parse_datetime(v)?);
+                i += 2;
+            }
+            "--older" => {
+                let v = args.get(i + 1).copied().ok_or_else(|| {
+                    anyhow::anyhow!("`{}` requires a time (YYYY-MM-DD [HH:MM[:SS]])", args[i])
+                })?;
+                older = Some(parse_datetime(v)?);
+                i += 2;
+            }
+            "-d" | "--max-depth" => {
+                let v = args
+                    .get(i + 1)
+                    .copied()
+                    .ok_or_else(|| anyhow::anyhow!("`{}` requires a number (e.g. -d 2)", args[i]))?;
+                let n: usize = v
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("`{}` requires a number, got `{v}`", args[i]))?;
+                max_depth = Some(n);
+                i += 2;
+            }
+            _ => {
+                rest.push(args[i]);
+                i += 1;
+            }
+        }
+    }
+    Ok((min_size, newer, older, max_depth, rest))
+}
+
 /// Validate `expected` against `computed`: format must be `hex_len()` lowercase
 /// hex chars; equal values return Ok, otherwise a mismatch error.
 fn verify_hash(algo: HashAlgo, computed: &str, expected: &str) -> Result<()> {
@@ -1101,10 +1161,6 @@ pub fn cmd_file(
         line_count,
         line_numbers,
     };
-    let has_filter = opts.min_size.is_some()
-        || opts.newer.is_some()
-        || opts.older.is_some()
-        || opts.max_depth.is_some();
     // Encoding-convert mode (`--enc` / `--encode` / `--convert` markers)
     // takes precedence over every other mode: `sys file --enc SRC [DST]
     // [--from ENC] [--to ENC]`.
@@ -1144,6 +1200,21 @@ pub fn cmd_file(
     opts.text_only = text_only;
     opts.word = word;
     opts.context = context;
+    // `-S SIZE` / `--newer TIME` / `--older TIME` / `-d NUM` are attribute
+    // filters: the same swallow applies to them when trailing, so re-scan them
+    // too (`sys file . -S 2k` would otherwise be misread as the replace mode).
+    let (min_size, newer, older, max_depth, args) =
+        split_attr_args(&args, opts.min_size, opts.newer, opts.older, opts.max_depth)?;
+    opts.min_size = min_size;
+    opts.newer = newer;
+    opts.older = older;
+    opts.max_depth = max_depth;
+    // Computed after every re-scan so a trailing `-S`/`--newer`/`--older`/`-d`
+    // also triggers the attribute-filter list mode.
+    let has_filter = opts.min_size.is_some()
+        || opts.newer.is_some()
+        || opts.older.is_some()
+        || opts.max_depth.is_some();
     if line_count {
         return match args.len() {
             0 => count_stdin(None, &opts),
@@ -1643,6 +1714,50 @@ mod tests {
         assert!(ic && tt && w);
         assert_eq!(ctx, 3);
         assert_eq!(rest, vec!["动漫", "D:\\x", "-x", "-l"]);
+    }
+
+    #[test]
+    fn split_attr_args_any_position() {
+        // 尾置 -S / --newer / --older / -d（clap allow_hyphen_values 吞进 ARGS 的形态）→ 剥离并合并
+        let v = vec!["Scrcpy", ".", "-S", "2k"];
+        let (min, newer, older, depth, rest) = split_attr_args(&v, None, None, None, None).unwrap();
+        assert_eq!(min, Some(2048));
+        assert_eq!(newer, None);
+        assert_eq!(older, None);
+        assert_eq!(depth, None);
+        assert_eq!(rest, vec!["Scrcpy", "."]);
+
+        let v = vec![".", "--newer", "2026-10-01", "-d", "2"];
+        let (min, newer, older, depth, rest) = split_attr_args(&v, None, None, None, None).unwrap();
+        assert_eq!(min, None);
+        assert!(newer.is_some());
+        assert_eq!(older, None);
+        assert_eq!(depth, Some(2));
+        assert_eq!(rest, vec!["."]);
+
+        let v = vec!["a.txt", "--older", "2026-10-01"];
+        let (min, newer, older, depth, rest) = split_attr_args(&v, None, None, None, None).unwrap();
+        assert_eq!(min, None);
+        assert_eq!(newer, None);
+        assert!(older.is_some());
+        assert_eq!(depth, None);
+        assert_eq!(rest, vec!["a.txt"]);
+
+        // 缺值 / 非法数值 / 非法大小报错
+        assert!(split_attr_args(&vec!["a", "-S"], None, None, None, None).is_err());
+        assert!(split_attr_args(&vec!["a", "--newer"], None, None, None, None).is_err());
+        assert!(split_attr_args(&vec!["a", "--older"], None, None, None, None).is_err());
+        assert!(split_attr_args(&vec!["a", "-d", "x"], None, None, None, None).is_err());
+        assert!(split_attr_args(&vec!["a", "-S", "abc"], None, None, None, None).is_err());
+
+        // 前部已被 clap 解析（值不在 ARGS 中）→ 原样保留；未知 token 不消费
+        let v = vec!["动漫", "D:\\x", "-x"];
+        let (min, newer, older, depth, rest) = split_attr_args(&v, Some(4096), Some(1), Some(2), Some(3)).unwrap();
+        assert_eq!(min, Some(4096));
+        assert_eq!(newer, Some(1));
+        assert_eq!(older, Some(2));
+        assert_eq!(depth, Some(3));
+        assert_eq!(rest, vec!["动漫", "D:\\x", "-x"]);
     }
 
     #[test]
