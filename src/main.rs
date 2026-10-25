@@ -300,10 +300,11 @@ struct DataArgs {
     /// included).
     #[arg(long, value_name = "N")]
     limit: Option<usize>,
-    /// Keep only the first element of every top-level array, so the document
-    /// shape is visible at a glance (quick format check): an object root
-    /// keeps one element per array field, an array root keeps its first
-    /// element only. Nested arrays and non-array top-level nodes are left
+    /// Keep only the first element of every array, recursively, so the
+    /// document shape is visible at a glance with a minimal sample (quick
+    /// format check): an object root keeps one element per array field, an
+    /// array root keeps its first element only, and nested arrays are
+    /// truncated the same way. Non-array nodes and empty arrays are left
     /// intact. Applied to the whole document before the expression.
     #[arg(long)]
     sample: bool,

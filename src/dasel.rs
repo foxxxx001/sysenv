@@ -68,12 +68,13 @@
 //! `sys data -i table --limit 3` prints the first 3 rows (header included).
 //! Applied to the whole document before the expression.
 //!
-//! `--sample`: keep only the first element of every top-level array, so the
-//! document shape is visible at a glance — an object root keeps one element
-//! per array field, an array root keeps its first element only (jsonl / csv /
-//! table input yields a single sample row). Nested arrays and non-array
-//! top-level nodes are left intact. Applied to the whole document before the
-//! expression.
+//! `--sample`: keep only the first element of every array, recursively — so
+//! the document shape is visible at a glance with a minimal sample: an object
+//! root keeps one element per array field, an array root keeps its first
+//! element only (jsonl / csv / table input yields a single sample row), and
+//! every nested array is truncated the same way. Non-array nodes (objects,
+//! scalars) and empty arrays are left intact. Applied to the whole document
+//! before the expression.
 //!
 //! Files and stdin are read as bytes and decoded tolerantly: UTF-8 (BOM
 //! stripped), UTF-16 (BOM), GBK, GB18030, then a lossy fallback — so legacy
@@ -2539,22 +2540,26 @@ pub(crate) fn apply_limit(v: &mut Value, limit: usize) -> Result<()> {
     }
 }
 
-/// `--sample`: keep only the first element of every top-level array so the
-/// document shape is visible at a glance (quick format check). A top-level
-/// node is a direct child of the root: on an object root every field whose
-/// value is an array is truncated to its first element; on an array root only
-/// the first element is kept. Non-array top-level nodes (objects, scalars)
-/// and arrays nested inside a kept element are left intact.
-fn sample_top_level(v: &mut Value) {
+/// `--sample`: keep only the first element of every array, recursively, so
+/// the document shape is visible at a glance with a minimal sample (quick
+/// format check). Every array in the document is truncated to its first
+/// element; objects keep all keys but each array value is sampled the same
+/// way; scalars and empty arrays are left intact.
+fn sample_document(v: &mut Value) {
     match v {
         Value::Object(m) => {
             for c in m.values_mut() {
-                if let Value::Array(a) = c {
-                    a.truncate(1);
-                }
+                sample_document(c);
             }
         }
-        Value::Array(a) => a.truncate(1),
+        Value::Array(a) => {
+            if a.len() > 1 {
+                a.truncate(1);
+            }
+            if let Some(first) = a.first_mut() {
+                sample_document(first);
+            }
+        }
         _ => {}
     }
 }
@@ -2694,11 +2699,10 @@ pub fn cmd_data(
         }
     }
 
-    // 2.6. --sample: keep only the first element of every top-level array, so
-    // the document shape is visible at a glance (applied before the
-    // expression, like --limit / --depth).
+    // 2.6. --sample: keep only the first element of every array, recursively
+    // (applied before the expression, like --limit / --depth).
     if sample {
-        sample_top_level(&mut v);
+        sample_document(&mut v);
     }
 
     // 3. Output format: -o, else input format.
@@ -3826,11 +3830,11 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // --sample: keep only the first element of every top-level array
+    // --sample: keep only the first element of every array, recursively
     // ------------------------------------------------------------------
 
     #[test]
-    fn sample_top_level_truncates_object_field_arrays() {
+    fn sample_document_truncates_object_field_arrays() {
         let mut v = json!({
             "users": [{"id": 1}, {"id": 2}, {"id": 3}],
             "tags": ["a", "b", "c"],
@@ -3838,7 +3842,7 @@ mod tests {
             "count": 7,
             "empty": [],
         });
-        sample_top_level(&mut v);
+        sample_document(&mut v);
         assert_eq!(
             v,
             json!({
@@ -3852,37 +3856,39 @@ mod tests {
     }
 
     #[test]
-    fn sample_top_level_truncates_root_array_and_keeps_scalars() {
+    fn sample_document_truncates_root_array_and_keeps_scalars() {
         let mut v = json!([{"A": 1}, {"A": 2}, {"A": 3}]);
-        sample_top_level(&mut v);
+        sample_document(&mut v);
         assert_eq!(v, json!([{"A": 1}]));
         // An empty root array stays empty; scalar roots are untouched.
         let mut v = json!([]);
-        sample_top_level(&mut v);
+        sample_document(&mut v);
         assert_eq!(v, json!([]));
         let mut v = json!("rows");
-        sample_top_level(&mut v);
+        sample_document(&mut v);
         assert_eq!(v, json!("rows"));
         let mut v = json!(42);
-        sample_top_level(&mut v);
+        sample_document(&mut v);
         assert_eq!(v, json!(42));
     }
 
     #[test]
-    fn sample_keeps_nested_arrays_untouched() {
-        // Only top-level arrays are sampled; arrays nested inside a kept
-        // element (or under a non-array field) stay complete, so one full
-        // record shows the format.
+    fn sample_document_truncates_nested_arrays_too() {
+        // Every array is sampled, at any depth: a kept element's nested arrays
+        // are truncated to their first element as well, so the sample is
+        // minimal while still showing each level's shape.
         let mut v = json!({
             "users": [{"id": 1, "posts": [1, 2, 3]}, {"id": 2, "posts": [4, 5]}],
             "groups": {"items": ["x", "y", "z"]},
+            "matrix": [[1, 2], [3, 4, 5]],
         });
-        sample_top_level(&mut v);
+        sample_document(&mut v);
         assert_eq!(
             v,
             json!({
-                "users": [{"id": 1, "posts": [1, 2, 3]}],
-                "groups": {"items": ["x", "y", "z"]},
+                "users": [{"id": 1, "posts": [1]}],
+                "groups": {"items": ["x"]},
+                "matrix": [[1]],
             })
         );
     }
@@ -3891,11 +3897,11 @@ mod tests {
     fn sample_flows_through_parse_serialize() {
         // `sys data -i table --sample` core path: header + first data row.
         let mut v = parse_input("A B\n1 2\n3 4\n5 6\n", DataFormat::Table, None).unwrap();
-        sample_top_level(&mut v);
+        sample_document(&mut v);
         assert_eq!(serialize_output(&v, DataFormat::Table, false).unwrap(), "A B\n1 2\n");
         // Object root with an array field, JSON round-trip (compact).
         let mut v = parse_input(r#"{"users":[{"id":1},{"id":2}],"ok":true}"#, DataFormat::Json, None).unwrap();
-        sample_top_level(&mut v);
+        sample_document(&mut v);
         assert_eq!(serialize_output(&v, DataFormat::Json, true).unwrap(), "{\"users\":[{\"id\":1}],\"ok\":true}\n");
     }
 
