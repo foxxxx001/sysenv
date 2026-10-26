@@ -2,6 +2,16 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.38（2026-10-26）
+
+### 新增
+- **`sys file` 搜索 / 替换多线程并发，边处理边输出**（src/file.rs，用户要求）：`parallel_map`（收集全部结果后一次性输出）替换为 `parallel_run`（worker 线程数 ≤ CPU 核心数，处理完一个文件立刻在 stdout 锁下打印）——搜索结果逐文件原子打印（同文件所有匹配行不被其他线程插入，输出按完成顺序而非字典序）、替换模式逐文件打印 `path: N 处替换`、汇总统计改用 `AtomicUsize`；零 / 单文件或单核自动回退顺序执行；首个 worker 错误在全部 worker 完成后传播
+
+### 变更
+- **`sys file -t/--type` 改为可选值参数**（src/file.rs + src/main.rs）：`-t all`（默认，文本 + 代码）、`-t code`（只搜源代码 .py/.java/.c/…）、`-t txt`（只搜纯文本 .md/.txt/.log/…），裸 `-t` = all；`text_only: bool` 替换为 `FileKind` 枚举（All/Code/Text），`is_target_file` / `is_visible` 按 kind 分别匹配 TEXT_EXTS / CODE_EXTS / 并集；`split_filter_args` 支持尾置 `-t code` / `-t txt` 重扫描（未知类型报错）；帮助文档同步
+
+- 版本 0.6.37 -> 0.6.38
+
 ## v0.6.37（2026-10-25）
 
 ### 修复

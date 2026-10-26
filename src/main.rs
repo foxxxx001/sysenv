@@ -1095,9 +1095,9 @@ position:
     /// Case-insensitive matching
     #[arg(short = 'i', long)]
     ignore_case: bool,
-    /// Only search plain-text files (txt/md/log/...); by default source-code files are searched too
-    #[arg(short = 't', long)]
-    text_only: bool,
+    /// File types to search: `all` (text + code, default), `code` (only source code: .py/.java/.c/…), or `txt` (only plain text: .md/.txt/.log/…). Bare `-t` = `all`.
+    #[arg(short = 't', long, value_name = "TYPE", default_value = "all", num_args = 0..=1)]
+    file_type: String,
     /// Match whole words only
     #[arg(short = 'w', long)]
     word: bool,
@@ -1294,21 +1294,24 @@ fn main() -> ExitCode {
             m.music.as_deref(),
         )
         .map(|_| 0),
-        Cmd::File(f) => file::cmd_file(
-            &f.args,
-            &f.ext,
-            f.ignore_case,
-            f.text_only,
-            f.word,
-            f.context,
-            f.size,
-            f.newer,
-            f.older,
-            f.max_depth,
-            f.line_count,
-            f.line_numbers,
-        )
-        .map(|_| 0),
+        Cmd::File(f) => match file::FileKind::parse(Some(&f.file_type)) {
+            Ok(kind) => file::cmd_file(
+                &f.args,
+                &f.ext,
+                f.ignore_case,
+                kind,
+                f.word,
+                f.context,
+                f.size,
+                f.newer,
+                f.older,
+                f.max_depth,
+                f.line_count,
+                f.line_numbers,
+            )
+            .map(|_| 0),
+            Err(e) => Err(e),
+        },
         Cmd::Data(d) => dasel::cmd_data(
             d.expr.as_deref(),
             d.file.as_deref().map(|p| p.to_str().unwrap_or_default()),

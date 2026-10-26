@@ -2,6 +2,16 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.38 (2026-10-26)
+
+### Added
+- **`sys file` search / replace now runs multi-threaded with streaming output** (src/file.rs, user request): `parallel_map` (which collected every result and printed once) is replaced by `parallel_run` (worker count ≤ CPU cores; each worker prints immediately under the stdout lock as its file finishes) — search matches print per file atomically (all lines of one file stay together, output in completion order rather than name order), replace mode prints `path: N 处替换` per file as it happens, and the summary counters are `AtomicUsize`; zero / single-file or single-core runs fall back to sequential; the first worker error propagates after all workers finish
+
+### Changed
+- **`sys file -t/--type` is now an optional-value flag** (src/file.rs + src/main.rs): `-t all` (default, text + code), `-t code` (source code only: .py/.java/.c/…), `-t txt` (plain text only: .md/.txt/.log/…); bare `-t` = all; the `text_only: bool` becomes a `FileKind` enum (All/Code/Text) and `is_target_file` / `is_visible` match TEXT_EXTS / CODE_EXTS / the union per kind; `split_filter_args` re-scans trailing `-t code` / `-t txt` (unknown types error); help text updated
+
+- Version 0.6.37 -> 0.6.38
+
 ## v0.6.37 (2026-10-25)
 
 ### Fixed

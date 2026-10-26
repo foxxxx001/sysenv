@@ -27,8 +27,9 @@
 //! Options:
 //!   -e EXT       filter by file extension (repeatable, dot optional)
 //!   -i           case-insensitive matching
-//!   -t           only search plain-text files (txt/md/log/...); by default
-//!                source-code files are searched too
+//!   -t [TYPE]    file types to search: `all` (text + code, default), `code`
+//!                (only source-code files: .py/.java/.c/…), `txt` (only plain
+//!                text: .md/.txt/.log/…). Bare `-t` = `all`.
 //!   -w           match whole words only
 //!   -c NUM       show NUM lines of context around every match
 //!   -n           prepend the line number to every printed line (stdin search;
@@ -67,6 +68,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 
 use crate::hash::{self, HashAlgo};
@@ -93,6 +96,33 @@ const SKIP_DIRS: &[&str] = &[
     "venv", ".idea", ".vscode", ".settings", ".mypy_cache", ".pytest_cache", "vendor",
 ];
 
+/// Which kinds of files to search / list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileKind {
+    /// Plain-text files + source-code files (the default).
+    All,
+    /// Only source-code files (`.rs`, `.py`, `.go`, …).
+    Code,
+    /// Only plain-text files (`.txt`, `.md`, `.log`, …).
+    Text,
+}
+
+impl FileKind {
+    /// Parse from the `-t` value: `all` / `code` / `txt` (case-insensitive).
+    /// Missing or empty = `All` (bare `-t`).
+    pub fn parse(s: Option<&str>) -> Result<Self> {
+        match s {
+            None | Some("") => Ok(FileKind::All),
+            Some(v) => match v.to_ascii_lowercase().as_str() {
+                "all" => Ok(FileKind::All),
+                "code" | "src" | "source" => Ok(FileKind::Code),
+                "txt" | "text" => Ok(FileKind::Text),
+                other => bail!("unknown -t type `{other}` (expected all / code / txt)"),
+            },
+        }
+    }
+}
+
 /// Parsed options shared by every mode.
 #[derive(Clone, Debug)]
 pub struct FileOpts {
@@ -100,8 +130,8 @@ pub struct FileOpts {
     pub exts: Vec<String>,
     /// `-i`
     pub ignore_case: bool,
-    /// `-t`
-    pub text_only: bool,
+    /// `-t all|code|txt` (default All = text + code).
+    pub file_kind: FileKind,
     /// `-w`
     pub word: bool,
     /// `-c NUM`
@@ -458,7 +488,7 @@ fn count_matching_lines(lines: &[String], needle: &[char], ignore_case: bool, wo
 // ---------------------------------------------------------------------------
 
 /// Decide whether a file should be searched, based on its extension.
-fn is_target_file(path: &Path, exts: &Option<HashSet<String>>, text_only: bool) -> bool {
+fn is_target_file(path: &Path, exts: &Option<HashSet<String>>, kind: FileKind) -> bool {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_ascii_lowercase())
@@ -472,8 +502,13 @@ fn is_target_file(path: &Path, exts: &Option<HashSet<String>>, text_only: bool) 
         .unwrap_or_default();
     match exts {
         Some(es) => es.contains(&ext) || es.contains(&name),
-        None if text_only => TEXT_EXTS.contains(&ext.as_str()),
-        None => TEXT_EXTS.contains(&ext.as_str()) || CODE_EXTS.contains(&ext.as_str()),
+        None => match kind {
+            FileKind::All => {
+                TEXT_EXTS.contains(&ext.as_str()) || CODE_EXTS.contains(&ext.as_str())
+            }
+            FileKind::Code => CODE_EXTS.contains(&ext.as_str()),
+            FileKind::Text => TEXT_EXTS.contains(&ext.as_str()),
+        },
     }
 }
 
@@ -485,7 +520,7 @@ fn is_target_file(path: &Path, exts: &Option<HashSet<String>>, text_only: bool) 
 fn walk(
     dir: &Path,
     exts: &Option<HashSet<String>>,
-    text_only: bool,
+    kind: FileKind,
     ext_filter: bool,
     max_depth: Option<usize>,
     depth: usize,
@@ -514,13 +549,13 @@ fn walk(
                 continue;
             }
             dirs.push(path);
-        } else if ft.is_file() && (!ext_filter || is_target_file(&path, exts, text_only)) {
+        } else if ft.is_file() && (!ext_filter || is_target_file(&path, exts, kind)) {
             out.push(path);
         }
     }
     dirs.sort();
     for d in dirs {
-        walk(&d, exts, text_only, ext_filter, max_depth, depth + 1, out);
+        walk(&d, exts, kind, ext_filter, max_depth, depth + 1, out);
     }
     out.sort();
 }
@@ -543,7 +578,7 @@ fn collect_files(path: &str, opts: &FileOpts) -> Result<Vec<PathBuf>> {
     let exts = opts.ext_set();
     let mut files = Vec::new();
     if p.is_dir() {
-        walk(p, &exts, opts.text_only, true, opts.max_depth, 0, &mut files);
+        walk(p, &exts, opts.file_kind, true, opts.max_depth, 0, &mut files);
     } else if p.is_file() {
         files.push(p.to_path_buf());
     } else {
@@ -559,7 +594,7 @@ fn list_files(path: &str, opts: &FileOpts) -> Result<()> {
     let mut files = Vec::new();
     if p.is_dir() {
         let exts = opts.ext_set();
-        walk(p, &exts, opts.text_only, false, opts.max_depth, 0, &mut files);
+        walk(p, &exts, opts.file_kind, false, opts.max_depth, 0, &mut files);
     } else if p.is_file() {
         files.push(p.to_path_buf());
     } else {
@@ -567,7 +602,7 @@ fn list_files(path: &str, opts: &FileOpts) -> Result<()> {
     }
     let es = opts.ext_set();
     for f in &files {
-        if !is_visible(&f, &es, opts.text_only) {
+        if !is_visible(&f, &es, opts.file_kind) {
             continue;
         }
         if !passes_attrs(f, opts) {
@@ -579,7 +614,7 @@ fn list_files(path: &str, opts: &FileOpts) -> Result<()> {
 }
 
 /// Visibility filter for list mode (hidden files skipped; `-e` / `-t` apply).
-fn is_visible(path: &Path, exts: &Option<HashSet<String>>, text_only: bool) -> bool {
+fn is_visible(path: &Path, exts: &Option<HashSet<String>>, kind: FileKind) -> bool {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_ascii_lowercase())
@@ -593,14 +628,74 @@ fn is_visible(path: &Path, exts: &Option<HashSet<String>>, text_only: bool) -> b
         .unwrap_or_default();
     match exts {
         Some(es) => es.contains(&ext) || es.contains(&name),
-        None if text_only => TEXT_EXTS.contains(&ext.as_str()),
-        None => true,
+        None => match kind {
+            FileKind::All => true,
+            FileKind::Code => CODE_EXTS.contains(&ext.as_str()),
+            FileKind::Text => TEXT_EXTS.contains(&ext.as_str()),
+        },
     }
 }
 
 // ---------------------------------------------------------------------------
 // Modes
 // ---------------------------------------------------------------------------
+
+/// Run `worker(&item)` for every item in parallel, streaming output as we go.
+///
+/// The number of worker threads is capped at the available hardware
+/// parallelism (`std::thread::available_parallelism()`, i.e. the CPU core
+/// count). Unlike a collect-then-print map, the worker is expected to print
+/// directly (under the global stdout lock) so matches / replacements appear
+/// **immediately** as each file finishes, rather than being buffered until all
+/// files are done.
+///
+/// If any worker returns `Err`, the first such error is propagated after all
+/// workers finish (other files are still processed). When the item list has
+/// zero or one entries, or only one core is available, runs sequentially.
+fn parallel_run<T, F>(items: &[T], worker: F) -> Result<()>
+where
+    T: Sync,
+    F: Fn(&T) -> Result<()> + Sync,
+{
+    let n_cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    if items.is_empty() {
+        return Ok(());
+    }
+    if items.len() == 1 || n_cpus <= 1 {
+        for item in items {
+            worker(item)?;
+        }
+        return Ok(());
+    }
+    let next = AtomicUsize::new(0);
+    // Only the first error from a worker is propagated; later errors are dropped.
+    let first_err: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+    std::thread::scope(|s| {
+        for _ in 0..n_cpus.min(items.len()) {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= items.len() {
+                        break;
+                    }
+                    if let Err(e) = worker(&items[i]) {
+                        let mut slot = first_err.lock().unwrap();
+                        if slot.is_none() {
+                            *slot = Some(e);
+                        }
+                    }
+                }
+            });
+        }
+    });
+    let mut guard = first_err.lock().unwrap();
+    if let Some(e) = guard.take() {
+        return Err(e);
+    }
+    Ok(())
+}
 
 /// `sys file PATTERN` — read stdin and print matching lines.
 fn search_stdin(needle: &str, opts: &FileOpts) -> Result<()> {
@@ -626,15 +721,23 @@ fn search_stdin(needle: &str, opts: &FileOpts) -> Result<()> {
 }
 
 /// `sys file PATTERN PATH` — search PATH (file or directory tree).
+///
+/// Files are read and matched in parallel (worker count ≤ CPU core count);
+/// each file's matches are printed **immediately** as that file finishes, so
+/// output appears in completion order rather than being buffered until every
+/// file is done. Within a single file all match groups are printed atomically
+/// under the stdout lock so lines from different files never interleave.
 fn search_path(needle: &str, path: &str, opts: &FileOpts) -> Result<()> {
     let files = collect_files(path, opts)?;
     let n: Vec<char> = needle.chars().collect();
-    let mut matched_files = 0usize;
-    for f in &files {
+    let matched_files = AtomicUsize::new(0);
+    parallel_run(&files, |f| -> Result<()> {
         if !passes_attrs(f, opts) {
-            continue;
+            return Ok(());
         }
-        let Some(content) = read_text_file(f)? else { continue };
+        let Some(content) = read_text_file(f)? else {
+            return Ok(());
+        };
         let lines: Vec<String> = content.lines().map(str::to_string).collect();
         let out = build_match_output(
             &lines,
@@ -646,13 +749,19 @@ fn search_path(needle: &str, path: &str, opts: &FileOpts) -> Result<()> {
             opts.line_numbers,
         );
         if !out.is_empty() {
-            matched_files += 1;
+            matched_files.fetch_add(1, Ordering::Relaxed);
+            // Print this file's matches atomically so they aren't interleaved
+            // with output from other worker threads.
+            let stdout = io::stdout();
+            let mut handle = stdout.lock();
             for l in &out {
-                println!("{l}");
+                let _ = writeln!(handle, "{l}");
             }
         }
-    }
-    if matched_files == 0 {
+        Ok(())
+    })?;
+    let mf = matched_files.load(Ordering::Relaxed);
+    if mf == 0 {
         println!("(no matches in {} files)", files.len());
     }
     Ok(())
@@ -710,31 +819,45 @@ fn count_path(needle: &str, path: &str, opts: &FileOpts) -> Result<()> {
 }
 
 /// `sys file OLD NEW PATH` — replace OLD with NEW in place.
+///
+/// Each file is read, matched and (when changed) written in parallel, with
+/// worker count ≤ CPU core count. Per-file replacement reports are printed in
+/// the original (sorted) file order.
 fn replace_path(old: &str, new: &str, path: &str, opts: &FileOpts) -> Result<()> {
     let files = collect_files(path, opts)?;
     let needle: Vec<char> = old.chars().collect();
     let replacement: Vec<char> = new.chars().collect();
-    let mut modified = 0usize;
-    let mut total = 0usize;
-    for f in &files {
+    let modified = AtomicUsize::new(0);
+    let total = AtomicUsize::new(0);
+    parallel_run(&files, |f| -> Result<()> {
         if !passes_attrs(f, opts) {
-            continue;
+            return Ok(());
         }
-        let Some(content) = read_text_file(f)? else { continue };
+        let Some(content) = read_text_file(f)? else {
+            return Ok(());
+        };
         let mut chars: Vec<char> = content.chars().collect();
         let n = replace_all(&mut chars, &needle, &replacement, opts.ignore_case, opts.word);
         if n > 0 {
             let out: String = chars.into_iter().collect();
-            fs::write(f, out).with_context(|| format!("cannot write {}", f.display()))?;
-            modified += 1;
-            total += n;
-            println!("{}: {} 处替换", f.display(), n);
+            fs::write(f, out)
+                .with_context(|| format!("cannot write {}", f.display()))?;
+            modified.fetch_add(1, Ordering::Relaxed);
+            total.fetch_add(n, Ordering::Relaxed);
+            // Immediately announce this file's replacement so the user sees
+            // progress as it happens, not after every file is done.
+            let stdout = io::stdout();
+            let mut handle = stdout.lock();
+            let _ = writeln!(handle, "{}: {} 处替换", f.display(), n);
         }
-    }
-    if modified == 0 {
+        Ok(())
+    })?;
+    let m = modified.load(Ordering::Relaxed);
+    let t = total.load(Ordering::Relaxed);
+    if m == 0 {
         println!("未找到匹配，无文件被修改。");
     } else {
-        println!("已修改 {modified} 个文件，共替换 {total} 处。");
+        println!("已修改 {m} 个文件，共替换 {t} 处。");
     }
     Ok(())
 }
@@ -799,10 +922,10 @@ fn split_filter_args<'a>(
     args: &'a [&'a str],
     mut exts: Vec<String>,
     mut ignore_case: bool,
-    mut text_only: bool,
+    mut kind: FileKind,
     mut word: bool,
     mut context: usize,
-) -> Result<(Vec<String>, bool, bool, bool, usize, Vec<&'a str>)> {
+) -> Result<(Vec<String>, bool, FileKind, bool, usize, Vec<&'a str>)> {
     let mut rest: Vec<&str> = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -819,9 +942,19 @@ fn split_filter_args<'a>(
                 ignore_case = true;
                 i += 1;
             }
-            "-t" | "--text-only" => {
-                text_only = true;
-                i += 1;
+            "-t" | "--type" => {
+                // Optional value: `-t` alone = All; `-t code` / `-t txt` pick
+                // one kind. The next token is treated as the value only when it
+                // does not look like another flag.
+                let next = args.get(i + 1).copied();
+                let looks_like_value = next.map(|v| !v.starts_with('-')).unwrap_or(false);
+                if looks_like_value {
+                    kind = FileKind::parse(next)?;
+                    i += 2;
+                } else {
+                    kind = FileKind::All;
+                    i += 1;
+                }
             }
             "-w" | "--word" => {
                 word = true;
@@ -844,7 +977,7 @@ fn split_filter_args<'a>(
             }
         }
     }
-    Ok((exts, ignore_case, text_only, word, context, rest))
+    Ok((exts, ignore_case, kind, word, context, rest))
 }
 
 /// Re-scan ARGS for the attribute-filter options that clap's
@@ -1129,7 +1262,7 @@ pub fn cmd_file(
     args: &[String],
     exts: &[String],
     ignore_case: bool,
-    text_only: bool,
+    file_kind: FileKind,
     word: bool,
     context: Option<usize>,
     size: Option<String>,
@@ -1142,7 +1275,7 @@ pub fn cmd_file(
     let opts = FileOpts {
         exts: exts.to_vec(),
         ignore_case,
-        text_only,
+        file_kind,
         word,
         context: context.unwrap_or(0),
         min_size: match size {
@@ -1184,11 +1317,11 @@ pub fn cmd_file(
     // ARGS too (`sys file Scrcpy . -e md -e txt`). Re-scan them so they work in
     // any position; a trailing `-i` would otherwise be misread as the REPLACEMENT
     // or PATH of the 3-arg replace mode.
-    let (exts, ignore_case, text_only, word, context, args) = split_filter_args(
+    let (exts, ignore_case, kind, word, context, args) = split_filter_args(
         &args,
         opts.exts.clone(),
         opts.ignore_case,
-        opts.text_only,
+        opts.file_kind,
         opts.word,
         opts.context,
     )?;
@@ -1197,7 +1330,7 @@ pub fn cmd_file(
     opts.line_numbers = line_numbers;
     opts.exts = exts;
     opts.ignore_case = ignore_case;
-    opts.text_only = text_only;
+    opts.file_kind = kind;
     opts.word = word;
     opts.context = context;
     // `-S SIZE` / `--newer TIME` / `--older TIME` / `-d NUM` are attribute
@@ -1672,35 +1805,35 @@ mod tests {
     fn split_filter_args_any_position() {
         // 尾置 -e / -i / -t / -w / -c（clap allow_hyphen_values 吞进 ARGS 的形态）→ 剥离并合并
         let v = vec!["Scrcpy", ".", "-e", "md", "-e", "txt"];
-        let (exts, ic, tt, w, ctx, rest) = split_filter_args(&v, vec![], false, false, false, 0).unwrap();
+        let (exts, ic, kind, w, ctx, rest) = split_filter_args(&v, vec![], false, FileKind::All, false, 0).unwrap();
         assert_eq!(exts, vec!["md", "txt"]);
         assert!(!ic);
-        assert!(!tt);
+        assert_eq!(kind, FileKind::All);
         assert!(!w);
         assert_eq!(ctx, 0);
         assert_eq!(rest, vec!["Scrcpy", "."]);
 
         // 尾置 -i：不再被误读为替换模式的 REPLACEMENT / PATH
         let v = vec!["Scrcpy", ".", "-i"];
-        let (_exts, ic, tt, w, ctx, rest) = split_filter_args(&v, vec![], false, false, false, 0).unwrap();
+        let (_exts, ic, kind, w, ctx, rest) = split_filter_args(&v, vec![], false, FileKind::All, false, 0).unwrap();
         assert!(ic);
-        assert!(!tt);
+        assert_eq!(kind, FileKind::All);
         assert!(!w);
         assert_eq!(ctx, 0);
         assert_eq!(rest, vec!["Scrcpy", "."]);
 
         // -c NUM 消费下一 token；数值非法 / 缺值报错
         let v = vec!["a.txt", "-c", "2"];
-        let (_exts, _ic, _tt, _w, ctx, rest) = split_filter_args(&v, vec![], false, false, false, 0).unwrap();
+        let (_exts, _ic, _kind, _w, ctx, rest) = split_filter_args(&v, vec![], false, FileKind::All, false, 0).unwrap();
         assert_eq!(ctx, 2);
         assert_eq!(rest, vec!["a.txt"]);
-        assert!(split_filter_args(&vec!["a", "-c", "x"], vec![], false, false, false, 0).is_err());
-        assert!(split_filter_args(&vec!["a", "-e"], vec![], false, false, false, 0).is_err());
-        assert!(split_filter_args(&vec!["-c"], vec![], false, false, false, 0).is_err());
+        assert!(split_filter_args(&vec!["a", "-c", "x"], vec![], false, FileKind::All, false, 0).is_err());
+        assert!(split_filter_args(&vec!["a", "-e"], vec![], false, FileKind::All, false, 0).is_err());
+        assert!(split_filter_args(&vec!["-c"], vec![], false, FileKind::All, false, 0).is_err());
 
         // 长旗标同样识别
         let v = vec!["--ext", "rs", "src", "--word", "-i"];
-        let (exts, ic, _tt, w, ctx, rest) = split_filter_args(&v, vec![], false, false, false, 0).unwrap();
+        let (exts, ic, _kind, w, ctx, rest) = split_filter_args(&v, vec![], false, FileKind::All, false, 0).unwrap();
         assert_eq!(exts, vec!["rs"]);
         assert!(ic);
         assert!(w);
@@ -1709,9 +1842,11 @@ mod tests {
 
         // 前部已被 clap 解析（不在 ARGS 中）→ 原样保留；未知 token（含 -x / -l）不消费
         let v = vec!["动漫", "D:\\x", "-x", "-l"];
-        let (exts, ic, tt, w, ctx, rest) = split_filter_args(&v, vec!["py".to_string()], true, true, true, 3).unwrap();
+        let (exts, ic, kind, w, ctx, rest) = split_filter_args(&v, vec!["py".to_string()], true, FileKind::Text, true, 3).unwrap();
         assert_eq!(exts, vec!["py"]);
-        assert!(ic && tt && w);
+        assert!(ic);
+        assert_eq!(kind, FileKind::Text);
+        assert!(w);
         assert_eq!(ctx, 3);
         assert_eq!(rest, vec!["动漫", "D:\\x", "-x", "-l"]);
     }
@@ -1782,16 +1917,21 @@ mod tests {
         let code = Path::new("main.rs");
         let data = Path::new("data.json");
         let bin = Path::new("app.exe");
-        assert!(is_target_file(text, &None, false));
-        assert!(is_target_file(code, &None, false));
-        assert!(!is_target_file(code, &None, true)); // -t 排除源码
-        assert!(is_target_file(data, &None, true));
-        assert!(!is_target_file(bin, &None, false));
+        // All = text + code
+        assert!(is_target_file(text, &None, FileKind::All));
+        assert!(is_target_file(code, &None, FileKind::All));
+        // Text = only plain text, excludes code
+        assert!(!is_target_file(code, &None, FileKind::Text));
+        assert!(is_target_file(data, &None, FileKind::Text));
+        // Code = only source code, excludes plain text
+        assert!(!is_target_file(text, &None, FileKind::Code));
+        assert!(is_target_file(code, &None, FileKind::Code));
+        assert!(!is_target_file(bin, &None, FileKind::All));
         let es = Some(HashSet::from(["py".to_string(), "md".to_string()]));
-        assert!(is_target_file(text, &es, false));
-        assert!(is_target_file(Path::new("s.py"), &es, false));
-        assert!(!is_target_file(code, &es, false));
-        assert!(!is_target_file(Path::new(".env"), &es, false)); // 隐藏文件跳过
+        assert!(is_target_file(text, &es, FileKind::All));
+        assert!(is_target_file(Path::new("s.py"), &es, FileKind::All));
+        assert!(!is_target_file(code, &es, FileKind::All));
+        assert!(!is_target_file(Path::new(".env"), &es, FileKind::All)); // 隐藏文件跳过
     }
 
     #[test]
@@ -1853,17 +1993,17 @@ mod tests {
         fs::write(base.join("a").join("l1.txt"), "x").unwrap();
         fs::write(sub.join("l2.txt"), "x").unwrap();
         let mut files = Vec::new();
-        walk(&base, &None, false, false, Some(0), 0, &mut files);
+        walk(&base, &None, FileKind::All, false, Some(0), 0, &mut files);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].file_name().unwrap().to_str().unwrap(), "r.txt");
         let mut files = Vec::new();
-        walk(&base, &None, false, false, Some(1), 0, &mut files);
+        walk(&base, &None, FileKind::All, false, Some(1), 0, &mut files);
         let names: Vec<String> = files.iter().map(|f| f.file_name().unwrap().to_str().unwrap().to_string()).collect();
         assert!(names.contains(&"r.txt".to_string()));
         assert!(names.contains(&"l1.txt".to_string()));
         assert!(!names.contains(&"l2.txt".to_string()));
         let mut files = Vec::new();
-        walk(&base, &None, false, false, None, 0, &mut files);
+        walk(&base, &None, FileKind::All, false, None, 0, &mut files);
         assert_eq!(files.len(), 3);
         fs::remove_dir_all(&base).unwrap();
     }
@@ -1895,7 +2035,7 @@ mod tests {
         FileOpts {
             exts: Vec::new(),
             ignore_case: false,
-            text_only: false,
+            file_kind: FileKind::All,
             word: false,
             context: 0,
             min_size: None,
