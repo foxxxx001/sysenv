@@ -2,6 +2,13 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.40 (2026-10-26)
+
+### Fixed
+- **`sys log` interactive `/` live search: duplicated keystrokes and layout shift** (src/log.rs, user report): on Windows, crossterm emits both a Press and a Release event for every physical keystroke, and the loop previously treated both as valid input — the `/` that starts the search had its own Release event type a literal `/` into the buffer, every typed character was pushed twice (bottom line shows `/: /aa` and friends), so matches could never be found; and any non-empty buffer turned the line-number gutter on, suddenly adding a blank column to the left while typing (n/u/PageUp/PgDn in normal mode also double-fired). Fix: the event entry point now skips `KeyEventKind::Release` and only handles Press (one event per keystroke); the line-number gutter now only shows for a committed keyword (CLI `--search` or an Enter-confirmed search), so the layout no longer shifts while typing
+
+- Version 0.6.39 -> 0.6.40
+
 ## v0.6.39 (2026-10-26)
 
 ### Added
