@@ -2,6 +2,19 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.39 (2026-10-26)
+
+### Added
+- **`sys log` highlight trio** (src/log.rs, user requests):
+  - **IP addresses and head app markers in blue**: the app marker changes from dark yellow to blue {80,160,255}; a new `find_ips` detects IPv4 (4 groups of 1–3 digits, octets ≤ 255, delimited) and conservative IPv6 (full 8 groups without `::`, free group count with `::`, dotted suffix only for IPv4-mapped forms — HH:MM:SS times and MACs excluded), highlighted blue anywhere in a line (head or message, timestamp-less lines too) while the surrounding text keeps its original color
+  - **HTTP methods in green**: `find_http_methods` recognizes GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS/TRACE/CONNECT request-line verbs (uppercase, word boundary, space + non-empty URL, the URL ending at a quote / a `HTTP/` version marker / an end-of-span URL hint), so the verb of `GET /pages/ HTTP/1.1` renders green {0,200,83}; IP and method ranges are merged and split together
+  - **`/` live keyword search in the interactive view** (non-follow mode): `Entry` keeps the raw line and `Store::reindex` recomputes every match for a keyword; pressing `/` opens an input mode (bottom line shows `/: <input>`) that re-highlights and jumps to the first match as you type; Esc cancels (restores the CLI keyword), Enter commits, Backspace recomputes, Ctrl/Alt-modified chars are ignored
+
+### Changed
+- **`sys log` status-bar hint**: non-follow shows `/=search n/u=next`, follow keeps its hint; the `--search` help mentions `/` live search
+
+- Version 0.6.38 -> 0.6.39
+
 ## v0.6.38 (2026-10-26)
 
 ### Added

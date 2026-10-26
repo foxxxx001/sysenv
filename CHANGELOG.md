@@ -2,6 +2,19 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.39（2026-10-26）
+
+### 新增
+- **`sys log` 高亮三连**（src/log.rs，用户要求）：
+  - **IP 地址与头部 app 名称蓝色**：app 标记由深黄改为蓝 {80,160,255}；新增 `find_ips` 检测 IPv4（4 组 1-3 位、octet ≤ 255、边界隔离）与保守 IPv6（无 `::` 压缩须 8 组 / 有 `::` 压缩组数自由 / dotted 后缀仅限 IPv4-mapped，排除 HH:MM:SS 时间与 MAC），头部与正文任意位置（含无时间戳行）蓝色高亮，周边文本保留原色
+  - **HTTP 方法绿色**：`find_http_methods` 识别 GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS/TRACE/CONNECT 请求行动词（大写、词边界、后跟空格 + 非空 URL，URL 后须为引号 / `HTTP/` 版本 / 行尾含 URL 特征），`GET /pages/ HTTP/1.1` 的动词以绿 {0,200,83} 显示；IP 与方法按偏移合并切分
+  - **交互界面 `/` 实时关键字搜索**（非 -f 模式）：`Entry` 存原始行、`Store::reindex` 按关键字重算全部匹配；按 `/` 进入输入模式（底部 `/: <输入>`），逐字符即时高亮并跳转首个匹配，Esc 取消（恢复 CLI 关键字）、Enter 提交、Backspace 重算，Ctrl+Alt 组合字符忽略
+
+### 变更
+- **`sys log` 状态栏提示**：非 follow 显示 `/=search n/u=next`，follow 保持原提示；`--search` 帮助补充 `/` 实时搜索说明
+
+- 版本 0.6.38 -> 0.6.39
+
 ## v0.6.38（2026-10-26）
 
 ### 新增

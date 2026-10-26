@@ -535,7 +535,7 @@ struct Analyzer<'a> {
 /// range. Every octet must be ≤ 255 and the token must be delimited by
 /// non-IP characters, so `999.999.999.999`, `v1.2.3.4` and `1.2.3.4.5` never
 /// match.
-fn ipv4_at(s: &str, b: &[u8], i: usize) -> Option<(usize, usize)> {
+fn ipv4_at(b: &[u8], i: usize) -> Option<(usize, usize)> {
     let mut j = i;
     for g in 0..4 {
         let d0 = j;
@@ -646,7 +646,7 @@ fn find_ips(s: &str) -> Vec<(usize, usize)> {
     let mut i = 0usize;
     while i < b.len() {
         if b[i].is_ascii_digit() {
-            if let Some((st, en)) = ipv4_at(s, b, i) {
+            if let Some((st, en)) = ipv4_at(b, i) {
                 out.push((st, en));
                 i = en;
                 continue;
@@ -789,7 +789,7 @@ impl Analyzer<'_> {
         // including lines without a timestamp. Each highlighted sub-range is
         // painted blue / green; the surrounding text keeps the span's original
         // color.
-        let mut spans = spans;
+        let spans = spans;
         let mut colored = Vec::with_capacity(spans.len());
         for s in spans {
             let mut cuts: Vec<(usize, usize, Color)> = Vec::new();
