@@ -1,7 +1,8 @@
 //! `sys log` — colored, less-like log file viewer.
 //!
 //! Parses common log-line prefixes (timestamp / level / app marker) with a
-//! color palette, filters (`--level` / `--line` / `--newer`), searches
+//! color palette — time orange, level gradient, app marker and IP addresses
+//! blue — plus filters (`--level` / `--line` / `--newer`), searches
 //! (`--search` with n/u navigation) and tails a file (`-f`).
 //!
 //! The interactive viewer is only entered when stdout is a TTY; a piped stdout
@@ -34,8 +35,11 @@ const FOLLOW_POLL_MS: u64 = 150;
 
 /// Timestamp — orange.
 const COLOR_TIME: Color = Color::Rgb { r: 255, g: 165, b: 0 };
-/// App marker — dark yellow.
-const COLOR_APP: Color = Color::Rgb { r: 184, g: 134, b: 11 };
+/// App marker (head token after the timestamp) — blue.
+const COLOR_APP: Color = Color::Rgb { r: 80, g: 160, b: 255 };
+/// IP address (IPv4 / IPv6) anywhere in a line — blue (same blue as the app
+/// marker, per user request).
+const COLOR_IP: Color = Color::Rgb { r: 80, g: 160, b: 255 };
 /// Line numbers (search mode) — dim gray.
 const COLOR_LINENO: Color = Color::Rgb { r: 130, g: 130, b: 130 };
 
@@ -519,6 +523,143 @@ struct Analyzer<'a> {
     kw: Option<&'a str>,
 }
 
+// ---------------------------------------------------------------------------
+// IP detection
+// ---------------------------------------------------------------------------
+
+/// Try to parse a validated IPv4 at `i` (`b[i]` is a digit); returns the byte
+/// range. Every octet must be ≤ 255 and the token must be delimited by
+/// non-IP characters, so `999.999.999.999`, `v1.2.3.4` and `1.2.3.4.5` never
+/// match.
+fn ipv4_at(s: &str, b: &[u8], i: usize) -> Option<(usize, usize)> {
+    let mut j = i;
+    for g in 0..4 {
+        let d0 = j;
+        while j < b.len() && b[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j == d0 || j - d0 > 3 {
+            return None;
+        }
+        let octet: u16 = b[d0..j].iter().fold(0u16, |acc, &c| acc * 10 + (c - b'0') as u16);
+        if octet > 255 {
+            return None;
+        }
+        if g < 3 {
+            if j >= b.len() || b[j] != b'.' {
+                return None;
+            }
+            j += 1;
+        }
+    }
+    let start_ok = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'.');
+    let end_ok = j >= b.len() || !(b[j].is_ascii_alphanumeric() || b[j] == b'.');
+    if start_ok && end_ok {
+        Some((i, j))
+    } else {
+        None
+    }
+}
+
+/// Try to parse an IPv6 token starting at `i` (`b[i]` is a hex digit, `:` or
+/// `.`). Conservative on purpose, so ordinary text is not over-painted:
+///   - the token is a run of `[0-9A-Fa-f:.]` with at least one `:` and one hex
+///     digit, and its first `:` within the first 5 chars;
+///   - without `::` compression it must be a full 8-group address (7 colons) —
+///     this excludes HH:MM:SS timestamps (2 colons) and MAC addresses (5
+///     colons, no `::`);
+///   - with `::` compression, group count is free (e.g. `::1`, `fe80::1`,
+///     `2001:db8::1`);
+///   - a dotted quad is allowed only as the trailing part (IPv4-mapped forms
+///     like `::ffff:192.168.1.1`) and must itself be a valid IPv4;
+///   - the token must not extend into a wider alphanumeric token.
+fn ipv6_at(s: &str, b: &[u8], i: usize) -> Option<(usize, usize)> {
+    let mut j = i;
+    while j < b.len() && (b[j].is_ascii_hexdigit() || b[j] == b':' || b[j] == b'.') {
+        j += 1;
+    }
+    let tok = &s[i..j];
+    let colon_count = tok.bytes().filter(|&c| c == b':').count();
+    if colon_count == 0 || tok.bytes().filter(|c| c.is_ascii_hexdigit()).count() == 0 {
+        return None;
+    }
+    let compressed = tok.contains("::");
+    if !compressed && colon_count != 7 {
+        return None;
+    }
+    let first_colon = tok.find(':').unwrap();
+    if first_colon > 4 {
+        return None;
+    }
+    if let Some(dot) = tok.find('.') {
+        // Dotted part must be the trailing IPv4 of an IPv4-mapped address.
+        let tail = tok.rsplit_once(':').map(|(_, t)| t).unwrap_or(tok);
+        if tail.matches('.').count() != 3 {
+            return None;
+        }
+        let tail_start = tok.len() - tail.len();
+        let tb = tok.as_bytes();
+        let mut k = tail_start;
+        let mut groups = 0usize;
+        while k < tok.len() {
+            let d0 = k;
+            while k < tok.len() && tb[k].is_ascii_digit() {
+                k += 1;
+            }
+            if k == d0 || k - d0 > 3 {
+                return None;
+            }
+            let octet: u16 = tb[d0..k].iter().fold(0u16, |acc, &c| acc * 10 + (c - b'0') as u16);
+            if octet > 255 {
+                return None;
+            }
+            groups += 1;
+            if k < tok.len() {
+                if tb[k] != b'.' {
+                    return None;
+                }
+                k += 1;
+            }
+        }
+        if groups != 4 || tok[..tail_start].bytes().any(|c| c == b'.') {
+            return None;
+        }
+        let _ = dot;
+    }
+    let start_ok = i == 0 || !(b[i - 1].is_ascii_hexdigit() || b[i - 1] == b':' || b[i - 1] == b'.');
+    let end_ok = j >= b.len() || !(b[j].is_ascii_hexdigit() || b[j] == b':' || b[j] == b'.');
+    if start_ok && end_ok {
+        Some((i, j))
+    } else {
+        None
+    }
+}
+
+/// Byte ranges of IP addresses (IPv4 or IPv6) inside `s`, in order.
+fn find_ips(s: &str) -> Vec<(usize, usize)> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        if b[i].is_ascii_digit() {
+            if let Some((st, en)) = ipv4_at(s, b, i) {
+                out.push((st, en));
+                i = en;
+                continue;
+            }
+        }
+        if b[i].is_ascii_hexdigit() || b[i] == b':' {
+            if let Some((st, en)) = ipv6_at(s, b, i) {
+                out.push((st, en));
+                i = en;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 impl Analyzer<'_> {
     fn entry(&self, number: usize, line: &str) -> Entry {
         let (spans, level, ts) = if let Some(tm) = find_time(line, &self.ctx) {
@@ -563,7 +704,7 @@ impl Analyzer<'_> {
             (spans, lv, Some(tm.ts))
         } else {
             // No timestamp: still detect a leading level (e.g. "ERROR: ...") so
-            // `--level` filters bare lines too; no coloring.
+            // `--level` filters bare lines too; no coloring (except IPs below).
             let (_, lv) = classify_head(line.trim_start());
             (
                 vec![Span {
@@ -575,6 +716,42 @@ impl Analyzer<'_> {
                 None,
             )
         };
+        // Highlight IP addresses (IPv4 / IPv6) in every span — head and message
+        // alike, including lines without a timestamp. Each IP sub-range is
+        // painted blue; the surrounding text keeps the span's original color.
+        let mut spans = spans;
+        let mut ip_spans = Vec::with_capacity(spans.len());
+        for s in spans {
+            let hits = find_ips(&s.text);
+            if hits.is_empty() {
+                ip_spans.push(s);
+                continue;
+            }
+            let mut cur = 0usize;
+            for (hs, he) in hits {
+                if hs > cur {
+                    ip_spans.push(Span {
+                        text: s.text[cur..hs].to_string(),
+                        color: s.color,
+                        bold: s.bold,
+                    });
+                }
+                ip_spans.push(Span {
+                    text: s.text[hs..he].to_string(),
+                    color: Some(COLOR_IP),
+                    bold: false,
+                });
+                cur = he;
+            }
+            if cur < s.text.len() {
+                ip_spans.push(Span {
+                    text: s.text[cur..].to_string(),
+                    color: s.color,
+                    bold: s.bold,
+                });
+            }
+        }
+        let spans = ip_spans;
         let matches = match self.kw {
             Some(k) if !k.is_empty() => find_ci(line, k),
             _ => Vec::new(),
@@ -1243,7 +1420,9 @@ mod tests {
         let e = a.entry(1, line);
         let joined: String = e.spans.iter().map(|s| s.text.clone()).collect();
         assert_eq!(joined, line);
-        assert!(e.spans.iter().any(|s| s.text == "127.0.0.1 - - [" && s.color.is_none()));
+        // the client IP is highlighted blue, the rest of the prefix stays plain
+        assert!(e.spans.iter().any(|s| s.text == "127.0.0.1" && s.color == Some(COLOR_IP)));
+        assert!(e.spans.iter().any(|s| s.text == " - - [" && s.color.is_none()));
     }
 
     #[test]
@@ -1323,7 +1502,7 @@ mod tests {
         assert_eq!(e.level, Some(Level::Info));
         let joined: String = e.spans.iter().map(|s| s.text.clone()).collect();
         assert_eq!(joined, line);
-        // [thread] painted dark yellow, INFO painted level color
+        // [thread] painted blue, INFO painted level color
         assert!(e.spans.iter().any(|s| s.text == "[http-nio-8080-exec-1]" && s.color == Some(COLOR_APP)));
         assert!(e.spans.iter().any(|s| s.text == "INFO" && s.color == Some(level_color(Level::Info).0)));
     }
@@ -1354,7 +1533,7 @@ mod tests {
         let a = Analyzer { ctx, kw: None };
         let e = a.entry(1, "ERROR: boom");
         assert_eq!(e.level, Some(Level::Error));
-        assert_eq!(e.spans.len(), 1); // no coloring without a timestamp
+        assert_eq!(e.spans.len(), 1); // no coloring without a timestamp (unless an IP is present)
         assert!(e.ts.is_none());
     }
 
@@ -1364,6 +1543,63 @@ mod tests {
         let a = Analyzer { ctx, kw: None };
         let e = a.entry(1, "Jan 15 10:23:45 myhost app[123]: msg");
         assert!(e.spans.iter().any(|s| s.text == "myhost" && s.color == Some(COLOR_APP)));
+    }
+
+    #[test]
+    fn ipv4_in_message_highlighted() {
+        let ctx = TimeCtx::at(2026, 6, 1, 12, 0, 0);
+        let a = Analyzer { ctx, kw: None };
+        let line = "2024-01-15 10:23:45 ERROR connection from 192.168.1.100 refused";
+        let e = a.entry(1, line);
+        assert!(e.spans.iter().any(|s| s.text == "192.168.1.100" && s.color == Some(COLOR_IP)));
+        // non-IP parts of the message keep their original (plain) color
+        assert!(e.spans.iter().any(|s| s.text == " connection from " && s.color.is_none()));
+        let joined: String = e.spans.iter().map(|s| s.text.clone()).collect();
+        assert_eq!(joined, line);
+    }
+
+    #[test]
+    fn ip_highlighted_without_timestamp() {
+        let ctx = TimeCtx::at(2026, 6, 1, 12, 0, 0);
+        let a = Analyzer { ctx, kw: None };
+        let e = a.entry(1, "connect 10.0.0.1 timeout");
+        assert_eq!(e.ts, None);
+        let ip = e.spans.iter().find(|s| s.text == "10.0.0.1").expect("ip span");
+        assert_eq!(ip.color, Some(COLOR_IP));
+        let joined: String = e.spans.iter().map(|s| s.text.clone()).collect();
+        assert_eq!(joined, "connect 10.0.0.1 timeout");
+    }
+
+    #[test]
+    fn ipv6_highlighted() {
+        let ctx = TimeCtx::at(2026, 6, 1, 12, 0, 0);
+        let a = Analyzer { ctx, kw: None };
+        for (line, ip) in [
+            ("connect ::1 ok", "::1"),
+            ("2001:db8::1 refused", "2001:db8::1"),
+            ("fe80::aabb:ccdd link", "fe80::aabb:ccdd"),
+            ("::ffff:192.168.1.1 mapped", "::ffff:192.168.1.1"),
+        ] {
+            let e = a.entry(1, line);
+            assert!(e.spans.iter().any(|s| s.text == ip && s.color == Some(COLOR_IP)), "line: {line}");
+            let joined: String = e.spans.iter().map(|s| s.text.clone()).collect();
+            assert_eq!(joined, line);
+        }
+    }
+
+    #[test]
+    fn non_ip_tokens_not_highlighted() {
+        let ctx = TimeCtx::at(2026, 6, 1, 12, 0, 0);
+        let a = Analyzer { ctx, kw: None };
+        let line = "2024-01-15 10:23:45 INFO v1.2.3 12:34:56 999.999.999.999 mac 00:1a:2b:3c:4d:5e 1.2.3.4.5 done";
+        let e = a.entry(1, line);
+        assert!(
+            e.spans.iter().all(|s| s.color != Some(COLOR_IP)),
+            "no IP spans expected: {:?}",
+            e.spans
+        );
+        let joined: String = e.spans.iter().map(|s| s.text.clone()).collect();
+        assert_eq!(joined, line);
     }
 
     #[test]
