@@ -40,6 +40,8 @@ const COLOR_APP: Color = Color::Rgb { r: 80, g: 160, b: 255 };
 /// IP address (IPv4 / IPv6) anywhere in a line — blue (same blue as the app
 /// marker, per user request).
 const COLOR_IP: Color = Color::Rgb { r: 80, g: 160, b: 255 };
+/// HTTP method verb of a request line, e.g. `GET /pages/ HTTP/1.1` — green.
+const COLOR_METHOD: Color = Color::Rgb { r: 0, g: 200, b: 83 };
 /// Line numbers (search mode) — dim gray.
 const COLOR_LINENO: Color = Color::Rgb { r: 130, g: 130, b: 130 };
 
@@ -660,6 +662,70 @@ fn find_ips(s: &str) -> Vec<(usize, usize)> {
     out
 }
 
+/// HTTP request-line methods highlighted green, e.g. `GET /pages/ HTTP/1.1`.
+const HTTP_METHODS: [&str; 9] =
+    ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE", "CONNECT"];
+
+/// Byte ranges of HTTP method verbs inside `s`, in order. A verb must be
+/// uppercase, start at a word boundary and be followed by a space plus a
+/// non-empty URL; the URL must then end at a quote, a `HTTP/` version marker,
+/// or — when it runs to the end of the span — contain a URL hint (`/`, `:`,
+/// `?` or `#`). So plain words like `HEAD of the list` or `GET alone` never
+/// match, while `GET /pages/ HTTP/1.1`, `GET /index.html` (quoted) and
+/// `CONNECT example.com:443` (no version) do.
+fn find_http_methods(s: &str) -> Vec<(usize, usize)> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        if !b[i].is_ascii_uppercase() {
+            i += 1;
+            continue;
+        }
+        // boundary: not part of a longer word
+        if i > 0 && b[i - 1].is_ascii_alphanumeric() {
+            i += 1;
+            continue;
+        }
+        let Some(m) = HTTP_METHODS.iter().find(|m| s[i..].starts_with(**m)) else {
+            i += 1;
+            continue;
+        };
+        let end = i + m.len();
+        // method must be followed by a space and a non-empty URL
+        if end < b.len() && (b[end] == b' ' || b[end] == b'\t') {
+            let u = end + 1;
+            if u < b.len() && b[u] != b' ' && b[u] != b'\t' {
+                // the URL runs to the next space / tab / quote / end of span
+                let url_end = (u..b.len())
+                    .find(|&k| b[k] == b' ' || b[k] == b'\t' || b[k] == b'"')
+                    .unwrap_or(b.len());
+                if url_end < b.len() {
+                    let ns = (url_end..b.len())
+                        .find(|&k| b[k] != b' ' && b[k] != b'\t')
+                        .unwrap_or(b.len());
+                    if ns < b.len() && b[ns] != b'"' && !s[ns..].starts_with("HTTP/") {
+                        // something other than a closing quote or a version
+                        // marker follows the URL — not a request line
+                        i = end;
+                        continue;
+                    }
+                } else if !s[u..].contains(['/', ':', '?', '#']) {
+                    // bare word at the end of the span (e.g. `GET alone`) — not
+                    // a request line
+                    i = end;
+                    continue;
+                }
+                out.push((i, end));
+                i = end;
+                continue;
+            }
+        }
+        i = end;
+    }
+    out
+}
+
 impl Analyzer<'_> {
     fn entry(&self, number: usize, line: &str) -> Entry {
         let (spans, level, ts) = if let Some(tm) = find_time(line, &self.ctx) {
@@ -716,42 +782,54 @@ impl Analyzer<'_> {
                 None,
             )
         };
-        // Highlight IP addresses (IPv4 / IPv6) in every span — head and message
-        // alike, including lines without a timestamp. Each IP sub-range is
-        // painted blue; the surrounding text keeps the span's original color.
+        // Highlight IP addresses (IPv4 / IPv6) and HTTP method verbs (e.g.
+        // `GET /pages/ HTTP/1.1`) in every span — head and message alike,
+        // including lines without a timestamp. Each highlighted sub-range is
+        // painted blue / green; the surrounding text keeps the span's original
+        // color.
         let mut spans = spans;
-        let mut ip_spans = Vec::with_capacity(spans.len());
+        let mut colored = Vec::with_capacity(spans.len());
         for s in spans {
-            let hits = find_ips(&s.text);
-            if hits.is_empty() {
-                ip_spans.push(s);
+            let mut cuts: Vec<(usize, usize, Color)> = Vec::new();
+            for (a, bnd) in find_ips(&s.text) {
+                cuts.push((a, bnd, COLOR_IP));
+            }
+            for (a, bnd) in find_http_methods(&s.text) {
+                cuts.push((a, bnd, COLOR_METHOD));
+            }
+            if cuts.is_empty() {
+                colored.push(s);
                 continue;
             }
+            cuts.sort_by_key(|&(a, _, _)| a);
             let mut cur = 0usize;
-            for (hs, he) in hits {
+            for (hs, he, c) in cuts {
+                if he <= cur {
+                    continue; // already covered by an earlier cut
+                }
                 if hs > cur {
-                    ip_spans.push(Span {
+                    colored.push(Span {
                         text: s.text[cur..hs].to_string(),
                         color: s.color,
                         bold: s.bold,
                     });
                 }
-                ip_spans.push(Span {
+                colored.push(Span {
                     text: s.text[hs..he].to_string(),
-                    color: Some(COLOR_IP),
+                    color: Some(c),
                     bold: false,
                 });
                 cur = he;
             }
             if cur < s.text.len() {
-                ip_spans.push(Span {
+                colored.push(Span {
                     text: s.text[cur..].to_string(),
                     color: s.color,
                     bold: s.bold,
                 });
             }
         }
-        let spans = ip_spans;
+        let spans = colored;
         let matches = match self.kw {
             Some(k) if !k.is_empty() => find_ci(line, k),
             _ => Vec::new(),
@@ -1600,6 +1678,79 @@ mod tests {
         );
         let joined: String = e.spans.iter().map(|s| s.text.clone()).collect();
         assert_eq!(joined, line);
+    }
+
+    #[test]
+    fn http_method_highlighted() {
+        let ctx = TimeCtx::at(2026, 6, 1, 12, 0, 0);
+        let a = Analyzer { ctx, kw: None };
+        for (line, verb) in [
+            (
+                "127.0.0.1 - - [10/Oct/2026:13:55:36 +0000] \"GET /pages/ HTTP/1.1\" 200",
+                "GET",
+            ),
+            (
+                "127.0.0.1 - - [10/Oct/2026:13:55:36 +0000] \"GET /index.html\" 200",
+                "GET",
+            ),
+            (
+                "127.0.0.1 - - [10/Oct/2026:13:55:37 +0000] \"POST /api/v1 HTTP/1.1\" 201",
+                "POST",
+            ),
+            (
+                "127.0.0.1 - - [10/Oct/2026:13:55:38 +0000] \"DELETE /items/7 HTTP/1.1\" 204",
+                "DELETE",
+            ),
+            (
+                "127.0.0.1 - - [10/Oct/2026:13:55:39 +0000] \"HEAD /check HTTP/1.1\" 200",
+                "HEAD",
+            ),
+            (
+                "127.0.0.1 - - [10/Oct/2026:13:55:40 +0000] \"OPTIONS * HTTP/1.1\" 200",
+                "OPTIONS",
+            ),
+            ("connect CONNECT example.com:443", "CONNECT"),
+        ] {
+            let e = a.entry(1, line);
+            assert!(
+                e.spans.iter().any(|s| s.text == verb && s.color == Some(COLOR_METHOD)),
+                "line: {line}"
+            );
+            let joined: String = e.spans.iter().map(|s| s.text.clone()).collect();
+            assert_eq!(joined, line);
+        }
+    }
+
+    #[test]
+    fn http_method_with_ip_same_line() {
+        let ctx = TimeCtx::at(2026, 6, 1, 12, 0, 0);
+        let a = Analyzer { ctx, kw: None };
+        let line = "127.0.0.1 - - [10/Oct/2026:13:55:36 +0000] \"GET /pages/ HTTP/1.1\" 200";
+        let e = a.entry(1, line);
+        assert!(e.spans.iter().any(|s| s.text == "127.0.0.1" && s.color == Some(COLOR_IP)));
+        assert!(e.spans.iter().any(|s| s.text == "GET" && s.color == Some(COLOR_METHOD)));
+        let joined: String = e.spans.iter().map(|s| s.text.clone()).collect();
+        assert_eq!(joined, line);
+    }
+
+    #[test]
+    fn non_http_method_tokens_not_highlighted() {
+        let ctx = TimeCtx::at(2026, 6, 1, 12, 0, 0);
+        let a = Analyzer { ctx, kw: None };
+        for line in [
+            "2024-01-15 10:23:45 INFO check the HEAD of the list",
+            "2024-01-15 10:23:45 INFO GETX /y not a method",
+            "2024-01-15 10:23:45 INFO bare GET alone",
+            "2024-01-15 10:23:45 INFO GET /index.html 200 no version marker",
+            "2024-01-15 10:23:45 INFO userGET /path HTTP/1.1 not at boundary",
+        ] {
+            let e = a.entry(1, line);
+            assert!(
+                e.spans.iter().all(|s| s.color != Some(COLOR_METHOD)),
+                "unexpected method span for: {line}: {:?}",
+                e.spans
+            );
+        }
     }
 
     #[test]

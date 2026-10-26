@@ -18,7 +18,7 @@
 
 * **快捷命令垫片**：一键生成 `spath / senv / slink / shttp / sai / stask / sfile` 短命令
 
-* **日志查看**：`sys log` 彩色 less 式日志查看器——解析 Nginx / Linux / Windows / Log4j 等常见日志，时间橙色、级别渐变（info 及以下绿、warning 起红）、app 名称与 IP 地址蓝色；`--level` 过滤、`--search` 搜索（n/u 跳转）、`--line` / `--newer` 定点、`-f` 追踪文件
+* **日志查看**：`sys log` 彩色 less 式日志查看器——解析 Nginx / Linux / Windows / Log4j 等常见日志，时间橙色、级别渐变（info 及以下绿、warning 起红）、app 名称与 IP 地址蓝色、HTTP 方法（GET/POST 等）绿色；`--level` 过滤、`--search` 搜索（n/u 跳转）、`--line` / `--newer` 定点、`-f` 追踪文件
 
 
 
@@ -59,7 +59,7 @@ Commands:
 | 数据查询转换  | `data` / `dasel`     | dasel 兼容**查询 / 修改 / 转换**结构化数据，七格式互转（JSON / JSONL / YAML / TOML / CSV / MD / TABLE）：选择器（`a.b[0]` / `list[*]` / `m["中文键"]` / 根数组，含 **Python 式切片** `[:2]` `[1:3]` `[-2:]` `[::2]` `[::-1]`）、赋值（`= VALUE` / `= null` 删除 / `= @FILE` / `= strenv(NAME)` / `+= -= *= /=`）、函数（`filter` / `remove` / `search` / 字符串函数 / **`count()` 计数**）、谓词裸过滤（csv/table/jsonl 自动过滤行数组）、**jq 式键投影** `data[*]\|{id,name}`（**裸 `{k1,k2}` 直接投影根文档**：对象根只保留这些键，如 `cat 4k.json \| sys data '{wallpaper,warningText}'`；数组根逐行投影，同 `[*]\|{...}`；**深层节点管道可省**：`sites[0]{key,name}` / `sites[0].{key,name}` 等价 `sites[0]\|{key,name}`）、`--depth` 修剪、`--limit` 取前 N 行、`--header`/`--no-header` 表头控制、`-w` 写回、`-u` URL 拉取、GBK/GB18030 等**非 UTF-8 自动解码**、tab 缩进 YAML 归一、TTY 下 json/yaml jq 式上色；**完整说明与示例见第 10 节** |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
 | 网络探测      | `net`                | 从文件批量读取 http(s) 地址并探测：`-i` 读文件（`#` 注释行跳过、每行多个地址、地址截取到空格/标点）；`-t domain`（默认，连续 3 次 GET 取平均响应时间，全部测完按平均时间升序打印）/ `-t tv`（响应体须为 JSON，支持 `--sort` 统计排序；旧名 `json`）/ `-t tvs`（兼容 tv 与聚合两种 JSON：单仓 `.sites` / 多仓 `.urls` 分组输出）/ `-t file`（响应体须为普通文本）/ `-t test`（只探测可访问性，不可访问的屏幕打印错误并从源文件删除，`-o` 输出清理后的源文件行）/ `-t info`（用 `-n` 域名查 RDAP 注册信息，查不到逐层回退上层域名）；tv/file 模式每测完一个即打印 url/可用性/状态码/响应时间/格式，`-o` 把检测成功的 url 写入文件（一行一个）；`--timeout` 单次请求超时 |
-| 日志查看      | `log`                | 彩色 less 式日志查看器：解析 Nginx / Linux / Windows / Log4j 等常见日志——**时间**（ISO/斜杠/nginx access/syslog/US 多种格式，行首或行中）橙色显示；**级别**（trace→info 渐浅绿、warning→error→fatal 渐深红）渐变着色；**app 标志**与 **IP 地址**（IPv4 / IPv6，含头部与正文任意位置）蓝色；`--level` 按级别过滤（warn==warning、err==error）；`--search` 关键字搜索（行号 + 反显，交互下 n/u 循环跳转）；`--line N` 从第 N 行后解析（保留原始行号）；`--newer TIME` 只显示该时间之后的日志；`-f` 追踪文件变化滚动展示（150ms 轮询，截断/轮转自动重读）；TTY 下 less 式交互（PageUp/PageDown/↑/↓/Home/End/g/G/q），管道输出纯文本无 ANSI |
+| 日志查看      | `log`                | 彩色 less 式日志查看器：解析 Nginx / Linux / Windows / Log4j 等常见日志——**时间**（ISO/斜杠/nginx access/syslog/US 多种格式，行首或行中）橙色显示；**级别**（trace→info 渐浅绿、warning→error→fatal 渐深红）渐变着色；**app 标志**与 **IP 地址**（IPv4 / IPv6，含头部与正文任意位置）蓝色、**HTTP 方法**（`GET /pages/ HTTP/1.1` 等请求行动词，含 CONNECT 无版本形式）绿色；`--level` 按级别过滤（warn==warning、err==error）；`--search` 关键字搜索（行号 + 反显，交互下 n/u 循环跳转）；`--line N` 从第 N 行后解析（保留原始行号）；`--newer TIME` 只显示该时间之后的日志；`-f` 追踪文件变化滚动展示（150ms 轮询，截断/轮转自动重读）；TTY 下 less 式交互（PageUp/PageDown/↑/↓/Home/End/g/G/q），管道输出纯文本无 ANSI |
 
 
 
@@ -870,7 +870,7 @@ sys net -t info -n a.com -n b.com          # 一次查多个域名
 
 ## 9. 日志查看（`log`）
 
-彩色 less 式日志查看器：`sys log --file app.log [--level LEVEL] [--search KW] [--line N] [--newer TIME] [-f]`。解析每条日志的**时间**（多种常见格式）、**日志级别**、**app 标志**与 **IP 地址**（IPv4 / IPv6）并按语义着色；TTY 下进入全屏交互（同 less），管道 / 重定向输出纯文本（无 ANSI）。
+彩色 less 式日志查看器：`sys log --file app.log [--level LEVEL] [--search KW] [--line N] [--newer TIME] [-f]`。解析每条日志的**时间**（多种常见格式）、**日志级别**、**app 标志**、**IP 地址**（IPv4 / IPv6）与 **HTTP 方法**（GET/POST 等）并按语义着色；TTY 下进入全屏交互（同 less），管道 / 重定向输出纯文本（无 ANSI）。
 
 ### 特性
 
