@@ -1,17 +1,17 @@
 # sys
 **English** | [简体中文](./README.md)
-A cross-platform (Windows / Ubuntu) system Http client & AI model lookup & PATH & environment manager in a single binary 
+A cross-platform (Windows / Ubuntu) Http client & AI model lookup & PATH & environment manager in a single binary, with features split into subcommands. It bundles these capabilities:
 
 - **PATH management**: add / remove / list / check system PATH entries, persisted automatically and applied to the current environment
 - **Registry import / export**: dump PATH to a Windows Registry (`.reg`), JSON or text file; import back by merge or full replace
 - **Link into PATH**: put any file into a PATH directory so it can be run from anywhere
 - **Environment variables**: read / set / unset / list system variables, optionally persisted or session-only
-- **AI model lookup**: query model & provider information from models.dev by name
+- **AI model lookup**: query model & provider information from models.dev by name (plus an independent Chinese-model catalogue from DataLearner)
 - **httpie-compatible HTTP client**: flags follow httpie conventions
 - **Log viewer**: `sys log` — a colored less-style log viewer that parses Nginx / Linux / Windows / Log4j-style logs: timestamps in orange, level gradient (green for info and below, red from warning up), app markers and IP addresses in blue, HTTP methods (GET/POST, etc.) in green; `--level` filter, `--search` (n/u jump), `/` live search in the interactive view (non-follow), `--line` / `--newer` positioning, `-f` follow
 
 ```
-sys 0.4.13 (Made by Gary-china)
+sys (Made by Gary-china)
 
 Usage: sys <COMMAND>
 
@@ -20,10 +20,13 @@ Commands:
   env    Read / set / unset / list environment variables
   link   Link a file into a PATH directory so it runs from anywhere
   http   httpie-compatible HTTP client: http [flags] [METHOD] URL [ITEM...]
-  ai     Query the models.dev database of AI models & providers
-  task   Query and kill processes (list PID/name/path; kill by PID or name)
-  data   Query / modify / convert structured data (JSON/YAML/TOML/CSV/MD/TABLE), dasel-compatible
+  ai     Query AI model info (DataLearner), provider info (models.dev), inspect the config (info), chat with configured providers
+  net    Probe domains / URLs read from a file, or extract the valid URLs from it
+  task   Query and kill processes (list PID/name/path; kill by PID or name; no args lists all)
   log    Colored less-style log viewer: parse timestamps/levels/app markers, filters, search, -f follow
+  file   fd/sd-style text tool: search stdin / a file tree, in-place replace, encoding conversion, hashing, line counts
+  msg    Windows scheduled reminders via msg.exe popups (--daily / --once / --cron / --list / --delete)
+  data   Query / modify / convert structured data (JSON/JSONL/YAML/TOML/CSV/MD/TABLE), dasel-compatible (alias dasel)
 ```
 
 ---
@@ -36,13 +39,14 @@ Commands:
 | Registry import/export | `path export/import` | `.reg` / JSON / TXT formats; merge or `--replace` full replace; machine migration & backup |
 | Link into PATH | `link` | hard link → symlink → copy fallback chain; Windows `.cmd` shim; custom command name; system or managed directory |
 | Environment variables | `env` | get / set / unset / list; persisted by default; `--temporary` for the current shell only; `machine` scope |
-| AI model lookup | `ai` | `ai model` (models.dev: 226 providers, 8000+ models; 24 h cache; canonical preference; no args lists all; `--date` / `--open` / `--search / --list / --json / --refresh`); `ai cn-model` (datalearner: ~1015 models; `--date` filters by published); `ai info` (local config lookup: `info provider` name/api_base/api_key, `info model` `{provider}:{name}` list, `info balance` official balance via api_key, `info sale-price` official pricing page scrape, `info list-model` / `info models` live model list from the provider's own models API); `ai price` (models.dev prices, `--src openrouter` switches to the openrouter.ai catalogue, see the command reference); `ai chat` (multi-provider weighted round-robin chat; `-m` overrides the model, `--list-model` / `--list-provider`; messages truncated to the configured max_input_tokens; capability fields read-only from the config by default (never queries models.dev), `--update` explicitly fills missing max_input_tokens / type from models.dev and persists them; OpenAI / Anthropic compatible); `ai server` (`sys ai server [ADDR]` serves an OpenAI-compatible API — `/v1/chat/completions` + `/v1/models`, default 127.0.0.1:10000, bare port/IP allowed; `--help` reports the server status and prints the configured providers/models) |
+| AI model lookup | `ai` | `ai model` (models.dev: 226 providers, 8000+ models; 24 h cache; canonical preference; no args lists all; `--date` / `--open` / `--model-type` (comma-separated values are ANDed) / `--search / --list / --json / --refresh` / `--src openrouter`); `ai cn-model` (datalearner: 1039 Chinese models; `--date` / `--model-type` filters; an exact hit also scrapes the detail page for the context length, the modalities and the **parameter scale**); `ai info` (local config lookup: `info provider` lists name/api_base/api_key/docs/console/sample (sample is an example request against that provider's own models API, e.g. `https://openrouter.ai/api/v1/models  Authorization:"Bearer sk-sample"`), `info model` lists `{provider}:{name}`, `info sale-price` scrapes the official pricing page, `info list-model` / `info models` query the provider's own models API (same as `sys ai chat --query-model`); `info providers` / `info models` accept `--free` to show the built-in free routers); `ai price` (models.dev prices, `--src openrouter` switches to the openrouter.ai catalogue, see the command reference); `ai balance` (its own subcommand: minimax / agnes / alibaba-cn / deepseek / tencent query the official balance with the api_key, everything else prints the console URL); `ai config` (export the config as codex / opencode / litellm / freellmapi / codebuddy / workbuddy / trae / zcoder; `-m` multi-model selection (same format as chat); `--show` previews the target file path and content; `-f` writes the file with an automatic backup; `--update` merges in place into the default config file (backed up first); `--import` reverse-imports providers/models from a codebuddy / workbuddy / opencode / zcoder config file (backed up first; add-new wins, a local provider with the same endpoint is kept — **a provider is identified by its api_base**: entries pointing at the same endpoint merge into ONE block, never several); exports merge by api_base the same way; `--src` points at an agent config directory (non-default installs) and applies to import / export / update / list; `--list` lists only the formats that actually exist); `ai chat` (multi-provider dynamic weighted round-robin chat; `-m` overrides the model, `--list-model` / `--list-provider`; messages are truncated to the configured max_input_tokens before sending; capability fields are read-only from the local config by default (models.dev is never queried), `--update` explicitly fills the missing max_input_tokens / type and writes them back; OpenAI / Anthropic compatible); `ai server` (`sys ai server [ADDR]` serves an OpenAI-compatible API — `/v1/chat/completions` + `/v1/models`, default 127.0.0.1:10000, a bare port or IP is enough; `--help` reports the server status and prints the configured provider/model); `ai image` (OpenAI-compatible Images API `POST /v1/images/generations` for image generation: `-o` output dir / `-n` count / `-s` size / `--url` downloads the URL version; b64 is decoded and saved, the extension is detected from the file magic (png/jpg/gif/webp), multi-model weighted round-robin with the same weight reward/punishment as chat) |
 | Process management | `task` | no args lists all processes; list (PID / name / path, fuzzy name match); `-o` shows the process using a port; kill by PID or name; `-f` force |
+| Windows reminders | `msg` | desktop popups via schtasks + msg.exe: `--daily` / `--once` / `--cron` schedules; `--name` custom task name; `--list` / `--delete` manage; `TEXT` reminder (GBK-encoded); `--music` chime; tasks are `sysmsg-`-prefixed to isolate them from system tasks; Windows only |
 | Network probing | `net` | batch-probe http(s) addresses from a file: `-i` reads the file (`#` comment lines skipped, several addresses per line, each address runs to the next whitespace with trailing punctuation trimmed); `-t domain` (default — 3 GET probes per address, average response time, printed sorted by average when all are done) / `-t tv` (body must parse as JSON, analyzed with `--sort`; old name `json`) / `-t tvs` (accepts both tv and aggregator JSON: single `.sites` / multi `.urls` groups) / `-t file` (body must be plain text) / `-t test` (probe reachability only — unreachable addresses are reported and removed from the source lines, `-o` writes the cleaned source) / `-t info` (query RDAP registration info for each `-n` domain, falling back to the parent domain when missing); tv/file modes print url / reachability / status / response time / format as each probe finishes and `-o` writes the passed urls (reachable + format matched) to a file, one per line; `--timeout` per-request timeout |
-| Text search & replace | `file` | fd/sd-style: 1 arg searches stdin (an extension like `me.txt` displays that file; quotes force search); 2 args search a directory tree of text/source files (`-e` / `-i` / `-t` / `-w` / `-c`); 3 args OLD NEW PATH replace in place; `-S` size / `--newer` / `--older` time / `-d` depth filters; lists files when no PATTERN is given; `--enc SRC [DST]` converts file encoding (gbk/gb2312 <-> utf-8, default target utf-8, `--from` fixes the source instead of auto-detecting, DST omitted -> stdout) |
-| Data query / modify | `data` / `dasel` | dasel-compatible: selector reads `a.b[0]` / `list[*]` / `m["中文键"]` / root arrays `[0]` (`[0].PID` / `[-1]` / `[*]`; `[*].filter(pred)` filters the whole table, e.g. `ps | sys data -i table '[*].filter(Id==7360)'` — and for csv/table a **bare comparison predicate auto-filters**: `ps | sys data -i table 'Id==7360'` works directly); **Python-style list slices** `list[:2]` / `list[1:3]` / `list[1:]` / `list[-2:]` / `list[::2]` / `list[::-1]` (omitted bounds use defaults, negative indices count from the end, step may be negative, step 0 errors; read-only — plain selectors, `|count()` pipelines and projection left sides work, while `PATH = ...` writes and filter/search/remove paths reject it, e.g. `sys data 'sites[:5]|count()'` counts the first 5 sites); `PATH = VALUE` writes (`= null` deletes, `+=` / `-=` / `*=` / `/=` ops; **`PATH = @FILE`** loads a file as the value — format by extension json/jsonl/yaml/toml/csv/md, unknown extensions fall back to JSON → YAML → plain text, e.g. `cat 4k.json | sys data 'wallpaper=@file.json' --root`; **`PATH = strenv(NAME)`** reads an environment variable as a string value — an unset variable is an error, e.g. `cat 4k.json | sys data 'wallpaper=strenv(ROOT)' --root`); function expressions `list.filter(pred)` / `list.remove(pred)` / `search(pred)` / `name.endsWith("x")` / **`count()` counts matched nodes** (an array result counts its elements, a single value counts 1, no match counts 0; pipeline forms `data|count()` / `data.filter(...)|count()` / `search(...)|count()`, dot form `data.count()`, bare `count()` counts the whole document — e.g. `ps | sys data -i table '[*]|count()'` counts rows, `sys data 'sites.filter(active==true)|count()'` counts active sites) (predicate language: `$this` / `$key`, field paths, `== != > >= < <= && || !`, `contains` / `startsWith` / `endsWith` / `indexOf` / `has`; e.g. `sys data 'sites.filter(type==1)'`); **jq-style key projection pipeline** `data[*]|{id,name,pricing}` — keep only the listed keys per matched element (missing keys → null), a single match emits an object, several emit an array; the left side may be a `filter` / `search` result whose array is spread per element, e.g. `sys data 'clients.filter(name==''modelscope'')|{id,name}' -f config.yaml`; `--depth N` (default 1) removes nodes deeper than N levels; JSON / **JSONL** / YAML / TOML / CSV / MD / **TABLE** interconversion — **`-i jsonl`** (JSON Lines: one JSON value per line parses into a **root array**, so selectors / filter / `--limit` work array-style, with bare-predicate auto-filter: `sys data -f app.log 'level=="error"'`, and `.log` content-detection fallback so no `-i` is needed); **CSV and table headers are virtualised as object keys** — for `-i csv` / `-i table` the first non-blank line is the header by default (query by column name); a second line made of `----` separators is recognised as a header underline and skipped (e.g. ps' `-------` row); `--no-header` is the only way to get `col1..colN` (never auto-inferred), `--header` forces the first line as header; table folds extra cells into the last column (COMMAND with spaces) and pads missing cells; cell types inferred (number / bool / empty / string); `-f` file (extension decides the format, `-i` overrides), `-u URL` GET fetch (default json), `-w` write back, `--root` / `--compact`, `--limit N` (array root keeps only the first N rows — with `-i csv` / `-i table` this shows only the first N data rows, header still printed; the expression runs on the truncated document); non-UTF-8 input auto-decoded (UTF-8 BOM / UTF-16 BOM / GBK / GB18030, lossy fallback last — GBK device logs read directly); tab-indented YAML normalised, CJK round-trips cleanly; replaces the removed `con` command |
+| Text search & replace | `file` | fd/sd-style: 1 arg searches stdin (an extension like `me.txt` displays that file instead; quotes force the search); 2 args search a directory tree of text/source files (`-e` / `-i` / `-t` / `-w` / `-c` / `-n` line numbers); 3 args OLD NEW PATH replace in place; `-l` counts lines (file / stdin / matching lines); `-S` size / `--newer` / `--older` time / `-d` depth filters, listing files when no PATTERN is given; `-md5 FILE [MD5]` / `-sha FILE [SHA1]` hash & compare; `--enc SRC [DST]` converts file encoding (gbk/gb2312 <-> utf-8, default target utf-8, `--from` fixes the source instead of auto-detecting, DST omitted -> stdout) |
+| Data query / modify | `data` / `dasel` | dasel-compatible: selector reads `a.b[0]` / `list[*]` / `m["中文键"]` / root arrays `[0]` (`[0].PID` / `[-1]` / `[*]`; `[*].filter(pred)` filters the whole table, e.g. `ps | sys data -i table '[*].filter(Id==7360)'` — and for csv/table a **bare comparison predicate auto-filters**: `ps | sys data -i table 'Id==7360'` works directly); **Python-style list slices** `list[:2]` / `list[1:3]` / `list[1:]` / `list[-2:]` / `list[::2]` / `list[::-1]` (omitted bounds use defaults, negative indices count from the end, step may be negative, step 0 errors; read-only — plain selectors, `|count()` pipelines and projection left sides work, while `PATH = ...` writes and filter/search/remove paths reject it, e.g. `sys data 'sites[:5]|count()'` counts the first 5 sites); `PATH = VALUE` writes (`= null` deletes, `+=` / `-=` / `*=` / `/=` ops; **`PATH = @FILE`** loads a file as the value — format by extension json/jsonl/yaml/toml/csv/md, unknown extensions fall back to JSON → YAML → plain text, e.g. `cat 4k.json | sys data 'wallpaper=@file.json' --root`; **`PATH = strenv(NAME)`** reads an environment variable as a string value — an unset variable is an error, e.g. `cat 4k.json | sys data 'wallpaper=strenv(ROOT)' --root`); function expressions `list.filter(pred)` / `list.remove(pred)` / `search(pred)` / `name.endsWith("x")` / **`count()` counts matched nodes** (an array result counts its elements, a single value counts 1, no match counts 0; pipeline forms `data|count()` / `data.filter(...)|count()` / `search(...)|count()`, dot form `data.count()`, bare `count()` counts the whole document — e.g. `ps | sys data -i table '[*]|count()'` counts rows, `sys data 'sites.filter(active==true)|count()'` counts active sites) (predicate language: `$this` / `$key`, field paths, `== != > >= < <= && || !`, `contains` / `startsWith` / `endsWith` / `indexOf` / `has`; e.g. `sys data 'sites.filter(type==1)'`); **jq-style key projection pipeline** `data[*]|{id,name,pricing}` — keep only the listed keys per matched element (missing keys → null), a single match emits an object, several emit an array; the left side may be a `filter` / `search` result whose array is spread per element, e.g. `sys data 'clients.filter(name==''modelscope'')|{id,name}' -f config.yaml`; `--depth N` (default 1) removes nodes deeper than N levels; JSON / **JSONL** / YAML / TOML / CSV / MD / **TABLE** interconversion — **`-i jsonl`** (JSON Lines: one JSON value per line parses into a **root array**, so selectors / filter / `--limit` work array-style, with bare-predicate auto-filter: `sys data -f app.log 'level=="error"'`, and `.log` content-detection fallback so no `-i` is needed); **CSV and table headers are virtualised as object keys** — for `-i csv` / `-i table` the first non-blank line is the header by default (query by column name); a second line made of `----` separators is recognised as a header underline and skipped (e.g. ps' `-------` row); `--no-header` is the only way to get `col1..colN` (never auto-inferred), `--header` forces the first line as header; table folds extra cells into the last column (COMMAND with spaces) and pads missing cells; cell types inferred (number / bool / empty / string); `-f` file (extension decides the format, `-i` overrides), `-u URL` GET fetch (default json), `-w` write back, `--root` / `--compact`, `--limit N` (array root keeps only the first N rows — with `-i csv` / `-i table` this shows only the first N data rows, header still printed; the expression runs on the truncated document); non-UTF-8 input auto-decoded (UTF-8 BOM / UTF-16 BOM / GBK / GB18030, lossy fallback last — GBK device logs read directly); tab-indented YAML normalised, CJK round-trips cleanly; **a bare `{k1,k2}` projects the root document directly** (an object root keeps only those keys, e.g. `cat 4k.json | sys data '{wallpaper,warningText}'`; an array root projects every row, same as `[*]|{...}`); **the pipe is optional on a deep node**: `sites[0]{key,name}` / `sites[0].{key,name}` == `sites[0]|{key,name}`; replaces the removed `con` command — **full reference and examples in section 10** |
 | Log viewer | `log` | colored less-style log viewer: parses Nginx / Linux / Windows / Log4j-style logs — **timestamps** (ISO / slash / nginx access / syslog / US formats, start-of-line or mid-line) in orange; **levels** (trace→info light-to-strong green, warning→error→fatal escalating red) as a gradient; **app markers** and **IP addresses** (IPv4 / IPv6, anywhere in a line — head or message) in blue, **HTTP methods** (request-line verbs like `GET /pages/ HTTP/1.1`, incl. no-version forms like CONNECT) in green; `--level` filters by level (warn==warning, err==error); `--search` keyword search (line numbers + reverse highlight, n/u wrap-jump in interactive mode); pressing `/` in the interactive view starts a **live search** (non-follow mode: re-highlights and jumps to the first match as you type, Esc cancels, Enter commits); `--line N` parses from line N onward (original numbers kept); `--newer TIME` shows entries at/after the given time; `-f` follows file growth with scrolling (150 ms polling, auto re-read on truncation/rotation); TTY gets a less-style interactive view (PageUp/PageDown/↑/↓/Home/End/g/G/q), pipes get plain text without ANSI |
-| HTTP client | `http` | httpie-compatible flag subset; JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline / curl-command export; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
+| HTTP client | `http` | httpie-compatible flag subset; **JSON by default** (every request carries `Content-Type: application/json` unless `-f` / `--multipart` or an explicit header overrides it); JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline / curl-command export; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
 
 ---
 
@@ -169,6 +173,23 @@ sys env list
 
 ## 5. AI model / provider lookup (`ai`)
 
+### Command reference
+
+| Subcommand | Purpose | Key flags / examples |
+| --- | --- | --- |
+| `ai model` | query the models.dev model catalogue (exact name / substring / full list) | `--search` `--list` `--limit` `--date` `--open` `--model-type` `--provider` `--price` `--json` `-o` `--src openrouter`; `sys ai model gpt-4.1` |
+| `ai cn-model` | query the DataLearner Chinese model catalogue (1039 models, an independent source) | `--search` `--list` `--limit` `--date` `--model-type` `--json` `-o`; `sys ai cn-model gpt-6-1-sol` |
+| `ai provider` | query the models.dev provider catalogue | `--search` `--list` `--limit` `--json` `-o`; `sys ai provider openai` |
+| `ai info` | inspect the local config (provider / model / official pricing / models API) | `info provider [KW]` `info model [KW]` `info sale-price PROV` `info list-model PROV` `info models PROV`; `-o json\|csv\|yaml\|md`; `--free[=ROUTER]` (providers / models) |
+| `ai balance` | query the official balance with the api_key | `sys ai balance minimax` (minimax / agnes / alibaba-cn / deepseek / tencent have real handlers, the rest print the console URL) |
+| `ai price` | query model prices (models.dev by default / the openrouter catalogue) | `sys ai price openai,anthropic`; `--src openrouter` `--limit` `--json` `-o` |
+| `ai chat` | chat with a configured LLM (OpenAI / Anthropic compatible) | `-m` `--list-provider` `--list-model` `--no-stream` `--debug` `--update` `--test` `--query-model` `--free`; `sys ai chat "hi"` |
+| `ai server` | serve an OpenAI-compatible API locally | `sys ai server [ADDR]` (default 127.0.0.1:10000); `--help` queries whether it is running |
+| `ai image` | generate images through the Images API | `-o DIR` `-n N` `-s SIZE` `--url` `--list-provider` `--list-model`; `sys ai image "a red fox in the snow"` |
+| `ai config` | export / apply / reverse-import the config for other AI tools | 8 formats; `-m` `-f` `-c` `--show` `--update` `--import` `--src` `--list`; `sys ai config codex --show` |
+
+> Common option: `--refresh` belongs to the `ai` level and may appear anywhere after `ai` (e.g. `sys ai --refresh model gpt-4.1` or `sys ai model gpt-4.1 --refresh`); it forces a re-fetch of the 24 h cached data.
+
 ### Features
 
 - Data source: the official public data of [models.dev](https://models.dev), `https://models.dev/api.json` (~5.3 MB, **226 providers, 8000+ models**); the `/models/` and `/providers/` pages render from this same data
@@ -178,10 +199,12 @@ sys env list
 - `-s/--search`: substring-search list output; `--limit` controls the count (default 20)
 - `--list`: paginated browsing of all models / providers
 - **No args lists all**: `sys ai model` with no arguments lists every model (`--limit N` still caps the output)
-- **Text lists have a header row**: the default output of no-arg / `--list` / `--search` is an aligned table headed `ID  NAME  FAMILY  LAST UPDATED` (id / name / family / last updated)
+- **Text lists have a header row**: the default output of no-arg / `--list` / `--search` is an aligned table headed `ID  NAME  FAMILY  CONTEXT  TYPE  LAST UPDATED` (id / name / family / context length / modality type / last updated)
 - `--date YYYY-MM-DD`: show only models whose `last_updated` is **strictly after** the given date; combines with no-arg / `--list` / `--search` / name lookups (the date filter is applied before matching); a malformed date is rejected with an error
 - `--open`: show only models with `open_weights: yes`; combines with `--date` and the other filters (date first, then open weights)
-- `-o/--output-format json|csv|yaml|md`: machine-readable output — `json` prints a **JSON array** (equivalent to `--json`; a single hit is still an array), `csv` prints a header + CSV table (24 columns for models, 6 for providers, RFC-4180 escaping), `yaml` prints a YAML list, `md` prints **Markdown** (`sys ai info` prints an unordered list — `- provider` with `api_base / api_key / console / docs` children; `ai model` / `ai provider` / `ai cn-model` / `ai dl` print Markdown tables with `|` and newline escaping). Works for detail, search, list and multi-match modes alike
+- `--model-type TYPE[,TYPE...]`: show only models supporting these modalities — `text / image / audio / video / pdf` (the Chinese aliases 文本 / 图像 / 语音 / 视频 are accepted too); **several values separated by a half-width `,` or a full-width `，` are ANDed** (a model must support every listed modality), e.g. `--model-type text,image` shows only models that do both text and image; combines with `--date` / `--open`
+- `--src openrouter` (on `ai model`): switch the data source to the openrouter.ai catalogue — a list of `id / name / context_length / pricing.prompt / created`
+- `-o/--output-format json|csv|yaml|md`: machine-readable output — `json` prints a **JSON array** (equivalent to `--json`; a single hit is still an array), `csv` prints a header + CSV table (24 columns for models, 6 for providers, RFC-4180 escaping), `yaml` prints a YAML list, `md` prints **Markdown** (`sys ai info` prints an unordered list — `- provider` with `api_base / api_key / console / docs / sample` children; `ai model` / `ai provider` / `ai cn-model` print Markdown tables with `|` and newline escaping). Works for detail, search, list and multi-match modes alike
 - Model detail fields: `id / name / provider / family / description / modalities / context / output limit / cost (input/output/cache_read per 1M tokens, in USD) / reasoning / tool call / structured output / temperature / attachment / open weights / release date / last updated / knowledge cutoff / reasoning options` and more
 
 ### Examples
@@ -192,6 +215,9 @@ sys ai model --date 2026-10-01        # only models last updated after 2026-10-0
 sys ai model --date 2026-10-01 --limit 10   # above + first 10 entries
 sys ai model --open --limit 10        # only models with open_weights: yes
 sys ai model --open --date 2025-01-01 # combined filters: updated after 2025 and open weights
+sys ai model --model-type audio --limit 10   # only models with audio support (text/image/audio/video likewise)
+sys ai model --model-type text,image --limit 10  # multi-value AND: models that do both text and image
+sys ai model --model-type "文本，图像" --limit 10 # Chinese aliases + a full-width comma work too
 sys ai model gpt-4.1                  # exact lookup; picks the canonical entry when several providers match
 sys ai model openai/gpt-4.1-mini      # full id pins one entry
 sys ai model -s qwen --limit 10       # substring search (grep-style list)
@@ -204,24 +230,33 @@ sys ai model gpt-4.1 --refresh        # force re-fetch (--refresh lives on `ai`;
 sys ai provider openai                # provider detail (api / npm / model count & list)
 sys ai provider -s groq               # provider substring search
 sys ai provider --list                # list all providers
+sys ai model --src openrouter --limit 10   # openrouter.ai source: id/name/context_length/pricing.prompt/created
+sys ai model --src openrouter -o json      # openrouter source, JSON output
+sys ai info provider -o md            # provider info as a Markdown table
+sys ai info model -o md               # model list as a Markdown table
 ```
 
 CSV columns: models `id,name,provider,family,status,knowledge_cutoff,description,context,input_limit,output_limit,cost_input,cost_output,cost_cache_read,modalities_input,modalities_output,reasoning,tool_call,structured_output,temperature,attachment,open_weights,release_date,last_updated,canonical_model_id`; providers `id,name,api,env,npm,models_count`.
 
 #### 5.1 China AI model lookup (`ai cn-model`)
 
-Data source: the [datalearner](https://www.datalearner.com/ai-models/pretrained-models) pretrained-model list (server-rendered HTML, about **1015 models**, fetched page by page and deduplicated by slug), fully independent from `ai model` (models.dev).
+Data source: the [datalearner](https://www.datalearner.com/ai-models/pretrained-models) pretrained-model list (server-rendered HTML, about **1039 models**, fetched page by page and deduplicated by slug), fully independent from `ai model` (models.dev).
 
-- Query-only: exact lookup by **name** and `-s/--search` substring search (aliases match too); there is **no** `--list` and **no** `--open` (this source does not expose open-weights info)
-- `--date YYYY-MM-DD`: filters by the **published** date shown on each card, keeping only models **strictly after** the date; used alone (without a name / search term) it lists every model published after the date
-- Fields: `id (slug) / name / provider (publisher) / aliases / type (精选/预览版/开源模型/闭源模型 badges) / category (e.g. 推理大模型) / published / url`
+- Query & listing: exact lookup by **name** and `-s/--search` substring search (aliases match too); `--list` prints the whole catalogue; there is **no** `--open` (this source does not expose open-weights info)
+- `--date YYYY-MM-DD`: filters by the **published** date shown on each card, keeping only models **strictly after** the date; used alone (without a name / search term) it lists every model published after that date
+- `--model-type TYPE[,TYPE...]`: filters by **category** — `text / image / audio / video / multimodal` (the Chinese aliases 文本 / 图像 / 语音 / 视频 / 多模态 are accepted too); **several values separated by a half-width `,` or a full-width `，` are ANDed** (the category must match a keyword of every listed type, e.g. `audio` matches the 语音 category and `image` matches 视觉 / 多模态)
+- **An exact hit also scrapes the detail page**: a single-model exact lookup additionally fetches that model's detail page and reports `context` (context length, e.g. `1.05M`), `modality` (input / output modalities, e.g. 文本、图像 → 文本) and `parameters` (the **model scale / parameter count**, e.g. 2350亿 / 220亿); a failure degrades silently (the field is left empty) and a "暂无数据" placeholder on the site counts as unknown and is left empty too
+- Fields: `id (slug) / name / provider (publisher) / aliases / type (精选 / 预览版 / 开源模型 / 闭源模型 badges) / category (e.g. 推理大模型) / context (context length, detail page) / modality (input/output modalities, detail page) / parameters (parameter scale, detail page) / published / url`
 - 24 h local cache (same cache dir as `ai model`, file `datalearner-models.json`); `--refresh` forces a re-fetch
-- `--limit N` caps the list (default 20); `--json` / `-o json` print a JSON array; `-o csv` prints an 8-column CSV (`id,name,provider,aliases,type,category,published,url`)
+- `--limit N` caps the list (default 20); `--json` / `-o json` print a JSON array; `-o csv` prints an 11-column CSV (`id,name,provider,aliases,type,category,context,modality,parameters,published,url`)
 
 ```
-sys ai cn-model gpt-6-1-sol            # exact lookup (case-insensitive)
+sys ai cn-model gpt-6-1-sol            # exact lookup (case-insensitive; with detail-page context / modality / parameters)
 sys ai cn-model -s ernie --limit 10    # substring search (aliases match too)
-sys ai cn-model --date 2026-09-28      # list every model published after that date
+sys ai cn-model --list --limit 20      # list the whole catalogue (first 20)
+sys ai cn-model --date 2026-09-28      # every model published after that date
+sys ai cn-model --model-type 语音       # every speech / audio LLM
+sys ai cn-model --model-type 语音,多模态 # multi-value AND: both the speech and the multimodal category
 sys ai cn-model -s qwen --date 2026-01-01   # search + date filter
 sys ai cn-model gpt-6-1-sol --json     # JSON array output
 sys ai cn-model -s ernie -o csv        # CSV output
@@ -233,16 +268,21 @@ sys ai cn-model gpt-6-1-sol --refresh  # force re-fetch (--refresh lives on `ai`
 Chats with the configured providers using the OpenAI `/v1/chat/completions` or the Anthropic Messages API standard.
 
 - Config file defaults to **`~/.sysenv/config.yaml`** (a clear message is shown when missing); `-c/--config FILE` overrides it. The format is documented in `doc/config.yaml`; the sanitized template is `doc/config.example.yaml`
-- `clients` holds the providers: required `name / api_base / api_key / models` (each `models` entry has `name` plus optional `weight`, default 1, and optional `max_tokens`, `max_input_tokens`, `type`, `group`); `type` is `openai` (default; `open` is accepted) or `anthropic`, and the request follows the OpenAI or the Claude API standard accordingly
+- `clients` holds the providers: required `name / api_base / api_key / models` (each `models` entry has `name` plus optional `weight`, default 1, **range 0-9**, and optional `max_tokens`, `max_input_tokens`, `type`, `group`); `type` is `openai` (default; `open` is accepted) or `anthropic`, and the request follows the OpenAI or the Claude API standard accordingly
   - `group`: model **group** membership; several groups are allowed, separated by half- or full-width commas (e.g. `group: fast, cheap`). The top-level `model` and `-m` accept `group:<name>` to select **every model belonging to that group** (across providers, weighted round-robin)
-- Capability fields (`max_input_tokens` / `type`) come **only from the config** unless `--update` is given: missing values are never fetched from models.dev and never written back; chat works fully offline from external data sources. `max_input_tokens` limits the message truncation (absent = no truncation)
+- **Capability fields are read-only from the local config unless `--update` is given**: `max_input_tokens` / `type` come entirely from the config file; when missing they are **never** looked up in models.dev and **nothing is written back** — chat never depends on an external data source
   - `--update`: before sending, fill the target models' **missing** `max_input_tokens` / `type` from models.dev (24 h cache) and **persist them into the config file** (best effort: lookup / write failures only warn and never block; stderr prints what was actually filled). Models whose fields are already set are not queried. Without the flag the zero-query / zero-write-back behavior above applies
+- **Message length truncation**: before sending, the message character count is checked against the model's configured `max_input_tokens`; anything beyond it is cut (a truncation note goes to stderr) so the context window is never exceeded. Without a configured `max_input_tokens` nothing is truncated
 - Top-level `model` selects the model:
   - missing → the first model of the first provider
   - `provider:model` → the model whose provider name and model name both match
   - `provider:*` → **all** models of that provider, picked by **weighted round-robin** on `weight` (default 1)
   - `model` (bare name) → every matching model across all providers, again weighted round-robin
   - `group:<name>` → every model across all providers whose `group` list contains the name (case-insensitive), again weighted round-robin; on miss an error lists the available groups
+  - **several selections**: both the top-level `model` and `-m/--model` accept multiple choices separated by a half- or full-width comma (e.g. `agnes:*,group:cheap`), used by weighted round-robin
+- `-m/--model MODEL`: **temporarily overrides** the top-level `model`; the rules are exactly the same as in the config (`provider:model` / `provider:*` / bare name / `group:<name>` / comma-separated multiple selections)
+- `--list-provider`: lists every provider in the config (name / type / model count) and exits; `--list-model`: lists every model grouped by provider (with weights and groups) and exits. Both may be combined, and neither needs a message
+- **Dynamic weighted round-robin**: when a request fails and that model's `weight > 1`, the weight is decremented and **written back to the config file**, then the next model is tried automatically; when a substitute succeeds and its `weight < 9`, the weight is incremented and written back. A higher weight means a higher chance of being picked, and the failure penalty / success reward keeps accumulating (weight 0 means it barely takes part in the rotation)
 - The rotation state persists in `chat_state.json` next to the config, so successive calls keep rotating
 - Message source: command-line arguments (joined with spaces); with no arguments, stdin is read when it is not a terminal
 - Top-level `stream: true` enables SSE streaming by default (printed token by token); `--no-stream` disables it; `--debug` forces non-streaming
@@ -258,6 +298,11 @@ sys ai chat "hi" --no-stream           # disable streaming
 sys ai chat "hi" --debug               # print the actual request & response (incl. headers)
 sys ai chat "hi" --free                # built-in free routers (kilo-auto / blockrun; openrouter when the key is set)
 sys ai chat "hi" --free=blockrun       # pin BlockRun anonymous free endpoint (https://blockrun.ai/api/v1)
+sys ai chat "hi" -m agnes:agnes-3.0-flash   # override the top-level model; only that agnes model
+sys ai chat "hi" -m "agnes:*,claude:claude-3-5-sonnet"  # comma-separated models, weighted round-robin
+sys ai chat "hi" -m "group:cheap"      # select every model of the cheap group by group name
+sys ai chat --list-provider            # list the providers in the config
+sys ai chat --list-model               # list every model in the config (with weights)
 sys ai server                          # serve an OpenAI-compatible API (default 127.0.0.1:10000)
 sys ai server 8080                     # bare port: host stays 127.0.0.1
 sys ai server 0.0.0.0                  # bare IP: port stays 10000 (exposed to the network)
@@ -268,15 +313,37 @@ sys ai server --help                   # server status: address/port + configure
 - `sys ai server [ADDR]`: **serves the configured providers as an OpenAI-compatible API** (default `127.0.0.1:10000`; `-c/--config` selects the config file). Exposes `POST /v1/chat/completions` (non-streaming passthrough and SSE streaming via chunked transfer) and `GET /v1/models` (every configured model, id `{provider}:{model}`). The request `model` follows the same selector rules as chat (`provider:model` / `provider:*` / bare model name / `auto` = config default). Only `type: openai` providers are served; anthropic targets get a clear error. The address may be a bare port (`8080` → host default) or a bare IP (`0.0.0.0` → port default).
 - `sys ai server --help`: **queries the server status** — probes that address (GET /v1/models, 2 s timeout) to see whether a server is already running: if so it prints the current address/port, otherwise it says `server is NOT running`; in both cases it then prints the configured info grouped by provider — one provider line (name/api_base) followed by that provider's indented model lines (`{provider}:{name}`).
 
-#### 5.3 Local config lookup (`ai info`)
+#### 5.3 AI image generation (`ai image`)
+
+Generates images through a provider's OpenAI-compatible **Images API** (`POST {api_base}/images/generations`, Bearer auth) and saves them locally.
+
+- The config file is exactly the same as for `ai chat` (default `~/.sysenv/config.yaml`, `-c/--config` overrides it); only **OpenAI-compatible providers (`type: openai`)** are supported — a `type: anthropic` target errors out clearly before the request is sent (Anthropic has no Images API)
+- **Model selection follows the same rules as `ai chat`**: the top-level `model` or `-m/--model` (`{provider}:{model}` / `{model}` / `provider:*` / `group:<name>` / comma-separated multiple selections); several targets are picked by weighted round-robin on `weight`, a failure lowers the weight and moves on to the next model, a successful substitute raises it again, and the weights are written back into the config file
+- **Flags**: `-o/--output DIR` output directory (default: the current directory, created automatically); `-n/--count N` how many images to generate (default 1); `-s/--size SIZE` image size (default `1024x1024`, passed to the API verbatim, e.g. `512x512` / `1792x1024`); `--url` requests the URL version and downloads it (by default `b64_json` is requested, decoded locally and saved — no second network request)
+- **Saving**: the file name is `sys-ai-image-<YYYYMMDD-HHMMSS>-<index>.<ext>`, the extension is detected from the file magic (png / jpg / gif / webp), and a name collision appends `-1`, `-2`, … instead of overwriting; the saved path of every image is printed to stdout
+- Prompt source: command-line arguments (joined with spaces); with no arguments stdin is read when it is not a terminal; `--debug` prints the actual HTTP request & response to stderr
+
+```
+sys ai image "a red fox in the snow"                  # default config + default model, saved into the current dir
+sys ai image a red fox in the snow                    # multiple args are joined (space separated)
+echo "cyberpunk city at night" | sys ai image         # stdin pipe
+sys ai image "a cat under a cherry tree" -o pics -n 2 -s 512x512  # 2 images at 512x512, saved into pics/
+sys ai image "poster key visual" -m bigmodel:cogview-4   # override the top-level model; only that bigmodel model
+sys ai image "landscape" -m "agnes:*,bigmodel:cogview-4" # comma-separated models, weighted round-robin
+sys ai image "landscape" --url -o pics                # request the URL version and download it
+sys ai image --list-provider --list-model             # list the providers / models in the config
+```
+
+#### 5.4 Local config lookup (`ai info`)
 
 Inspects the local config file (default `~/.sysenv/config.yaml`, `-c/--config` overrides) and the models.dev model prices. **With no FIELD argument it prints the provider table (name/api_base/api_key/DOCS/CONSOLE) and the full model list (`{provider}:{name}`) together.**
 
-- `info provider [KEYWORD]` — lists every provider under `clients` with `name / api_base / api_key` plus the official `DOCS` (help docs) and `CONSOLE` URLs (matched by provider name against a built-in table; unknown providers show `-`); with KEYWORD only providers whose name contains it are kept (case-insensitive), otherwise an error lists the available names; **defaults to a YAML list** (`-o yaml` is equivalent), `-o json` / `--json` print a JSON array and `-o csv` a CSV table (JSON/YAML fields `name` / `api_base` / `api_key` / `docs` / `console`)
+- `info provider [KEYWORD]` — lists every provider under `clients` with `name / api_base / api_key` plus the official `DOCS` (help docs), `CONSOLE` and `SAMPLE` URLs — `SAMPLE` is an example request against that provider's own models API, e.g. `https://openrouter.ai/api/v1/models  Authorization:"Bearer sk-sample"` (matched by provider name against a built-in table; unknown providers show `-`); with KEYWORD only providers whose name contains it are kept (case-insensitive), otherwise an error lists the available names; **defaults to a YAML list** (`-o yaml` is equivalent), `-o json` / `--json` print a JSON array and `-o csv` a CSV table (JSON/YAML fields `name` / `api_base` / `api_key` / `docs` / `console` / `sample`)
 - `info model [KEYWORD]` — lists every configured model as `{provider}:{name}`; with KEYWORD only models of providers whose name contains it are kept (`provider:model` / `provider:*` select specific models); when no provider matches, models whose name contains KEYWORD are listed instead; models with `group` show their groups (text: `(group: ...)` suffix; md: `- group：...` line); `-o json` / `-o csv` / `--json` print a JSON array or CSV table (JSON fields `provider` / `name` / `groups`, CSV columns `provider,name,groups`)
-- `info balance PROVIDER` — queries the provider's official balance with its configured `api_key`. minimax uses the official `token_plan/remains` endpoint (Token Plan remainders; without a subscription it points to the pay-as-you-go balance page); agnes uses an OpenAI-compatible billing probe (credit_grants / subscription / usage, with a console hint when no balance field is returned); alibaba-cn (Alibaba Bailian / DashScope) uses the official `models/limits` endpoint (per-model usage quotas / rate limits, which also verify the key; no API-key cash-balance endpoint exists, so it points to the Bailian console); modelscope / sensenova / bigmodel / amd / anspire expose no API-key balance endpoint, so the command prints the matching console URL. Balance lookups are always live (no cache)
+- `info providers` / `info models` accept **`--free[=ROUTER]`**: the local config file is skipped and the built-in free routers are used instead — `kilo-auto/free` (anonymous) and `blockrun/free` (anonymous) are always available, `openrouter/free` is appended only when `OPENROUTER_API_KEY` is set; a bare `--free` lists every available router, while `--free=kilo` / `--free=blockrun` / `--free=openrouter` pins one (the same routers as `ai chat --free`)
 - `info sale-price PROVIDER` — scrapes the provider's official pricing page and prints every model's sale price. agnes uses `wiki.agnes-ai.cn` (text / image / video models, list + current price in ¥); minimax uses `platform.minimaxi.com` (language-model input / output / cache prices, ¥ per million tokens); alibaba-cn prints the official Bailian model list & billing page; other providers print their official pricing-page URL. Pricing pages are cached 24 h, `--refresh` forces a re-fetch
 - `info list-model PROVIDER` / `info models PROVIDER` — queries the provider's own models API for the models its configured api_key can actually use (the same function as `sys ai chat --query-model PROVIDER`): OpenAI-compatible providers hit `GET {api_base}/models` (the `models` path is appended to the configured api_base as-is — e.g. Baidu Qianfan configured with `https://qianfan.baidubce.com/v2` is queried at `/v2/models`, not `/v2/v1/models`; Bearer api_key), anthropic providers hit `GET {api_base}/v1/models` (`{api_base}/models` when api_base already ends with `/v1`; x-api-key / anthropic-version); `next_page` pagination is followed automatically (up to 20 pages). The text view prints an aligned `MODEL / OWNED_BY / CREATED` table (OpenAI `owned_by` / `created` and Anthropic `display_name` / `created_at` are normalized into the same columns; the `created` timestamp is shown as local `YYYY-MM-DD HH:MM:SS` in the text view); `-o json` / `-o csv` / `--json` print a JSON array or CSV table (fields `id` / `owned_by` / `created`, keeping the API's raw timestamp). Always live, no cache
+- **Balance lookups** (since v0.6.17 `info balance` was promoted to its own subcommand): to query a provider's official balance with its `api_key` use **`sys ai balance PROVIDER`** (see 5.6); **model prices** (the models.dev / openrouter catalogue) are queried with **`sys ai price`** (see 5.5)
 
 ```
 sys ai info                              # no field: provider table + full model list
@@ -292,17 +359,58 @@ sys ai info model deepseek               # falls back to matching model names
 sys ai info model agnes:3.0              # one model: agnes models whose name contains 3.0
 sys ai info model modelscope:*           # every modelscope model
 sys ai price openai,anthropic            # model prices of two providers (models.dev)
+sys ai price "openai，deepseek"          # a full-width comma works too
 sys ai price --src openrouter            # prompt/completion prices of every openrouter.ai model
 sys ai price deepseek --src openrouter   # openrouter source + model-name filter
-sys ai info balance minimax              # query MiniMax's official balance with its api_key
-sys ai info balance alibaba-cn           # Alibaba Bailian: official limits + console hint
+sys ai price --src openrouter --limit 10 # only the first 10 entries
+sys ai balance minimax                   # query MiniMax's official balance with its api_key
+sys ai balance alibaba-cn                # Alibaba Bailian: official limits + console hint
+sys ai info providers --free             # list providers with the built-in free routers (no config file)
+sys ai info models --free=blockrun       # list models pinned to the blockrun free router
 sys ai info sale-price agnes             # scrape agnes' official pricing page (all models)
 sys ai info list-model agnes             # live model list from agnes' own models API
 sys ai info list-model anthropic -o json # anthropic: /v1/models, JSON array output
 sys ai info models baidu                 # same as --query-model: baidu's /v2/models (live)
 ```
 
-#### 5.4 Config export / apply (`ai config`)
+#### 5.5 Model price lookup (`ai price`)
+
+Model prices come from [models.dev](https://models.dev) (the default, the same source as `ai model`) or from the openrouter.ai official pricing catalogue (`--src openrouter`).
+
+- **`src=models` (default)**: `sys ai price openai,anthropic` resolves the comma-separated provider names in models.dev and lists **every model** of those providers with its prices (input / output / cache_read per 1M tokens, converted to USD; `--refresh` forces a re-fetch of the 24 h cache). Both a half-width `,` and a full-width `，` work
+- **`src=openrouter`**: `sys ai price --src openrouter` fetches the prompt / completion prices of the whole openrouter.ai catalogue (per 1M tokens, 24 h cache, `--refresh` re-fetches); no provider name is needed, comma-separated model ids / name keywords filter the list (`sys ai price deepseek --src openrouter`), `--limit N` caps it and `--json` / `-o json|csv|yaml|md` switch the output format
+- Complements `ai info` (the local config lookup): `info` shows what the config holds, `price` shows the official pricing of each model
+
+```
+sys ai price openai,anthropic            # models.dev: prices of every model of two providers
+sys ai price "openai，deepseek"          # a full-width comma works too
+sys ai price --src openrouter            # openrouter.ai: prices of every model (per 1M tokens)
+sys ai price deepseek --src openrouter   # openrouter catalogue + model-name filter
+sys ai price --src openrouter --limit 10 # only the first 10 entries
+sys ai price --src openrouter -o csv     # CSV output
+```
+
+#### 5.6 Official balance lookup (`ai balance`)
+
+Queries a provider's official balance in real time with its configured `api_key` (**always live, never cached**). `-c/--config FILE` selects the config file; `PROVIDER` is a provider name under `clients` (case-insensitive, unique substring matching).
+
+- **`minimax`**: the official `GET /v1/token_plan/remains` — lists the remaining / total / used quota of every model under the Token Plan; without a Token Plan subscription (pay-as-you-go) it prints the platform balance page
+- **`agnes`**: an OpenAI-compatible billing probe (credit_grants / subscription / usage; with a console hint when no balance field is returned)
+- **`alibaba-cn`** (aliases alibaba / dashscope / bailian): the official `GET /api/v1/models/limits` — the usage limits / rate-limit quotas of every model under that key (it also verifies the key; there is no key-level cash-balance endpoint, so it points to the Bailian console)
+- **`deepseek`**: the official `user/balance` real query
+- **`tencent`** (aliases tencentmaas / tokenhub): the TokenHub control plane needs a SecretId / SecretKey (different from the configured API key), so the console instructions are printed
+- **`modelscope` / `sensenova` / `bigmodel` / `amd` / `anspire`**: no key-level balance endpoint is public, so the command prints the matching console URL
+- An unknown provider name is an explicit error
+
+```
+sys ai balance minimax              # MiniMax Token Plan remainders (or the pay-as-you-go entry point)
+sys ai balance deepseek             # DeepSeek user/balance real query
+sys ai balance alibaba-cn           # Alibaba Bailian: official limits + console hint
+sys ai balance tencent              # TokenHub console instructions (SecretId/SecretKey)
+sys ai balance agnes -c test\config.yaml   # a specific config file
+```
+
+#### 5.7 Config export / apply (`ai config`)
 
 Exports the local config's `clients` section into another tool's format, or applies it straight to that software's config file:
 
@@ -341,7 +449,7 @@ sys ai config --list --src D:\tools\opencode        # list only the configs exis
 sys ai config --list                    # list only the configs existing at the default locations
 ```
 
-#### 5.5 Text search & replacement (`file`)
+#### 5.8 Text search & replacement (`file`)
 
 fd/sd-style: search stdin or a directory tree of text/source files, or replace a string in place. Matching runs on the Unicode char level (`-i` folds case per char, so non-ASCII text works too).
 
@@ -605,6 +713,85 @@ type app.log | sys log --level error            # piped input (plain text, no AN
 
 ---
 
+## 10. Data query & conversion (`data` / `dasel`)
+
+Query, modify and convert structured data — a dasel-compatible subset plus extensions (the successor of the old `sys con`, adding TOML / table / jsonl plus function expressions / slices / counting / projection). The alias `dasel` behaves identically.
+
+Common usage: `sys data [EXPR] [-f FILE | -u URL] [-i FMT] [-o FMT] [-w FILE] [--compact] [--root] [--depth [N]] [--limit N] [--header|--no-header]`. **Omitting EXPR means pure format conversion** (e.g. `sys data -i yaml -o json < in.yaml`).
+
+### 10.1 Input sources & formats
+
+- **Input sources**: a stdin pipe (format auto-detected) → `-f FILE` (format from the file extension, `-i` overrides) → `-u URL` (GET fetch, default json, `-i` overrides, e.g. `sys data -u https://api.dev/config status`); pick one — `-f` and `-u` are mutually exclusive
+- **Seven formats convert into each other**: `json` / `jsonl` (JSON Lines; `.ndjson` counts too) / `yaml` (`.yml`; tab indentation is normalized) / `toml` / `csv` / `md` / `table`. `-i` sets the input format and `-o` the output (default = the input format); unknown input is content-detected (whole-document JSON → per-line JSON → YAML → comma table → table)
+- **JSONL semantics**: one independent JSON value per line, parsed into a **root array** — selectors / filter / `--limit` all work array-style; `.log` files fall back to content detection, so no explicit `-i` is needed (e.g. `sys data -f app.log 'level=="error"'`)
+- **CSV & table headers**: the first line is the column header by default (columns can be queried by name); a second line of `----` separators is recognized as a header underline and skipped (e.g. the `-------` row of ps output); `--header` forces the first line to be the header, `--no-header` explicitly enables `col1..colN` (never auto-inferred); in a table the extra cells of a row are folded into the last column (a COMMAND containing spaces) and missing cells are padded, with cell types inferred (number / bool / empty / string)
+- **Non-UTF-8 auto-decoding**: files and stdin are read as bytes and decoded leniently — UTF-8 BOM (stripped) → UTF-16 LE/BE BOM → strict UTF-8 → GBK → GB18030 → lossy fallback; GBK device logs can be read directly (the trap of "GBK that also happens to be valid UTF-8", e.g. 专业, is corrected by a round-trip read-back)
+- **TTY colouring**: on screen json / yaml are colourized jq-style (keys blue, values green, structural characters unchanged); pipes / redirection / `-w` always produce plain text and file contents never contain ANSI; the `NO_COLOR` environment variable turns it off
+
+### 10.2 Selectors & slices
+
+- **Selector syntax**: dotted paths `a.b` (a leading `.` may be omitted), array indexes `list[0]` / `list[-1]` (negative counts from the end), wildcard `list[*]`, quoted keys `m["中文键"]` (spaces / dots / CJK key names), root arrays `[0]` / `[-1]` / `[*]` (e.g. `ps | sys data -i table '[0].PID'`)
+- **Python-style list slices (read-only)**: `list[:2]` (first 2) / `list[1:3]` / `list[1:]` / `list[-2:]` (last 2) / `list[::2]` (every other one) / `list[::-1]` (reversed); omitted bounds take their defaults, negative indexes count from the end, the step may be negative and step 0 is an error; out-of-range bounds are clamped, empty ranges are legal and `[0:99]` means everything. **Read-only**: they work in plain queries, in `|count()` pipelines (`data[:2]|count()` = 2) and as a projection left-hand side (`data[1:3]|{id,name}`); `PATH = ...` writes and filter / search / remove paths reject them
+- Multi-segment combination: `data[1:3][0]` indexes into the slice result
+
+### 10.3 Modification expressions (assignment)
+
+- `PATH = VALUE`: a JSON literal (number / bool / object / array) or plain text; **`= null` deletes** the key / element
+- **`PATH = @FILE`**: read a file as the assigned value — the format comes from the extension (json / jsonl / yaml / toml / csv / md), unknown extensions fall back to JSON → YAML → plain text, e.g. `cat 4k.json | sys data 'wallpaper=@file.json' --root`
+- **`PATH = strenv(NAME)`**: read a system environment variable as a string value; an unset variable is an explicit error, e.g. `cat 4k.json | sys data 'wallpaper=strenv(ROOT)' --root`
+- Arithmetic updates: `PATH += N` / `-=` / `*=` / `/=` for numeric operations (`+=` appends to strings)
+- **`-w FILE` write-back**: the whole modified document is written to the file (with an expression + `--root`, stdout stays quiet); **`--root`** prints the whole document after the change instead of the selected value; **`--compact`** prints single-line JSON
+
+### 10.4 Function expressions & predicates
+
+- **`path.filter(pred)`**: keep the array elements satisfying the predicate (read-only, outputs the resulting array); **`path.remove(pred)`**: delete the matching array elements in place (`--root` prints the whole modified document, otherwise the remaining array is printed); **`search(pred)`**: recursively collect every matching node from the root (or from a given node) — `$key` is the object key / array index
+- **String / key functions**: `name.contains("x")` / `startsWith` / `endsWith` / `indexOf` / `has("k")` (existence check on object keys / array indexes)
+- **`count()` counts nodes**: the number of matched nodes — pipeline forms `data|count()` / `data.filter(...)|count()` / `search(...)|count()` (an array counts its elements, a single value counts 1, no match counts 0), the dot form `data.count()`, and a bare `count()` counts the whole document (an array → its length). E.g. `ps | sys data -i table '[*]|count()'` counts rows
+- **Bare predicates auto-filter**: with csv / table / jsonl input, a **comparison expression or a method predicate works without `[*].filter`** — `ps | sys data -i table 'Id==7360'`, `sys data -f app.log 'level=="error"'`, `'Name.contains("x")'` are equivalent to `[*].filter(...)`; on an object-root document a method predicate stays a scalar string function
+- **jq-style key projection pipeline**: `data[*]|{id,name,pricing}` — keep only the listed keys of every matched element (missing keys → null); a single match emits one object, several emit an array. The left-hand side may be a filter / search result (its array is spread per element), e.g. `sys data 'clients.filter(name==''modelscope'')|{id,name}' -f config.yaml`. **A bare `{k1,k2}` (no path) acts on the root document directly** — an object root keeps only those keys (jq `. | {k1,k2}`, e.g. `cat 4k.json | sys data '{wallpaper,warningText}'`), an array root projects every row (same as `[*]`, e.g. `ps | sys data -i table '{Id,Name}'`). The key-list validation is shared with the pipeline form, so illegal keys (`{a.b}` nested paths / `{x: y}` aliases / an empty list) error out the same way. **A trailing projection on a deep node needs no pipe**: `sites[0]{key,name}` / `sites[0].{key,name}` == `sites[0]|{key,name}`, and a slice works as a left-hand side too (`sites[:2]{key,name}`)
+- **Predicate language** (dasel-compatible): `$this` / `$key`, field paths (`name`, `a.b[0]`, `m["中文键"]`), literals (numbers / single- or double-quoted strings / true / false / null), `== != > >= < <= && || !`, and function calls (`contains("x")` / `startsWith` / `endsWith` / `indexOf` / `has("k")`), e.g. `sys data 'sites.filter(type==1)'`
+
+### 10.5 Document-level options
+
+- **`--depth N`** (default 1; a bare `--depth` means 1): removes every subtree deeper than N levels (root = level 0, levels 0..=N are kept) and is applied before the expression — `sys data --depth 1 -f cfg.yaml` keeps only the top-level keys
+- **`--limit N`**: when the document root is an array only the first N elements are kept — with csv / table that means "only the first N data rows, the header is still printed"; jsonl behaves the same; `--limit 0` prints nothing (head -n 0 semantics). It is applied before the expression, so queries / filters run on the truncated document; an object root is an explicit error
+- `-f` / `-u` / `-i` / `-o` / `-w` / `--header` / `--no-header` / `--compact` / `--root` combine freely; `--depth` and `--limit` are compatible with selectors / assignments / functions / projections
+
+### 10.6 Examples
+
+```
+echo '{"a":{"b":"hello"}}' | sys data 'a.b'            # read (stdin auto-detected as json)
+sys data -f cfg.yaml 'server.port = 8080' -w cfg.yaml # modify and write back
+sys data -f cfg.yaml 'server.port = 8080' --root      # modify and print the whole document
+sys data -i json -o yaml '{}'                          # format conversion
+sys data -i yaml -o json < in.yaml                     # YAML -> JSON
+sys data -f app.log 'level=="error"'                  # bare predicate on a jsonl log
+sys data 'sites.filter(type==1)'                       # filter an array
+sys data 'sites.remove(name.contains("web"))' --root   # delete elements
+sys data 'search(has("name"))'                         # recursive search
+sys data 'name.endsWith("server")'                     # string function
+sys data 'data[:2]|count()'                            # slice + count (= 2)
+ps | sys data -i table '[*]|count()'                   # count rows
+ps | sys data -i table '[0].PID'                       # root array: a field of the first element
+ps | sys data -i table 'Id==7360'                      # bare predicate auto-filter (same as filter)
+sys data 'data[*]|{id,name}' -f config.yaml           # jq-style key projection
+cat 4k.json | sys data '{wallpaper,warningText}'       # bare projection: an object root keeps only those keys
+ps | sys data -i table '{Id,Name}'                     # bare projection: an array root projects every row
+sys data -f 4k.json 'sites[0]{key,name}'               # trailing projection on a deep node
+sys data -f 4k.json 'sites[0].{key,name,type}'         # the dotted form is equivalent
+sys data -f 4k.json 'sites[:2]{key,name}'              # slice + trailing projection: the first 2 sites
+cat 4k.json | sys data 'wallpaper=@file.json' --root   # assign a file
+cat 4k.json | sys data 'wallpaper=strenv(ROOT)' --root  # assign an environment variable
+sys data -u https://api.dev/config status              # fetch from a URL + query
+sys data -i table --limit 3                            # only the first 3 rows (header kept)
+sys data --depth 1 -f cfg.yaml                         # keep only the top-level keys
+sys data -f app.log '[*].filter(level=="error")' --limit 10  # filter + truncate
+```
+
+> Note: PowerShell 5.1 strips embedded double quotes from native-command arguments, so wrap predicates / JSON arguments in single quotes (e.g. `'Id==7360'`, `'Name.contains(''x'')'`) or pass them through Python's subprocess; the engine itself accepts both `'x'` and `"x"`.
+
+---
+
 ## Limitations
 
 - `http`: `--auth-type digest`, `--session`, `--stream`, `--ssl`, `--cert`, custom `--boundary` are not implemented (see `sys help http`)
@@ -617,4 +804,4 @@ type app.log | sys log --level error            # piped input (plain text, no AN
 - `cargo test`: 26 unit tests on Windows, 23 on Linux (platform-specific cases gated by `cfg`)
 - `cargo check`, `cargo test`, `cargo build --release` and end-to-end smoke tests have been run on both Windows (msvc) and Ubuntu (real WSL)
 - End-to-end coverage: PATH CRUD & registry restore, link fallback chain, env persistence/temporary mode, full http flag smoke tests, live models.dev fetch with canonical preference, and actual execution of the five shims
-- `dev/` ships local smoke tooling: `test_server.ps1` (HttpListener test server on port 18899), `smoke_http.ps1` / `smoke_http2.ps1`, `test_body.json`
+- `dev/` ships local smoke tooling: `test_server.ps1` (HttpListener test server on port 18899), `smoke_http.ps1` / `smoke_http2.ps1`, `test_body.json`
