@@ -421,6 +421,8 @@ struct Span {
 struct Entry {
     /// Original 1-based line number in the file.
     number: usize,
+    /// The raw line text (spans partition it exactly).
+    line: String,
     spans: Vec<Span>,
     level: Option<Level>,
     ts: Option<DateTime<FixedOffset>>,
@@ -834,7 +836,7 @@ impl Analyzer<'_> {
             Some(k) if !k.is_empty() => find_ci(line, k),
             _ => Vec::new(),
         };
-        Entry { number, spans, level, ts, matches }
+        Entry { number, line: line.to_string(), spans, level, ts, matches }
     }
 }
 
@@ -963,6 +965,20 @@ impl Store {
                     self.matches.push(self.entries.len());
                 }
                 self.entries.push(e);
+            }
+        }
+    }
+    /// Recompute the search-match list for a (possibly new) keyword — this is
+    /// what the interactive `/` live search uses while the user types.
+    fn reindex(&mut self, kw: Option<&str>) {
+        self.matches.clear();
+        for (i, e) in self.entries.iter_mut().enumerate() {
+            e.matches = match kw {
+                Some(k) if !k.is_empty() => find_ci(&e.line, k),
+                _ => Vec::new(),
+            };
+            if !e.matches.is_empty() {
+                self.matches.push(i);
             }
         }
     }
@@ -1138,9 +1154,10 @@ fn status_line(file_name: &str, store: &Store, sess: &Session, top: usize, heigh
         s.push_str(&format!("\"{}\" {}/{}  ", kw, mpos, store.matches.len()));
     }
     if sess.follow {
-        s.push_str("following...  ");
+        s.push_str("following...  q=quit PgUp/PgDn=page \u{2191}\u{2193}=line n/u=search");
+    } else {
+        s.push_str("q=quit PgUp/PgDn=page \u{2191}\u{2193}=line /=search n/u=next");
     }
-    s.push_str("q=quit PgUp/PgDn=page \u{2191}\u{2193}=line n/u=search");
     s
 }
 
@@ -1151,6 +1168,7 @@ fn draw(
     file_name: &str,
     lv: Option<Level>,
     kw: Option<&str>,
+    search_prompt: Option<&str>,
     width: usize,
     height: usize,
 ) -> Result<()> {
@@ -1165,12 +1183,27 @@ fn draw(
         }
     }
     execute!(stdout, cursor::MoveTo(0, height as u16), terminal::Clear(ClearType::CurrentLine))?;
-    let status = status_line(file_name, store, sess, top, height, total, lv, kw);
+    let status = match search_prompt {
+        Some(buf) => format!("/: {buf}"),
+        None => status_line(file_name, store, sess, top, height, total, lv, kw),
+    };
     execute!(stdout, SetAttribute(Attribute::Reverse))?;
     write!(stdout, "{}", truncate_display(&status, width))?;
     execute!(stdout, SetAttribute(Attribute::Reset))?;
     stdout.flush()?;
     Ok(())
+}
+
+/// Jump the viewport to the first current match (used by the live `/` search
+/// while the user types).
+fn jump_to_first_match(sess: &mut Session, store: &Store, height: usize) {
+    if let Some(&first) = store.matches.first() {
+        sess.match_pos = Some(0);
+        sess.top = first.saturating_sub(height / 2);
+        sess.pinned = false;
+    } else {
+        sess.match_pos = None;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1206,6 +1239,11 @@ fn tty_loop(
     stdout: &mut io::Stdout,
 ) -> Result<()> {
     let mut sess = Session { top: usize::MAX, pinned: true, match_pos: None, follow: source.is_some() };
+    // `--search` keyword from the command line; `/` can start a live search that
+    // temporarily replaces it (non-follow mode only).
+    let mut active_kw: Option<String> = kw.map(str::to_string);
+    let mut searching = false;
+    let mut search_buf = String::new();
     let mut need_draw = true;
     loop {
         let (w, h) = terminal::size().unwrap_or((80, 24));
@@ -1227,8 +1265,19 @@ fn tty_loop(
             }
         }
 
+        // The keyword currently in effect: the live `/` buffer while typing,
+        // otherwise the committed / CLI keyword.
+        let current_kw: Option<&str> = if searching && !search_buf.is_empty() {
+            Some(search_buf.as_str())
+        } else if !searching {
+            active_kw.as_deref()
+        } else {
+            None
+        };
+        let search_prompt = searching.then(|| search_buf.as_str());
+
         if need_draw {
-            draw(stdout, store, &sess, file_name, lv, kw, w as usize, height)?;
+            draw(stdout, store, &sess, file_name, lv, current_kw, search_prompt, w as usize, height)?;
             need_draw = false;
         }
 
@@ -1237,14 +1286,59 @@ fn tty_loop(
             continue;
         }
         match event::read()? {
-            Event::Key(ke) => match ke.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                KeyCode::Char('c') if ke.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
-                KeyCode::PageUp => {
-                    sess.top = top.saturating_sub(height);
-                    sess.pinned = false;
-                    need_draw = true;
+            Event::Key(ke) => {
+                let ctrl_c =
+                    ke.code == KeyCode::Char('c') && ke.modifiers.contains(KeyModifiers::CONTROL);
+                if ctrl_c {
+                    return Ok(());
                 }
+                if searching {
+                    // Live search input mode: `/` prompt. Esc cancels, Enter
+                    // commits, every other char re-indexes and jumps to the
+                    // first match immediately.
+                    match ke.code {
+                        KeyCode::Esc => {
+                            searching = false;
+                            search_buf.clear();
+                            store.reindex(active_kw.as_deref());
+                            sess.match_pos = None;
+                            need_draw = true;
+                        }
+                        KeyCode::Enter => {
+                            searching = false;
+                            active_kw =
+                                if search_buf.is_empty() { None } else { Some(search_buf.clone()) };
+                            search_buf.clear();
+                            store.reindex(active_kw.as_deref());
+                            sess.match_pos = None;
+                            need_draw = true;
+                        }
+                        KeyCode::Backspace => {
+                            search_buf.pop();
+                            store.reindex((!search_buf.is_empty()).then(|| search_buf.as_str()));
+                            jump_to_first_match(&mut sess, store, height);
+                            need_draw = true;
+                        }
+                        KeyCode::Char(c) => {
+                            let modified = ke.modifiers.contains(KeyModifiers::CONTROL)
+                                || ke.modifiers.contains(KeyModifiers::ALT);
+                            if !modified {
+                                search_buf.push(c);
+                                store.reindex(Some(search_buf.as_str()));
+                                jump_to_first_match(&mut sess, store, height);
+                                need_draw = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                } else {
+                    match ke.code {
+                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                        KeyCode::PageUp => {
+                            sess.top = top.saturating_sub(height);
+                            sess.pinned = false;
+                            need_draw = true;
+                        }
                 KeyCode::PageDown => {
                     sess.top = (top + height).min(max_top);
                     if sess.top >= max_top {
@@ -1294,8 +1388,20 @@ fn tty_loop(
                         need_draw = true;
                     }
                 }
+                KeyCode::Char('/') => {
+                    // Live keyword search — only when not started with -f.
+                    if source.is_none() {
+                        searching = true;
+                        search_buf.clear();
+                        store.reindex(None);
+                        sess.match_pos = None;
+                        need_draw = true;
+                    }
+                }
                 _ => {}
-            },
+                }
+            }
+            }
             Event::Resize(_, _) => need_draw = true,
             _ => {}
         }
@@ -1751,6 +1857,44 @@ mod tests {
                 e.spans
             );
         }
+    }
+
+    #[test]
+    fn entry_keeps_original_line() {
+        let ctx = TimeCtx::at(2026, 6, 1, 12, 0, 0);
+        let a = Analyzer { ctx, kw: None };
+        let e = a.entry(1, "2024-01-15 10:23:45 INFO msg");
+        assert_eq!(e.line, "2024-01-15 10:23:45 INFO msg");
+    }
+
+    #[test]
+    fn reindex_updates_matches_live() {
+        let ctx = TimeCtx::at(2026, 6, 1, 12, 0, 0);
+        let a = Analyzer { ctx, kw: Some("timeout") };
+        let lines = vec![
+            "2024-01-15 10:23:00 ok".to_string(),
+            "2024-01-15 10:23:01 TIMEOUT after 3s".to_string(),
+            "2024-01-15 10:23:02 retry ok".to_string(),
+        ];
+        let mut store = Store::new();
+        store.push_raw(lines, &a, &Filters { level: None, line_from: None, newer: None });
+        assert_eq!(store.matches, vec![1]);
+        // live search: a new keyword re-indexes every entry
+        store.reindex(Some("retry"));
+        assert_eq!(store.matches, vec![2]);
+        assert!(!store.entries[2].matches.is_empty());
+        assert!(store.entries[1].matches.is_empty());
+        // clearing the keyword drops all matches
+        store.reindex(None);
+        assert!(store.matches.is_empty());
+        assert!(store.entries.iter().all(|e| e.matches.is_empty()));
+        // an empty string behaves like no keyword
+        store.reindex(Some(""));
+        assert!(store.matches.is_empty());
+        // keyword changes are reflected in the per-entry ranges too
+        store.reindex(Some("ok"));
+        assert_eq!(store.matches, vec![0, 2]);
+        assert!(!store.entries[0].matches.is_empty());
     }
 
     #[test]

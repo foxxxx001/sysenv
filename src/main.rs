@@ -1168,7 +1168,8 @@ struct LogArgs {
     #[arg(long, value_name = "LEVEL")]
     level: Option<String>,
     /// Search keyword (case-insensitive); line numbers are shown and n/u jump to
-    /// the next/previous match
+    /// the next/previous match. Without -f, press / in the interactive view to
+    /// start a live search (Esc cancels, Enter commits)
     #[arg(long, value_name = "KEYWORD")]
     search: Option<String>,
     /// Parse from this original line number onwards (1-based)
