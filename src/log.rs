@@ -22,7 +22,7 @@ use crossterm::{
     style::{Attribute, Color, Print, SetAttribute, SetForegroundColor},
     terminal::{self, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use crossterm::event::{Event, KeyCode, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 
 /// How far into a line the "time anywhere" fallback scan looks.
 const TIME_SCAN_LIMIT: usize = 80;
@@ -1168,13 +1168,13 @@ fn draw(
     file_name: &str,
     lv: Option<Level>,
     kw: Option<&str>,
+    show_lineno: bool,
     search_prompt: Option<&str>,
     width: usize,
     height: usize,
 ) -> Result<()> {
     let total = store.entries.len();
     let top = clamp_top(sess.top, height, total);
-    let show_lineno = kw.is_some();
     for row in 0..height {
         let idx = top + row;
         execute!(stdout, cursor::MoveTo(0, row as u16), terminal::Clear(ClearType::CurrentLine))?;
@@ -1277,7 +1277,22 @@ fn tty_loop(
         let search_prompt = searching.then(|| search_buf.as_str());
 
         if need_draw {
-            draw(stdout, store, &sess, file_name, lv, current_kw, search_prompt, w as usize, height)?;
+            // Line numbers are only shown for a committed keyword (CLI
+            // --search or an Enter-confirmed search) — not while typing in the
+            // live `/` prompt, so the layout doesn't shift as you type.
+            let show_lineno = !searching && active_kw.is_some();
+            draw(
+                stdout,
+                store,
+                &sess,
+                file_name,
+                lv,
+                current_kw,
+                show_lineno,
+                search_prompt,
+                w as usize,
+                height,
+            )?;
             need_draw = false;
         }
 
@@ -1287,6 +1302,15 @@ fn tty_loop(
         }
         match event::read()? {
             Event::Key(ke) => {
+                // On Windows, crossterm emits a Release event for every key-up
+                // (KEY_EVENT.bKeyDown). Act on the Press only so one physical
+                // keystroke is handled exactly once — otherwise the `/` that
+                // starts the search would be typed into the buffer by its own
+                // Release event, and every subsequent character would be
+                // doubled.
+                if ke.kind == KeyEventKind::Release {
+                    continue;
+                }
                 let ctrl_c =
                     ke.code == KeyCode::Char('c') && ke.modifiers.contains(KeyModifiers::CONTROL);
                 if ctrl_c {
