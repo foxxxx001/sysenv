@@ -26,7 +26,7 @@ Commands:
   log    Colored less-style log viewer: parse timestamps/levels/app markers, filters, search, -f follow
   file   fd/sd-style text tool: search stdin / a file tree, in-place replace, encoding conversion, hashing, line counts
   msg    Windows scheduled reminders via msg.exe popups (--daily / --once / --cron / --list / --delete)
-  data   Query / modify / convert structured data (JSON/JSONL/YAML/TOML/CSV/MD/TABLE), dasel-compatible (alias dasel)
+  data   Query / modify / convert structured data (JSON/JSONL/YAML/TOML/CSV/MD/TABLE)
 ```
 
 ---
@@ -44,7 +44,7 @@ Commands:
 | Windows reminders | `msg` | desktop popups via schtasks + msg.exe: `--daily` / `--once` / `--cron` schedules; `--name` custom task name; `--list` / `--delete` manage; `TEXT` reminder (GBK-encoded); `--music` chime; tasks are `sysmsg-`-prefixed to isolate them from system tasks; Windows only |
 | Network probing | `net` | batch-probe http(s) addresses from a file: `-i` reads the file (`#` comment lines skipped, several addresses per line, each address runs to the next whitespace with trailing punctuation trimmed); `-t domain` (default — 3 GET probes per address, average response time, printed sorted by average when all are done) / `-t tv` (body must parse as JSON, analyzed with `--sort`; old name `json`) / `-t tvs` (accepts both tv and aggregator JSON: single `.sites` / multi `.urls` groups) / `-t file` (body must be plain text) / `-t test` (probe reachability only — unreachable addresses are reported and removed from the source lines, `-o` writes the cleaned source) / `-t info` (query RDAP registration info for each `-n` domain, falling back to the parent domain when missing); tv/file modes print url / reachability / status / response time / format as each probe finishes and `-o` writes the passed urls (reachable + format matched) to a file, one per line; `--timeout` per-request timeout |
 | Text search & replace | `file` | fd/sd-style: 1 arg searches stdin (an extension like `me.txt` displays that file instead; quotes force the search); 2 args search a directory tree of text/source files (`-e` / `-i` / `-t` / `-w` / `-c` / `-n` line numbers); 3 args OLD NEW PATH replace in place; `-l` counts lines (file / stdin / matching lines); `-S` size / `--newer` / `--older` time / `-d` depth filters, listing files when no PATTERN is given; `-md5 FILE [MD5]` / `-sha FILE [SHA1]` hash & compare; `--enc SRC [DST]` converts file encoding (gbk/gb2312 <-> utf-8, default target utf-8, `--from` fixes the source instead of auto-detecting, DST omitted -> stdout) |
-| Data query / modify | `data` / `dasel` | dasel-compatible: selector reads `a.b[0]` / `list[*]` / `m["中文键"]` / root arrays `[0]` (`[0].PID` / `[-1]` / `[*]`; `[*].filter(pred)` filters the whole table, e.g. `ps | sys data -i table '[*].filter(Id==7360)'` — and for csv/table a **bare comparison predicate auto-filters**: `ps | sys data -i table 'Id==7360'` works directly); **Python-style list slices** `list[:2]` / `list[1:3]` / `list[1:]` / `list[-2:]` / `list[::2]` / `list[::-1]` (omitted bounds use defaults, negative indices count from the end, step may be negative, step 0 errors; read-only — plain selectors, `|count()` pipelines and projection left sides work, while `PATH = ...` writes and filter/search/remove paths reject it, e.g. `sys data 'sites[:5]|count()'` counts the first 5 sites); `PATH = VALUE` writes (`= null` deletes, `+=` / `-=` / `*=` / `/=` ops; **`PATH = @FILE`** loads a file as the value — format by extension json/jsonl/yaml/toml/csv/md, unknown extensions fall back to JSON → YAML → plain text, e.g. `cat 4k.json | sys data 'wallpaper=@file.json' --root`; **`PATH = strenv(NAME)`** reads an environment variable as a string value — an unset variable is an error, e.g. `cat 4k.json | sys data 'wallpaper=strenv(ROOT)' --root`); function expressions `list.filter(pred)` / `list.remove(pred)` / `search(pred)` / `name.endsWith("x")` / **`count()` counts matched nodes** (an array result counts its elements, a single value counts 1, no match counts 0; pipeline forms `data|count()` / `data.filter(...)|count()` / `search(...)|count()`, dot form `data.count()`, bare `count()` counts the whole document — e.g. `ps | sys data -i table '[*]|count()'` counts rows, `sys data 'sites.filter(active==true)|count()'` counts active sites) (predicate language: `$this` / `$key`, field paths, `== != > >= < <= && || !`, `contains` / `startsWith` / `endsWith` / `indexOf` / `has`; e.g. `sys data 'sites.filter(type==1)'`); **jq-style key projection pipeline** `data[*]|{id,name,pricing}` — keep only the listed keys per matched element (missing keys → null), a single match emits an object, several emit an array; the left side may be a `filter` / `search` result whose array is spread per element, e.g. `sys data 'clients.filter(name==''modelscope'')|{id,name}' -f config.yaml`; `--depth N` (default 1) removes nodes deeper than N levels; JSON / **JSONL** / YAML / TOML / CSV / MD / **TABLE** interconversion — **`-i jsonl`** (JSON Lines: one JSON value per line parses into a **root array**, so selectors / filter / `--limit` work array-style, with bare-predicate auto-filter: `sys data -f app.log 'level=="error"'`, and `.log` content-detection fallback so no `-i` is needed); **CSV and table headers are virtualised as object keys** — for `-i csv` / `-i table` the first non-blank line is the header by default (query by column name); a second line made of `----` separators is recognised as a header underline and skipped (e.g. ps' `-------` row); `--no-header` is the only way to get `col1..colN` (never auto-inferred), `--header` forces the first line as header; table folds extra cells into the last column (COMMAND with spaces) and pads missing cells; cell types inferred (number / bool / empty / string); `-f` file (extension decides the format, `-i` overrides), `-u URL` GET fetch (default json), `-w` write back, `--root` / `--compact`, `--limit N` (array root keeps only the first N rows — with `-i csv` / `-i table` this shows only the first N data rows, header still printed; the expression runs on the truncated document); non-UTF-8 input auto-decoded (UTF-8 BOM / UTF-16 BOM / GBK / GB18030, lossy fallback last — GBK device logs read directly); tab-indented YAML normalised, CJK round-trips cleanly; **a bare `{k1,k2}` projects the root document directly** (an object root keeps only those keys, e.g. `cat 4k.json | sys data '{wallpaper,warningText}'`; an array root projects every row, same as `[*]|{...}`); **the pipe is optional on a deep node**: `sites[0]{key,name}` / `sites[0].{key,name}` == `sites[0]|{key,name}`; replaces the removed `con` command — **full reference and examples in section 10** |
+| Data query / modify | `data` | data-compatible: selector reads `a.b[0]` / `list[*]` / `m["中文键"]` / root arrays `[0]` (`[0].PID` / `[-1]` / `[*]`; `[*].filter(pred)` filters the whole table, e.g. `ps | sys data -i table '[*].filter(Id==7360)'` — and for csv/table a **bare comparison predicate auto-filters**: `ps | sys data -i table 'Id==7360'` works directly); **Python-style list slices** `list[:2]` / `list[1:3]` / `list[1:]` / `list[-2:]` / `list[::2]` / `list[::-1]` (omitted bounds use defaults, negative indices count from the end, step may be negative, step 0 errors; read-only — plain selectors, `|count()` pipelines and projection left sides work, while `PATH = ...` writes and filter/search/remove paths reject it, e.g. `sys data 'sites[:5]|count()'` counts the first 5 sites); `PATH = VALUE` writes (`= null` deletes, `+=` / `-=` / `*=` / `/=` ops; **`PATH = @FILE`** loads a file as the value — format by extension json/jsonl/yaml/toml/csv/md, unknown extensions fall back to JSON → YAML → plain text, e.g. `cat 4k.json | sys data 'wallpaper=@file.json' --root`; **`PATH = strenv(NAME)`** reads an environment variable as a string value — an unset variable is an error, e.g. `cat 4k.json | sys data 'wallpaper=strenv(ROOT)' --root`); function expressions `list.filter(pred)` / `list.remove(pred)` / `search(pred)` / `name.endsWith("x")` / **`count()` counts matched nodes** (an array result counts its elements, a single value counts 1, no match counts 0; pipeline forms `data|count()` / `data.filter(...)|count()` / `search(...)|count()`, dot form `data.count()`, bare `count()` counts the whole document — e.g. `ps | sys data -i table '[*]|count()'` counts rows, `sys data 'sites.filter(active==true)|count()'` counts active sites) (predicate language: `$this` / `$key`, field paths, `== != > >= < <= && || !`, `contains` / `startsWith` / `endsWith` / `indexOf` / `has`; e.g. `sys data 'sites.filter(type==1)'`); **jq-style key projection pipeline** `data[*]|{id,name,pricing}` — keep only the listed keys per matched element (missing keys → null), a single match emits an object, several emit an array; the left side may be a `filter` / `search` result whose array is spread per element, e.g. `sys data 'clients.filter(name==''modelscope'')|{id,name}' -f config.yaml`; `--depth N` (default 1) removes nodes deeper than N levels; JSON / **JSONL** / YAML / TOML / CSV / MD / **TABLE** interconversion — **`-i jsonl`** (JSON Lines: one JSON value per line parses into a **root array**, so selectors / filter / `--limit` work array-style, with bare-predicate auto-filter: `sys data -f app.log 'level=="error"'`, and `.log` content-detection fallback so no `-i` is needed); **CSV and table headers are virtualised as object keys** — for `-i csv` / `-i table` the first non-blank line is the header by default (query by column name); a second line made of `----` separators is recognised as a header underline and skipped (e.g. ps' `-------` row); `--no-header` is the only way to get `col1..colN` (never auto-inferred), `--header` forces the first line as header; table folds extra cells into the last column (COMMAND with spaces) and pads missing cells; cell types inferred (number / bool / empty / string); `-f` file (extension decides the format, `-i` overrides), `-u URL` GET fetch (default json), `-w` write back, `--root` / `--compact`, `--limit N` (array root keeps only the first N rows — with `-i csv` / `-i table` this shows only the first N data rows, header still printed; the expression runs on the truncated document); non-UTF-8 input auto-decoded (UTF-8 BOM / UTF-16 BOM / GBK / GB18030, lossy fallback last — GBK device logs read directly); tab-indented YAML normalised, CJK round-trips cleanly; **a bare `{k1,k2}` projects the root document directly** (an object root keeps only those keys, e.g. `cat 4k.json | sys data '{wallpaper,warningText}'`; an array root projects every row, same as `[*]|{...}`); **the pipe is optional on a deep node**: `sites[0]{key,name}` / `sites[0].{key,name}` == `sites[0]|{key,name}`; replaces the removed `con` command — **full reference and examples in section 10** |
 | Log viewer | `log` | colored less-style log viewer: parses Nginx / Linux / Windows / Log4j-style logs — **timestamps** (ISO / slash / nginx access / syslog / US formats, start-of-line or mid-line) in orange; **levels** (trace→info light-to-strong green, warning→error→fatal escalating red) as a gradient; **app markers** and **IP addresses** (IPv4 / IPv6, anywhere in a line — head or message) in blue, **HTTP methods** (request-line verbs like `GET /pages/ HTTP/1.1`, incl. no-version forms like CONNECT) in green; `--level` filters by level (warn==warning, err==error); `--search` keyword search (line numbers + reverse highlight, n/u wrap-jump in interactive mode); pressing `/` in the interactive view starts a **live search** (non-follow mode: re-highlights and jumps to the first match as you type, Esc cancels, Enter commits); `--line N` parses from line N onward (original numbers kept); `--newer TIME` shows entries at/after the given time; `-f` follows file growth with scrolling (150 ms polling, auto re-read on truncation/rotation); TTY gets a less-style interactive view (PageUp/PageDown/↑/↓/Home/End/g/G/q), pipes get plain text without ANSI |
 | HTTP client | `http` | httpie-compatible flag subset; **JSON by default** (every request carries `Content-Type: application/json` unless `-f` / `--multipart` or an explicit header overrides it); JSON / form / multipart / raw body; nested JSON; download / redirect / auth / offline / curl-command export; `--help` reference; `--debug` prints the actual request & response (incl. headers) |
 
@@ -93,7 +93,7 @@ cargo build --release
 - `add`: append to the end; `-p/--prepend` inserts at the front; **current-session only by default** (paste-ready snippet, nothing persisted), `--save` persists for new processes; normalizes to absolute paths, deduplicates case-insensitively, skips empty entries
 - `remove`: remove a directory from any scope by absolute path
 - `has`: check both the current process and persisted scopes, report whether the directory is on PATH
-- `export / import`: bidirectional conversion between Registry (`.reg`), JSON (`.json`) and plain text (`.txt`)
+- `export / import`: bidirectional conversion between Registry (`.reg`), JSON (`.json`) and plain text (`.txt`); `export` picks the format from the file extension: `.reg` (Windows Registry Editor format, double-click to import), `.json` (structured, scope-aware), `.txt` (one entry per line); `import` **merges** by default (dedup on absolute path, then append), `--replace` replaces the whole PATH; ideal for machine migration, backup/restore, and snapshots before batch edits
 - `--scope user|machine`: choose the write scope of **`--save`**
 - `--save`: persist for new processes (default `user` scope; `--scope machine` needs admin/root); without it, current session only
 
@@ -108,19 +108,6 @@ sys path add D:\tools --save --scope machine   # machine scope (admin/root)
 sys path remove D:\tools
 sys path has D:\tools              # checks process + persisted scopes
 sys path unlock D:\work\a.txt      # Windows: check whether a file/directory is held open by processes, list the lockers (PID/name/path) and release them
-```
-
-## 2. PATH import / export (`path export/import`)
-
-### Features
-
-- `export` picks the format from the file extension: `.reg` (Windows Registry Editor format, double-click to import), `.json` (structured, scope-aware), `.txt` (one entry per line)
-- `import` **merges** by default (dedup on absolute path, then append); `--replace` replaces the whole PATH
-- Ideal for machine migration, backup/restore, and snapshots before batch edits
-
-### Examples
-
-```
 sys path export backup.reg         # Windows Registry Editor format, double-click to import
 sys path export paths.json
 sys path import backup.reg         # merge into user PATH (deduped)
@@ -128,7 +115,7 @@ sys path import backup.reg --replace   # full replace
 sys path export paths.txt          # exchange/backup on Ubuntu
 ```
 
-## 3. Link into PATH (`link`)
+## 2. Link into PATH (`link`)
 
 ### Features
 
@@ -150,7 +137,7 @@ sys link tool --system             # system directory
 sys link tool -f                   # overwrite an existing link
 ```
 
-## 4. Environment variables (`env`)
+## 3. Environment variables (`env`)
 
 ### Features
 
@@ -171,7 +158,7 @@ sys env unset FOO
 sys env list
 ```
 
-## 5. AI model / provider lookup (`ai`)
+## 4. AI model / provider lookup (`ai`)
 
 ### Command reference
 
@@ -210,7 +197,7 @@ sys env list
 ### Examples
 
 ```
-sys ai model                          # no args: list every model (same as `sai model`)
+sys ai model                          # no args: list every model
 sys ai model --date 2026-10-01        # only models last updated after 2026-10-01
 sys ai model --date 2026-10-01 --limit 10   # above + first 10 entries
 sys ai model --open --limit 10        # only models with open_weights: yes
@@ -238,7 +225,7 @@ sys ai info model -o md               # model list as a Markdown table
 
 CSV columns: models `id,name,provider,family,status,knowledge_cutoff,description,context,input_limit,output_limit,cost_input,cost_output,cost_cache_read,modalities_input,modalities_output,reasoning,tool_call,structured_output,temperature,attachment,open_weights,release_date,last_updated,canonical_model_id`; providers `id,name,api,env,npm,models_count`.
 
-#### 5.1 China AI model lookup (`ai cn-model`)
+#### 4.1 China AI model lookup (`ai cn-model`)
 
 Data source: the [datalearner](https://www.datalearner.com/ai-models/pretrained-models) pretrained-model list (server-rendered HTML, about **1039 models**, fetched page by page and deduplicated by slug), fully independent from `ai model` (models.dev).
 
@@ -263,7 +250,7 @@ sys ai cn-model -s ernie -o csv        # CSV output
 sys ai cn-model gpt-6-1-sol --refresh  # force re-fetch (--refresh lives on `ai`)
 ```
 
-#### 5.2 AI chat (`ai chat`)
+#### 4.2 AI chat (`ai chat`)
 
 Chats with the configured providers using the OpenAI `/v1/chat/completions` or the Anthropic Messages API standard.
 
@@ -313,7 +300,7 @@ sys ai server --help                   # server status: address/port + configure
 - `sys ai server [ADDR]`: **serves the configured providers as an OpenAI-compatible API** (default `127.0.0.1:10000`; `-c/--config` selects the config file). Exposes `POST /v1/chat/completions` (non-streaming passthrough and SSE streaming via chunked transfer) and `GET /v1/models` (every configured model, id `{provider}:{model}`). The request `model` follows the same selector rules as chat (`provider:model` / `provider:*` / bare model name / `auto` = config default). Only `type: openai` providers are served; anthropic targets get a clear error. The address may be a bare port (`8080` → host default) or a bare IP (`0.0.0.0` → port default).
 - `sys ai server --help`: **queries the server status** — probes that address (GET /v1/models, 2 s timeout) to see whether a server is already running: if so it prints the current address/port, otherwise it says `server is NOT running`; in both cases it then prints the configured info grouped by provider — one provider line (name/api_base) followed by that provider's indented model lines (`{provider}:{name}`).
 
-#### 5.3 AI image generation (`ai image`)
+#### 4.3 AI image generation (`ai image`)
 
 Generates images through a provider's OpenAI-compatible **Images API** (`POST {api_base}/images/generations`, Bearer auth) and saves them locally.
 
@@ -334,7 +321,7 @@ sys ai image "landscape" --url -o pics                # request the URL version 
 sys ai image --list-provider --list-model             # list the providers / models in the config
 ```
 
-#### 5.4 Local config lookup (`ai info`)
+#### 4.4 Local config lookup (`ai info`)
 
 Inspects the local config file (default `~/.sysenv/config.yaml`, `-c/--config` overrides) and the models.dev model prices. **With no FIELD argument it prints the provider table (name/api_base/api_key/DOCS/CONSOLE) and the full model list (`{provider}:{name}`) together.**
 
@@ -343,7 +330,7 @@ Inspects the local config file (default `~/.sysenv/config.yaml`, `-c/--config` o
 - `info providers` / `info models` accept **`--free[=ROUTER]`**: the local config file is skipped and the built-in free routers are used instead — `kilo-auto/free` (anonymous) and `blockrun/free` (anonymous) are always available, `openrouter/free` is appended only when `OPENROUTER_API_KEY` is set; a bare `--free` lists every available router, while `--free=kilo` / `--free=blockrun` / `--free=openrouter` pins one (the same routers as `ai chat --free`)
 - `info sale-price PROVIDER` — scrapes the provider's official pricing page and prints every model's sale price. agnes uses `wiki.agnes-ai.cn` (text / image / video models, list + current price in ¥); minimax uses `platform.minimaxi.com` (language-model input / output / cache prices, ¥ per million tokens); alibaba-cn prints the official Bailian model list & billing page; other providers print their official pricing-page URL. Pricing pages are cached 24 h, `--refresh` forces a re-fetch
 - `info list-model PROVIDER` / `info models PROVIDER` — queries the provider's own models API for the models its configured api_key can actually use (the same function as `sys ai chat --query-model PROVIDER`): OpenAI-compatible providers hit `GET {api_base}/models` (the `models` path is appended to the configured api_base as-is — e.g. Baidu Qianfan configured with `https://qianfan.baidubce.com/v2` is queried at `/v2/models`, not `/v2/v1/models`; Bearer api_key), anthropic providers hit `GET {api_base}/v1/models` (`{api_base}/models` when api_base already ends with `/v1`; x-api-key / anthropic-version); `next_page` pagination is followed automatically (up to 20 pages). The text view prints an aligned `MODEL / OWNED_BY / CREATED` table (OpenAI `owned_by` / `created` and Anthropic `display_name` / `created_at` are normalized into the same columns; the `created` timestamp is shown as local `YYYY-MM-DD HH:MM:SS` in the text view); `-o json` / `-o csv` / `--json` print a JSON array or CSV table (fields `id` / `owned_by` / `created`, keeping the API's raw timestamp). Always live, no cache
-- **Balance lookups** (since v0.6.17 `info balance` was promoted to its own subcommand): to query a provider's official balance with its `api_key` use **`sys ai balance PROVIDER`** (see 5.6); **model prices** (the models.dev / openrouter catalogue) are queried with **`sys ai price`** (see 5.5)
+- **Balance lookups** (since v0.6.17 `info balance` was promoted to its own subcommand): to query a provider's official balance with its `api_key` use **`sys ai balance PROVIDER`** (see 4.6); **model prices** (the models.dev / openrouter catalogue) are queried with **`sys ai price`** (see 4.5)
 
 ```
 sys ai info                              # no field: provider table + full model list
@@ -373,7 +360,7 @@ sys ai info list-model anthropic -o json # anthropic: /v1/models, JSON array out
 sys ai info models baidu                 # same as --query-model: baidu's /v2/models (live)
 ```
 
-#### 5.5 Model price lookup (`ai price`)
+#### 4.5 Model price lookup (`ai price`)
 
 Model prices come from [models.dev](https://models.dev) (the default, the same source as `ai model`) or from the openrouter.ai official pricing catalogue (`--src openrouter`).
 
@@ -390,7 +377,7 @@ sys ai price --src openrouter --limit 10 # only the first 10 entries
 sys ai price --src openrouter -o csv     # CSV output
 ```
 
-#### 5.6 Official balance lookup (`ai balance`)
+#### 4.6 Official balance lookup (`ai balance`)
 
 Queries a provider's official balance in real time with its configured `api_key` (**always live, never cached**). `-c/--config FILE` selects the config file; `PROVIDER` is a provider name under `clients` (case-insensitive, unique substring matching).
 
@@ -410,7 +397,7 @@ sys ai balance tencent              # TokenHub console instructions (SecretId/Se
 sys ai balance agnes -c test\config.yaml   # a specific config file
 ```
 
-#### 5.7 Config export / apply (`ai config`)
+#### 4.7 Config export / apply (`ai config`)
 
 Exports the local config's `clients` section into another tool's format, or applies it straight to that software's config file:
 
@@ -449,7 +436,7 @@ sys ai config --list --src D:\tools\opencode        # list only the configs exis
 sys ai config --list                    # list only the configs existing at the default locations
 ```
 
-#### 5.8 Text search & replacement (`file`)
+#### 4.8 Text search & replacement (`file`)
 
 fd/sd-style: search stdin or a directory tree of text/source files, or replace a string in place. Matching runs on the Unicode char level (`-i` folds case per char, so non-ASCII text works too).
 
@@ -509,11 +496,11 @@ sys file --enc old.log                      # auto-detect, print UTF-8 to stdout
 sys file --enc a.txt b.txt --to gbk         # UTF-8 -> GBK
 ```
 
-## 6. Process management (`task`)
+## 5. Process management (`task`)
 
 ### Features
 
-- **No args lists all**: `sys task` (or `stask`) with no subcommand lists every process, equivalent to `task list`
+- **No args lists all**: `sys task` with no subcommand lists every process, equivalent to `task list`
 - `task list [NAME]`: list every process with **PID / name / executable path**; `NAME` fuzzy-matches the process name (substring, case-insensitive), a numeric value looks up that PID
 - `-o/--port <PORT>`: show only the **process using that port** (e.g. `task -o 8080` or `task list -o 8080`), combinable with the name / PID filter; Windows uses `netstat -ano`, Linux uses `ss -ltnp`
 - `task kill <PID|name>`: terminate by PID or by name; a fuzzy name match kills **every** matching process; `-f/--force` forces the kill (SIGKILL on Linux, SIGTERM by default); permission failures are reported per process without aborting the rest
@@ -531,6 +518,42 @@ sys task kill 1234             # terminate by PID
 sys task kill notepad          # fuzzy name match; kills every match
 sys task kill -f 1234          # force kill (SIGKILL on Linux)
 ```
+
+## 6. Windows scheduled reminders (`msg`)
+
+Desktop pop-up reminders via Windows Task Scheduler (`schtasks`) + `msg.exe`. All self-created tasks use the `sysmsg-` prefix, isolated from system tasks — `--list` / `--delete` only touch `sysmsg-` tasks and never affect others.
+
+### Features
+
+* **Windows only** (depends on `schtasks` and `msg.exe`)
+* `--daily HH:MM[:SS]`: daily reminder (seconds are honored by the scheduler; both `20:00:02` and `20:00` work)
+* `--once HH:MM[:SS]`: one-time reminder (if today's time has already passed it rolls to tomorrow); after firing it **auto-deletes itself** (together with its `.cmd` / `.txt` files)
+* `--cron "MIN HOUR DOM MON DOW"`: a crontab five-field expression (`*` / `*/n` / single value / comma list), mapped onto the subset `schtasks` supports:
+  * `m h * * *` → daily at h:m; `m * * * *` → minute m of every hour; `m */n * * *` → minute m every n hours; `*/n * * * *` → every n minutes; `* * * * *` → every minute
+  * `0 20 * * 1` → every Monday 20:00 (both DOW 0 and 7 mean Sunday); `0 20 1 * *` → the 1st of every month at 20:00
+  * Constraints: MINUTE and HOUR must both be concrete values to use WEEKLY / MONTHLY; the MONTH field is not supported (Task Scheduler cannot schedule by month); specifying DOM and DOW together (OR semantics) cannot be expressed in a single task and must be split; `*/n` / list / range combinations are not supported (a hint is shown)
+* `--name NAME`: custom task name (auto-generated from the time by default, e.g. `daily-200002` / `once-200002` / `cron-...`); the name **may only contain letters, digits, `-` and `_`** (guards against `schtasks /TN` injection)
+* `--list`: list all `sysmsg-` tasks with next-run time / status / reminder text
+* `--delete NAME`: delete one `sysmsg-` task (the `sysmsg-` prefix is optional; tasks without the prefix are untouched), and clean up its `.cmd` / `.txt` files
+* `TEXT` (positional, required in add mode): the reminder text; written to `.txt` as **GBK** (`msg.exe` decodes with the system ANSI codepage 936, so raw UTF-8 bytes garble); the popup stays until acknowledged
+* `--music[=FILE]`: chime on reminder — `--music` plays the Windows startup sound by default (candidate files under `C:\Windows\Media`; errors if missing); `--music=FILE` specifies a tune file (wav / mp3 etc., using the `=` form to avoid clashing with `TEXT`), played asynchronously via WMPlayer.OCX
+* Files live in `%LOCALAPPDATA%\sysmsg` (the `.cmd` launcher and `.txt` content)
+
+### Examples
+
+```
+sys msg --daily 20:00:02 "Time to rest"        # daily popup at 20:00:02 (seconds optional)
+sys msg --once 09:30 "Meeting" --name meeting  # one-time (rolls to tomorrow if passed), self-deletes after firing
+sys msg --cron "0 20 * * *" "Off work"         # daily at 20:00 (cron subset)
+sys msg --cron "*/5 * * * *" "Stand up"        # every 5 minutes
+sys msg --cron "0 20 * * 1" "Monday meeting"   # every Monday 20:00 (DOW 0/7 = Sunday)
+sys msg --daily 20:00 "Drink water" --music    # default Windows startup sound
+sys msg --daily 20:00 "Relax" --music=C:\a.wav # specific tune (wav/mp3, `=` form avoids clashing with text)
+sys msg --list                                 # list all sysmsg- tasks (next run / status / text)
+sys msg --delete meeting                       # delete (prefix optional), cleans up .cmd/.txt
+```
+
+***
 
 ## 7. httpie-compatible HTTP client (`http`)
 
@@ -579,8 +602,6 @@ sys http pie.dev/post -- -name=foo         # field names starting with - go afte
 echo '{"a":1}' | sys http POST pie.dev/post  # stdin as raw body
 sys http --verify no https://self-signed.example  # skip certificate verification
 ```
-
-> PowerShell note: PS 5.1 strips embedded double quotes from native-program arguments; for quoted JSON / raw bodies use `\"` escaping, single quotes, or run in cmd/bash.
 
 ### Request item syntax
 
@@ -713,9 +734,9 @@ type app.log | sys log --level error            # piped input (plain text, no AN
 
 ---
 
-## 10. Data query & conversion (`data` / `dasel`)
+## 10. Data query & conversion (`data`)
 
-Query, modify and convert structured data — a dasel-compatible subset plus extensions (the successor of the old `sys con`, adding TOML / table / jsonl plus function expressions / slices / counting / projection). The alias `dasel` behaves identically.
+Query, modify and convert structured data — a data-compatible subset plus extensions (the successor of the old `sys con`, adding TOML / table / jsonl plus function expressions / slices / counting / projection).
 
 Common usage: `sys data [EXPR] [-f FILE | -u URL] [-i FMT] [-o FMT] [-w FILE] [--compact] [--root] [--depth [N]] [--limit N] [--header|--no-header]`. **Omitting EXPR means pure format conversion** (e.g. `sys data -i yaml -o json < in.yaml`).
 
@@ -749,7 +770,7 @@ Common usage: `sys data [EXPR] [-f FILE | -u URL] [-i FMT] [-o FMT] [-w FILE] [-
 - **`count()` counts nodes**: the number of matched nodes — pipeline forms `data|count()` / `data.filter(...)|count()` / `search(...)|count()` (an array counts its elements, a single value counts 1, no match counts 0), the dot form `data.count()`, and a bare `count()` counts the whole document (an array → its length). E.g. `ps | sys data -i table '[*]|count()'` counts rows
 - **Bare predicates auto-filter**: with csv / table / jsonl input, a **comparison expression or a method predicate works without `[*].filter`** — `ps | sys data -i table 'Id==7360'`, `sys data -f app.log 'level=="error"'`, `'Name.contains("x")'` are equivalent to `[*].filter(...)`; on an object-root document a method predicate stays a scalar string function
 - **jq-style key projection pipeline**: `data[*]|{id,name,pricing}` — keep only the listed keys of every matched element (missing keys → null); a single match emits one object, several emit an array. The left-hand side may be a filter / search result (its array is spread per element), e.g. `sys data 'clients.filter(name==''modelscope'')|{id,name}' -f config.yaml`. **A bare `{k1,k2}` (no path) acts on the root document directly** — an object root keeps only those keys (jq `. | {k1,k2}`, e.g. `cat 4k.json | sys data '{wallpaper,warningText}'`), an array root projects every row (same as `[*]`, e.g. `ps | sys data -i table '{Id,Name}'`). The key-list validation is shared with the pipeline form, so illegal keys (`{a.b}` nested paths / `{x: y}` aliases / an empty list) error out the same way. **A trailing projection on a deep node needs no pipe**: `sites[0]{key,name}` / `sites[0].{key,name}` == `sites[0]|{key,name}`, and a slice works as a left-hand side too (`sites[:2]{key,name}`)
-- **Predicate language** (dasel-compatible): `$this` / `$key`, field paths (`name`, `a.b[0]`, `m["中文键"]`), literals (numbers / single- or double-quoted strings / true / false / null), `== != > >= < <= && || !`, and function calls (`contains("x")` / `startsWith` / `endsWith` / `indexOf` / `has("k")`), e.g. `sys data 'sites.filter(type==1)'`
+- **Predicate language** (data-compatible): `$this` / `$key`, field paths (`name`, `a.b[0]`, `m["中文键"]`), literals (numbers / single- or double-quoted strings / true / false / null), `== != > >= < <= && || !`, and function calls (`contains("x")` / `startsWith` / `endsWith` / `indexOf` / `has("k")`), e.g. `sys data 'sites.filter(type==1)'`
 
 ### 10.5 Document-level options
 
@@ -788,8 +809,6 @@ sys data --depth 1 -f cfg.yaml                         # keep only the top-level
 sys data -f app.log '[*].filter(level=="error")' --limit 10  # filter + truncate
 ```
 
-> Note: PowerShell 5.1 strips embedded double quotes from native-command arguments, so wrap predicates / JSON arguments in single quotes (e.g. `'Id==7360'`, `'Name.contains(''x'')'`) or pass them through Python's subprocess; the engine itself accepts both `'x'` and `"x"`.
-
 ---
 
 ## Limitations
@@ -801,7 +820,7 @@ sys data -f app.log '[*].filter(level=="error")' --limit 10  # filter + truncate
 
 ## Development & verification
 
-- `cargo test`: 26 unit tests on Windows, 23 on Linux (platform-specific cases gated by `cfg`)
+- `cargo test`: 447 tests pass (platform-specific cases gated by `cfg`)
 - `cargo check`, `cargo test`, `cargo build --release` and end-to-end smoke tests have been run on both Windows (msvc) and Ubuntu (real WSL)
-- End-to-end coverage: PATH CRUD & registry restore, link fallback chain, env persistence/temporary mode, full http flag smoke tests, live models.dev fetch with canonical preference, and actual execution of the five shims
+- End-to-end coverage: PATH CRUD & registry restore, link fallback chain, env persistence/temporary mode, full http flag smoke tests, live models.dev fetch with canonical preference
 - `dev/` ships local smoke tooling: `test_server.ps1` (HttpListener test server on port 18899), `smoke_http.ps1` / `smoke_http2.ps1`, `test_body.json`

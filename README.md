@@ -36,7 +36,7 @@ Commands:
   log    Colored less-style log viewer: parse timestamps/levels/app markers, filters, search, -f follow
   file   fd/sd-style text tool: search stdin / a file tree, in-place replace, encoding conversion, hashing, line counts
   msg    Windows scheduled reminders via msg.exe popups (--daily / --once / --cron / --list / --delete)
-  data   Query / modify / convert structured data (JSON/JSONL/YAML/TOML/CSV/MD/TABLE), dasel-compatible (alias dasel)
+  data   Query / modify / convert structured data (JSON/JSONL/YAML/TOML/CSV/MD/TABLE)
 ```
 
 
@@ -57,7 +57,7 @@ Commands:
 | 进程管理      | `task`               | 无参列出全部进程；查询（PID / 名称 / 路径，名称模糊匹配）；`-o` 查端口占用进程；按 PID 或名称终止；`-f` 强制 |
 | Windows 定时提醒 | `msg`               | 通过 schtasks + msg.exe 弹窗实现桌面定时提醒：--daily / --once / --cron 三种计划；--name 自定义任务名；--list / --delete 管理；TEXT 提醒内容（GBK 编码）；--music 音乐提醒；任务以 sysmsg- 前缀隔离系统任务，仅 Windows |
 | 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin（带扩展名如 `me.txt` 则显示文件，引号包裹强制搜索）；2 参目录树文本/源码搜索（`-e` / `-i` / `-t` / `-w` / `-c` / `-n` 行号）；3 参 OLD NEW PATH 就地替换；`-l` 统计行数（文件 / stdin / 匹配行）；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件；`-md5 FILE [MD5]` / `-sha FILE [SHA1]` 哈希与比对；`--enc SRC [DST]` 编码转换（gbk/gb2312 ↔ utf-8，默认转 utf-8，`--from` 指定源编码、缺省自动检测，DST 缺省输出 stdout） |
-| 数据查询转换  | `data` / `dasel`     | dasel 兼容**查询 / 修改 / 转换**结构化数据，七格式互转（JSON / JSONL / YAML / TOML / CSV / MD / TABLE）：选择器（`a.b[0]` / `list[*]` / `m["中文键"]` / 根数组，含 **Python 式切片** `[:2]` `[1:3]` `[-2:]` `[::2]` `[::-1]`）、赋值（`= VALUE` / `= null` 删除 / `= @FILE` / `= strenv(NAME)` / `+= -= *= /=`）、函数（`filter` / `remove` / `search` / 字符串函数 / **`count()` 计数**）、谓词裸过滤（csv/table/jsonl 自动过滤行数组）、**jq 式键投影** `data[*]\|{id,name}`（**裸 `{k1,k2}` 直接投影根文档**：对象根只保留这些键，如 `cat 4k.json \| sys data '{wallpaper,warningText}'`；数组根逐行投影，同 `[*]\|{...}`；**深层节点管道可省**：`sites[0]{key,name}` / `sites[0].{key,name}` 等价 `sites[0]\|{key,name}`）、`--depth` 修剪、`--limit` 取前 N 行、`--header`/`--no-header` 表头控制、`-w` 写回、`-u` URL 拉取、GBK/GB18030 等**非 UTF-8 自动解码**、tab 缩进 YAML 归一、TTY 下 json/yaml jq 式上色；**完整说明与示例见第 11 节** |
+| 数据查询转换  | `data`               | data 兼容**查询 / 修改 / 转换**结构化数据，七格式互转（JSON / JSONL / YAML / TOML / CSV / MD / TABLE）：选择器（`a.b[0]` / `list[*]` / `m["中文键"]` / 根数组，含 **Python 式切片** `[:2]` `[1:3]` `[-2:]` `[::2]` `[::-1]`）、赋值（`= VALUE` / `= null` 删除 / `= @FILE` / `= strenv(NAME)` / `+= -= *= /=`）、函数（`filter` / `remove` / `search` / 字符串函数 / **`count()` 计数**）、谓词裸过滤（csv/table/jsonl 自动过滤行数组）、**jq 式键投影** `data[*]\|{id,name}`（**裸 `{k1,k2}` 直接投影根文档**：对象根只保留这些键，如 `cat 4k.json \| sys data '{wallpaper,warningText}'`；数组根逐行投影，同 `[*]\|{...}`；**深层节点管道可省**：`sites[0]{key,name}` / `sites[0].{key,name}` 等价 `sites[0]\|{key,name}`）、`--depth` 修剪、`--limit` 取前 N 行、`--header`/`--no-header` 表头控制、`-w` 写回、`-u` URL 拉取、GBK/GB18030 等**非 UTF-8 自动解码**、tab 缩进 YAML 归一、TTY 下 json/yaml jq 式上色；**完整说明与示例见第 10 节** |
 | HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
 | 网络探测      | `net`                | 从文件批量读取 http(s) 地址并探测：`-i` 读文件（`#` 注释行跳过、每行多个地址、地址截取到空格/标点）；`-t domain`（默认，连续 3 次 GET 取平均响应时间，全部测完按平均时间升序打印）/ `-t tv`（响应体须为 JSON，支持 `--sort` 统计排序；旧名 `json`）/ `-t tvs`（兼容 tv 与聚合两种 JSON：单仓 `.sites` / 多仓 `.urls` 分组输出）/ `-t file`（响应体须为普通文本）/ `-t test`（只探测可访问性，不可访问的屏幕打印错误并从源文件删除，`-o` 输出清理后的源文件行）/ `-t info`（用 `-n` 域名查 RDAP 注册信息，查不到逐层回退上层域名）；tv/file 模式每测完一个即打印 url/可用性/状态码/响应时间/格式，`-o` 把检测成功的 url 写入文件（一行一个）；`--timeout` 单次请求超时 |
 | 日志查看      | `log`                | 彩色 less 式日志查看器：解析 Nginx / Linux / Windows / Log4j 等常见日志——**时间**（ISO/斜杠/nginx access/syslog/US 多种格式，行首或行中）橙色显示；**级别**（trace→info 渐浅绿、warning→error→fatal 渐深红）渐变着色；**app 标志**与 **IP 地址**（IPv4 / IPv6，含头部与正文任意位置）蓝色、**HTTP 方法**（`GET /pages/ HTTP/1.1` 等请求行动词，含 CONNECT 无版本形式）绿色；`--level` 按级别过滤（warn==warning、err==error）；`--search` 关键字搜索（行号 + 反显，交互下 n/u 循环跳转）；交互界面按 `/` 实时关键字搜索（非 -f 模式，逐字符即时高亮并跳转首个匹配，Esc 取消 / Enter 提交）；`--line N` 从第 N 行后解析（保留原始行号）；`--newer TIME` 只显示该时间之后的日志；`-f` 追踪文件变化滚动展示（150ms 轮询，截断/轮转自动重读）；TTY 下 less 式交互（PageUp/PageDown/↑/↓/Home/End/g/G/q），管道输出纯文本无 ANSI |
@@ -141,7 +141,7 @@ cargo clean
 
 * `has`：同时检查当前进程与已持久化作用域，报告该目录是否在 PATH 中
 
-* `export / import`：注册表文件（`.reg`）、JSON（`.json`）、纯文本（`.txt`）三种格式双向转换
+* `export / import`：注册表文件（`.reg`）、JSON（`.json`）、纯文本（`.txt`）三种格式双向转换；`export` 按目标扩展名自动选择格式：`.reg`（Windows Registry Editor 格式，可双击导入）、`.json`（结构化，含作用域信息）、`.txt`（一行一个条目）；`import` 默认**合并**（按绝对路径去重后追加），`--replace` 整体替换；适合跨机器迁移、备份还原、批量修改前快照
 
 * `--scope user|machine`：控制 **`--save`** 的写入作用域
 
@@ -160,25 +160,6 @@ sys path add D:\tools --save --scope machine   # 机器级持久化（需管理�
 sys path remove D:\tools
 sys path has D:\tools              # 同时检查当前进程与已持久化作用域
 sys path unlock D:\work\a.txt      # Windows：检查文件/目录是否被进程占用，列出占用进程（PID/名称/路径）并关闭其句柄解锁
-```
-
-## 2. PATH 导入 / 导出（`path export/import`）
-
-### 特性
-
-
-
-* `export` 按目标扩展名自动选择格式：`.reg`（Windows Registry Editor 格式，可双击导入）、`.json`（结构化，含作用域信息）、`.txt`（一行一个条目）
-
-* `import` 默认**合并**（按绝对路径去重后追加）；`--replace` 整体替换
-
-* 适合跨机器迁移、备份还原、批量修改前快照
-
-### 示例
-
-
-
-```
 sys path export backup.reg         # Windows Registry Editor 格式，可双击导入
 sys path export paths.json
 sys path import backup.reg         # 合并进用户 PATH（去重）
@@ -186,7 +167,7 @@ sys path import backup.reg --replace   # 整体替换
 sys path export paths.txt          # Ubuntu 下交换备份
 ```
 
-## 3. 链接到 PATH（`link`）
+## 2. 链接到 PATH（`link`）
 
 ### 特性
 
@@ -217,7 +198,7 @@ sys link tool --system             # 放到系统目录
 sys link tool -f                   # 覆盖已存在的链接
 ```
 
-## 4. 环境变量（`env`）
+## 3. 环境变量（`env`）
 
 ### 特性
 
@@ -246,7 +227,7 @@ sys env unset FOO
 sys env list
 ```
 
-## 5. AI 模型 / Provider 查询（`ai`）
+## 4. AI 模型 / Provider 查询（`ai`）
 
 ### 命令速查
 
@@ -328,7 +309,7 @@ sys ai model --src openrouter -o json      # openrouter 数据源 JSON 输出
 
 CSV 列：model 为 `id,name,provider,family,status,knowledge_cutoff,description,context,input_limit,output_limit,cost_input,cost_output,cost_cache_read,modalities_input,modalities_output,reasoning,tool_call,structured_output,temperature,attachment,open_weights,release_date,last_updated,canonical_model_id`；provider 为 `id,name,api,env,npm,models_count`。
 
-#### 5.1 国内 AI 模型查询（`ai cn-model`）
+#### 4.1 国内 AI 模型查询（`ai cn-model`）
 
 数据源为 [datalearner](https://www.datalearner.com/ai-models/pretrained-models) 的预训练模型列表（服务端渲染 HTML，约 **1039 个模型**，分页抓取 + slug 去重），与 `ai model`（models.dev）相互独立。
 
@@ -359,7 +340,7 @@ sys ai cn-model -s ernie -o csv        # CSV 输出
 sys ai cn-model gpt-6-1-sol --refresh  # 强制重新抓取（--refresh 属 ai 层）
 ```
 
-#### 5.2 AI 聊天（`ai chat`）
+#### 4.2 AI 聊天（`ai chat`）
 
 按 OpenAI `/v1/chat/completions` 或 Anthropic Messages API 标准与配置好的 Provider 聊天。
 
@@ -421,7 +402,7 @@ sys ai server --help                   # 查询服务是否已启动：地址/�
 * `sys ai server [ADDR]`：**把配置中的 Provider 以 OpenAI 兼容格式对外提供**（本地 HTTP 服务，默认 `127.0.0.1:10000`；`-c/--config` 指定配置文件）。提供 `POST /v1/chat/completions`（非流式与 SSE 流式透传到上游 Provider）与 `GET /v1/models`（列出全部已配置模型，ID 为 `{provider}:{model}`）。请求中的 `model` 使用与聊天相同的选择规则（`provider:model` / `provider:*` / 裸模型名 / `auto` = 配置默认）。仅支持 `type: openai` 的 Provider，anthropic 目标返回明确错误。地址可只给端口（如 `8080`，host 用默认）或只给 IP（如 `0.0.0.0`，端口用默认）。
 * `sys ai server --help`：**查询服务状态**——先探测该地址（GET /v1/models，2 秒超时）是否已有服务在运行：已启动则打印当前地址/端口，未启动则提示 `server is NOT running`；两种情况都会继续打印配置信息（按 provider 分组：每个 provider 一行 name/api_base，其后缩进列出该 provider 的全部模型 `{provider}:{name}`）。
 
-#### 5.3 AI 图片生成（`ai image`）
+#### 4.3 AI 图片生成（`ai image`）
 
 通过 Provider 的 OpenAI 兼容 **Images API**（`POST {api_base}/images/generations`，Bearer 鉴权）生成图片并保存到本地。
 
@@ -446,7 +427,7 @@ sys ai image "风景" --url -o pics                     # 请求 URL 版并下�
 sys ai image --list-provider --list-model             # 列出配置中的 Provider / 模型
 ```
 
-#### 5.4 本地配置查询（`ai info`）
+#### 4.4 本地配置查询（`ai info`）
 
 检查本地配置文件（默认 `~/.sysenv/config.yaml`，`-c/--config` 覆盖）与 models.dev 模型价格。**不带 FIELD 参数时默认同时打印 provider 表（name/api_base/api_key/DOCS/CONSOLE）与全部模型清单（`{provider}:{name}`）**。
 
@@ -455,7 +436,7 @@ sys ai image --list-provider --list-model             # 列出配置中的 Provi
 * `info providers` / `info models` 支持 **`--free[=ROUTER]`**：跳过本地配置文件，改用内置免费路由——`kilo-auto/free`（匿名）与 `blockrun/free`（匿名）始终可用，`openrouter/free` 仅当设置 `OPENROUTER_API_KEY` 后追加；`--free` 裸用列出全部可用路由，`--free=kilo` / `--free=blockrun` / `--free=openrouter` 固定单路由（与 `ai chat --free` 同一套路由）
 * `info sale-price PROVIDER`：抓取官网定价页并列出全部模型销售价。agnes 抓取 `wiki.agnes-ai.cn` 定价页（文本/图片/视频模型，刊例价 + 现价，人民币）；minimax 抓取 `platform.minimaxi.com` 定价页（语言模型输入/输出/缓存价格，元/百万 tokens）；alibaba-cn 给出百炼官方模型列表与计费说明页地址；其余 provider 给出官网定价页地址。定价页 24h 缓存，`--refresh` 强制重抓
 * `info list-model PROVIDER` / `info models PROVIDER`：用该 provider 自己的 models 接口实时查询其可用模型列表（与 `sys ai chat --query-model PROVIDER` 同一功能）——OpenAI 兼容 provider 请求 `GET {api_base}/models`（`models` 直接追加在配置的 api_base 后，如百度千帆配置 `https://qianfan.baidubce.com/v2` 时请求 `/v2/models`，不是 `/v2/v1/models`；Bearer api_key），anthropic 类型请求 `GET {api_base}/v1/models`（api_base 已以 `/v1` 结尾时直接用 `{api_base}/models`，x-api-key / anthropic-version）；Anthropic `next_page` 分页自动翻页（上限 20 页）。文本视图打印 `MODEL / OWNED_BY / CREATED` 对齐表（openai 的 `owned_by` / `created`、anthropic 的 `display_name` / `created_at` 自动归一，`created` 时间戳在文本视图自动转为本地时间 `YYYY-MM-DD HH:MM:SS`）；`-o json` / `-o csv` / `--json` 输出 JSON 数组或 CSV 表（字段 `id` / `owned_by` / `created`，保持 API 原始时间戳）。实时查询，不走缓存
-* **余额查询**（v0.6.17 起 `info balance` 已提升为独立子命令）：用 provider 的 `api_key` 查官方余额请用 **`sys ai balance PROVIDER`**（见 5.6）；**模型价格查询**（models.dev / openrouter 目录）用 **`sys ai price`**（见 5.5）
+* **余额查询**（v0.6.17 起 `info balance` 已提升为独立子命令）：用 provider 的 `api_key` 查官方余额请用 **`sys ai balance PROVIDER`**（见 4.6）；**模型价格查询**（models.dev / openrouter 目录）用 **`sys ai price`**（见 4.5）
 
 ```
 sys ai info                                # 无参：provider 表 + 全部模型清单
@@ -483,7 +464,7 @@ sys ai info list-model anthropic -o json # anthropic 类型：/v1/models，JSON 
 sys ai info models baidu                 # 与 --query-model 同功能：查 baidu 的 /v2/models（实时）
 ```
 
-#### 5.5 模型价格查询（`ai price`）
+#### 4.5 模型价格查询（`ai price`）
 
 模型价格数据来自 [models.dev](https://models.dev)（默认，与 `ai model` 同一数据源）或 openrouter.ai 官方定价目录（`--src openrouter`）。
 
@@ -500,7 +481,7 @@ sys ai price --src openrouter --limit 10 # 只显示前 10 条
 sys ai price --src openrouter -o csv     # CSV 输出
 ```
 
-#### 5.6 官方余额查询（`ai balance`）
+#### 4.6 官方余额查询（`ai balance`）
 
 用 provider 配置的 `api_key` 到官方接口实时查询余额（**始终实时，不走缓存**）。`-c/--config FILE` 指定配置文件，`PROVIDER` 为配置 `clients` 下的 provider 名称（大小写不敏感，支持子串唯一匹配）。
 
@@ -520,7 +501,7 @@ sys ai balance tencent              # TokenHub 控制台指引（SecretId/Secret
 sys ai balance agnes -c 测试\config.yaml   # 指定配置文件
 ```
 
-#### 5.7 配置导出 / 应用（`ai config`）
+#### 4.7 配置导出 / 应用（`ai config`）
 
 把本地配置（`~/.sysenv/config.yaml` 的 `clients` 段）导出为其他 AI 工具的配置格式，或直接应用到该软件的配置文件：
 
@@ -560,7 +541,7 @@ sys ai config --list --src D:\tools\opencode        # 只列出该目录下存�
 sys ai config --list                    # 只列出本机默认路径下存在的配置文件
 ```
 
-#### 5.8 文本搜索与替换（`file`）
+#### 4.8 文本搜索与替换（`file`）
 
 fd/sd 风格：搜索 stdin 或目录树中的文本/源码文件，或就地替换字符串。匹配在 Unicode 字符层进行（`-i` 逐字符大小写折叠，中文等非 ASCII 同样正确）。
 
@@ -622,7 +603,7 @@ sys file -md5 me.txt 900150983cd24fb0d6963f7d28e17f72   # 比对：相等输出 
 sys file -sha me.txt da39a3ee5e6b4b0d3255bfef95601890afd80709  # SHA-1 同理
 ```
 
-## 6. 进程管理（`task`）
+## 5. 进程管理（`task`）
 
 ### 特性
 
@@ -647,7 +628,7 @@ sys task kill notepad          # 按名称模糊匹配，终止全部命中的�
 sys task kill -f 1234          # 强制终止（Linux 发送 SIGKILL）
 ```
 
-## 7. Windows 定时提醒（`msg`）
+## 6. Windows 定时提醒（`msg`）
 
 通过 Windows 计划任务（`schtasks`）+ `msg.exe` 弹出对话框实现桌面定时提醒。所有自建任务以 `sysmsg-` 前缀命名，与系统自带计划任务隔离——`--list` / `--delete` 只操作 `sysmsg-` 前缀任务，不影响其它任务。
 
@@ -683,7 +664,7 @@ sys msg --delete meeting                     # 删除（可省略 sysmsg- 前缀
 
 ***
 
-## 8. httpie 兼容 HTTP 客户端（`http`）
+## 7. httpie 兼容 HTTP 客户端（`http`）
 
 参数与 [httpie](https://httpie.io) 保持一致（子集）。
 
@@ -827,7 +808,7 @@ sys http --verify no https://self-signed.example  # 跳过证书校验
 
 ***
 
-## 9. 网络探测（`net`）
+## 8. 网络探测（`net`）
 
 从文件中批量读取 http(s) 地址并逐条探测，判断可达性与响应格式。
 
@@ -901,7 +882,7 @@ sys net -t info -n a.com -n b.com          # 一次查多个域名
 
 ***
 
-## 10. 日志查看（`log`）
+## 9. 日志查看（`log`）
 
 彩色 less 式日志查看器：`sys log --file app.log [--level LEVEL] [--search KW] [--line N] [--newer TIME] [-f]`。解析每条日志的**时间**（多种常见格式）、**日志级别**、**app 标志**、**IP 地址**（IPv4 / IPv6）与 **HTTP 方法**（GET/POST 等）并按语义着色；TTY 下进入全屏交互（同 less），**非 `-f` 时按 `/` 可激活实时关键字搜索**（输入即高亮并跳转首个匹配，Esc 取消、Enter 提交，n/u 继续跳转），管道 / 重定向输出纯文本（无 ANSI）。
 
@@ -946,13 +927,13 @@ type app.log | sys log --level error            # 管道输入（纯文本输出
 
 ***
 
-## 11. 数据查询与转换（`data` / `dasel`）
+## 10. 数据查询与转换（`data`）
 
-查询、修改、转换结构化数据，dasel 兼容子集 + 扩展（原 `sys con` 的继承者，另加 TOML / table / jsonl 与函数表达式 / 切片 / 计数 / 投影）。别名 `dasel` 等同。
+查询、修改、转换结构化数据，data 兼容子集 + 扩展（原 `sys con` 的继承者，另加 TOML / table / jsonl 与函数表达式 / 切片 / 计数 / 投影）。
 
 统一用法：`sys data [EXPR] [-f FILE | -u URL] [-i FMT] [-o FMT] [-w FILE] [--compact] [--root] [--depth [N]] [--limit N] [--header|--no-header]`。**EXPR 省略 = 纯格式转换**（如 `sys data -i yaml -o json < in.yaml`）。
 
-### 11.1 输入来源与格式
+### 10.1 输入来源与格式
 
 * **输入来源**：stdin 管道（自动检测格式）→ `-f FILE`（按文件扩展名定格式，`-i` 覆盖）→ `-u URL`（GET 拉取，默认 json，`-i` 覆盖，如 `sys data -u https://api.dev/config status`）；三选一，`-f` 与 `-u` 互斥
 * **七种格式互转**：`json` / `jsonl`（JSON Lines，`.ndjson` 同）/ `yaml`（`.yml`，tab 缩进自动归一）/ `toml` / `csv` / `md` / `table`。`-i` 定输入、`-o` 定输出（缺省 = 输入格式）；未知输入自动内容检测（整文 JSON → 每行 JSON → YAML → 逗号表 → table）
@@ -961,13 +942,13 @@ type app.log | sys log --level error            # 管道输入（纯文本输出
 * **非 UTF-8 自动解码**：文件与 stdin 按字节读取并宽容解码——UTF-8 BOM（剥离）→ UTF-16 LE/BE BOM → UTF-8 严格 → GBK → GB18030 → 宽松降级；GBK 设备日志可直接读（`专业` 等「GBK 恰似 UTF-8」陷阱按汉字回读纠正）
 * **TTY 上色**：屏幕输出 json / yaml 按 jq 风格上色（key 蓝、value 绿，结构符保持默认）；管道 / 重定向 / `-w` 写文件一律纯文本，写文件内容永不带 ANSI；`NO_COLOR` 环境变量可关闭
 
-### 11.2 选择器与切片
+### 10.2 选择器与切片
 
 * **选择器语法**：点路径 `a.b`（前导 `.` 可省略）、数组索引 `list[0]` / `list[-1]`（负数从末尾数）、通配 `list[*]`、引号键 `m["中文键"]`（空格 / 点 / 中文键名）、根数组 `[0]` / `[-1]` / `[*]`（如 `ps | sys data -i table '[0].PID'`）
 * **Python 式列表切片（只读）**：`list[:2]`（前 2 个）/ `list[1:3]` / `list[1:]` / `list[-2:]`（末尾 2 个）/ `list[::2]`（隔一取一）/ `list[::-1]`（反转）；省略边界取默认、负索引从末尾数、步长可负、step 0 报错；越界截断、空区间合法、`[0:99]` 全量。**只读约束**：可用于普通查询、`|count()` 管道（`data[:2]|count()` = 2）与投影左侧（`data[1:3]|{id,name}`）；`PATH=...` 写入与 filter / search / remove 路径明确拒绝
 * 多段组合：`data[1:3][0]` 在切片结果上再取索引
 
-### 11.3 修改表达式（赋值）
+### 10.3 修改表达式（赋值）
 
 * `PATH = VALUE`：JSON 字面量（数字 / 布尔 / 对象 / 数组）或纯文本；**`= null` 删除**该键 / 元素
 * **`PATH = @FILE`**：读取文件作为赋值值——扩展名定格式（json / jsonl / yaml / toml / csv / md），未知扩展名按 JSON → YAML → 纯文本兜底，如 `cat 4k.json | sys data 'wallpaper=@file.json' --root`
@@ -975,22 +956,22 @@ type app.log | sys log --level error            # 管道输入（纯文本输出
 * 算术更新：`PATH += N` / `-=` / `*=` / `/=` 数值运算（`+=` 对字符串做追加）
 * **`-w FILE` 写回**：整份修改后的文档写入文件（表达式 + `--root` 时 stdout 安静）；**`--root`** 修改后打印整份文档而非选中值；**`--compact`** 单行 JSON 输出
 
-### 11.4 函数表达式与谓词
+### 10.4 函数表达式与谓词
 
 * **`path.filter(谓词)`**：保留数组中满足谓词的元素（只读，输出结果数组）；**`path.remove(谓词)`**：原地删除满足谓词的数组元素（`--root` 打印整份修改后文档，否则输出剩余数组）；**`search(谓词)`**：从根（或指定节点）递归收集所有匹配节点（`$key` 为对象键 / 数组下标）
 * **字符串 / 键函数**：`name.contains("x")` / `startsWith` / `endsWith` / `indexOf` / `has("k")`（对象键 / 数组下标存在性检查）
 * **`count()` 节点计数**：统计匹配节点数——管道形式 `data|count()` / `data.filter(...)|count()` / `search(...)|count()`（数组计元素数、单值计 1、无匹配计 0）；点式 `data.count()`；裸 `count()` 计整个文档（数组 → 长度）。如 `ps | sys data -i table '[*]|count()'` 数行数
 * **裸谓词自动过滤**：csv / table / jsonl 输入下，**比较表达式与方法谓词不加 `[*].filter` 直接可用**——`ps | sys data -i table 'Id==7360'`、`sys data -f app.log 'level=="error"'`、`'Name.contains("x")'` 等价于 `[*].filter(...)`；对象根文档上方法谓词仍是标量字符串函数
 * **jq 式键投影管道**：`data[*]|{id,name,pricing}`——对每个匹配元素只保留列出的键（缺失键 → null），单匹配输出单个对象、多匹配输出数组；左侧可接 filter / search 结果（数组展开逐元素投影），如 `sys data 'clients.filter(name==''modelscope'')|{id,name}' -f config.yaml`；**裸 `{k1,k2}`（不带路径）直接作用于根文档**——对象根只保留这些键（jq `. | {k1,k2}`，如 `cat 4k.json | sys data '{wallpaper,warningText}'`），数组根逐行投影（同 `[*]`，如 `ps | sys data -i table '{Id,Name}'`）；键列表校验与管道形式共用同一函数，非法键（`{a.b}` 嵌套路径 / `{x: y}` 别名 / 空列表）同样报错；**深层节点尾随投影**：管道可省略——`sites[0]{key,name}` / `sites[0].{key,name}` 等价 `sites[0]|{key,name}`，切片同样可作左侧（`sites[:2]{key,name}`）
-* **谓词语言**（dasel 兼容）：`$this` / `$key`、字段路径（`name`、`a.b[0]`、`m["中文键"]`）、字面量（数字 / 单双引号字符串 / true / false / null）、`== != > >= < <= && || !`、函数调用（`contains("x")` / `startsWith` / `endsWith` / `indexOf` / `has("k")`），示例 `sys data 'sites.filter(type==1)'`
+* **谓词语言**（data 兼容）：`$this` / `$key`、字段路径（`name`、`a.b[0]`、`m["中文键"]`）、字面量（数字 / 单双引号字符串 / true / false / null）、`== != > >= < <= && || !`、函数调用（`contains("x")` / `startsWith` / `endsWith` / `indexOf` / `has("k")`），示例 `sys data 'sites.filter(type==1)'`
 
-### 11.5 文档级选项
+### 10.5 文档级选项
 
 * **`--depth N`**（默认 1，裸 `--depth` 即 1）：删除层级大于 N 的整棵子树（根 = 第 0 层，0..=N 保留），在表达式前应用——`sys data --depth 1 -f cfg.yaml` 只保留顶层键
 * **`--limit N`**：文档根为数组时只保留前 N 个元素——csv / table 下即「只看前 N 条数据、表头仍输出」；jsonl 同；`--limit 0` 无输出（head -n 0 语义）；在表达式前应用，查询 / 过滤在截断后的文档上执行；对象根明确报错
 * `-f` / `-u` / `-i` / `-o` / `-w` / `--header` / `--no-header` / `--compact` / `--root` 可任意组合；`--depth`、`--limit` 与选择器 / 赋值 / 函数 / 投影兼容
 
-### 11.6 示例
+### 10.6 示例
 
 ```
 echo '{"a":{"b":"你好"}}' | sys data 'a.b'            # 读取（stdin 自动检测 json）
