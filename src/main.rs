@@ -592,13 +592,15 @@ enum AiCmd {
     /// anonymous free routers kilo-auto/free and blockrun/free
     /// (openrouter/free only when OPENROUTER_API_KEY is set), rotating
     /// between them; also used automatically when no config.yaml exists.
-    /// --web queries Bocha first (top-level `search:` key of the config, e.g.
-    /// `- name: bochaai, key: sk-...`; key from open.bochaai.com) with the
-    /// message, then has the model answer grounded in the 5 web results
+    /// --web[=PROVIDER] queries a configured web-search provider first
+    /// (top-level `search:` key of the config: `bocha` = Bocha AI, key from
+    /// open.bochaai.com; `yuanbao` = Tencent Yuanbao Search WSA, service API
+    /// KEY from the 元宝搜索 console; `auto` prefers bocha, then yuanbao) with
+    /// the message, then has the model answer grounded in the web results
     /// (with snippets). -c/--config FILE
     /// overrides the config. Examples: sys ai chat "你好" | echo x | sys ai chat |
     /// sys ai chat "hi" -m "agnes:*,claude:claude-3-5-sonnet" | sys ai chat "hi" --free
-    /// | sys ai chat "今日深圳天气" --web
+    /// | sys ai chat "今日深圳天气" --web | sys ai chat "今日深圳天气" --web=yuanbao
     Chat(ChatArgs),
     /// Serve the configured providers as an OpenAI-compatible API server
     /// (default 127.0.0.1:10000; a bare port or a bare IP keeps the other
@@ -912,11 +914,15 @@ struct ChatArgs {
     /// file. Also used automatically when no config.yaml exists.
     #[arg(long, value_name = "ROUTER", num_args = 0..=1, default_missing_value = "all")]
     free: Option<String>,
-    /// Web search first: query Bocha with the message (top-level `search:`
-    /// key of the config, e.g. `- name: bochaai, key: sk-...`), then have the
-    /// model answer grounded in the results (5 results, with snippets)
-    #[arg(long)]
-    web: bool,
+    /// Web search first: query a configured search provider with the message
+    /// (top-level `search:` key of the config), then have the model answer
+    /// grounded in the results (with snippets). Optional PROVIDER selects the
+    /// provider: `auto` (default; prefers an entry whose name contains `bocha`,
+    /// then one containing `yuanbao`, then the first entry), `bocha` (Bocha AI,
+    /// e.g. `- name: bochaai, key: sk-...`) or `yuanbao` (Tencent Yuanbao
+    /// Search WSA service API KEY, e.g. `- name: yuanbao, key: <API KEY>`).
+    #[arg(long, value_name = "PROVIDER", num_args = 0..=1, default_missing_value = "auto")]
+    web: Option<String>,
 }
 
 /// `sys ai server [ADDR]` — serve the configured providers as an
@@ -1463,7 +1469,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             c.remove,
             c.query_model.as_deref(),
             c.free.as_deref(),
-            c.web,
+            c.web.as_deref(),
         ),
         AiCmd::Server(s) => {
             let bind = server::parse_addr(s.addr.as_deref().unwrap_or(""));

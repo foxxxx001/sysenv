@@ -58,6 +58,8 @@ pub(crate) struct Config {
     pub(crate) free: bool,
     /// Web-search API keys configured under the top-level `search` key
     /// (e.g. `- name: bochaai, key: sk-...`), used by `sys ai chat --web`.
+    /// The engine is detected from the entry name: containing `yuanbao`
+    /// drives Tencent Yuanbao Search, everything else drives Bocha.
     pub(crate) search: Vec<SearchKey>,
 }
 
@@ -1586,27 +1588,89 @@ pub(crate) fn debug_print_response(status: reqwest::StatusCode, headers: &Header
 }
 
 // ---------------------------------------------------------------------------
-// `sys ai chat --web`: Bocha web search (POST /v1/web-search)
+// `sys ai chat --web[=PROVIDER]`: web search providers
+// (Bocha `POST /v1/web-search` / Tencent Yuanbao `SearchPro`)
 // ---------------------------------------------------------------------------
 
 /// Bocha AI web search endpoint (official: `POST /v1/web-search`).
 const BOCHA_API: &str = "https://api.bochaai.com/v1/web-search";
 
-/// Pick the web-search API key from the config: the first entry whose name
-/// mentions `bocha` (e.g. `bochaai` / `bocha`), otherwise the first entry.
-fn pick_search_key<'a>(cfg: &'a Config, path: &Path) -> Result<&'a str> {
-    cfg.search
-        .iter()
-        .find(|s| s.name.to_ascii_lowercase().contains("bocha"))
-        .or_else(|| cfg.search.first())
-        .map(|s| s.key.as_str())
-        .filter(|k| !k.is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no Bocha search key configured: add a `search:` entry like `- name: bochaai, key: sk-...` to {}",
-                path.display()
-            )
-        })
+/// Tencent Yuanbao Search (WSA) service-API-KEY endpoint (`SearchPro`).
+/// Docs: https://cloud.tencent.com/document/product/1806/130615
+const YUANBAO_API: &str = "https://api.wsa.cloud.tencent.com/SearchPro";
+
+/// The web-search engine an entry drives, detected from its `name`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchEngine {
+    /// 博查（Bocha AI，`POST /v1/web-search`）。
+    Bocha,
+    /// 腾讯元宝搜索（WSA，服务 API KEY 方式 `POST /SearchPro`）。
+    Yuanbao,
+}
+
+/// Map an entry name to the engine it drives: containing `yuanbao` selects
+/// Tencent Yuanbao Search, every other name drives Bocha.
+fn search_engine_of(name: &str) -> SearchEngine {
+    if name.to_ascii_lowercase().contains("yuanbao") {
+        SearchEngine::Yuanbao
+    } else {
+        SearchEngine::Bocha
+    }
+}
+
+/// Resolve the web-search entry for `--web[=PROVIDER]`. `sel` is the optional
+/// `--web` value: `None` / `"auto"` prefer the first entry whose name mentions
+/// `bocha`, then one mentioning `yuanbao`, then the first entry; `"bocha"` /
+/// `"yuanbao"` pin that engine (the first entry whose name contains the word);
+/// anything else must match an entry name (case-insensitive substring).
+/// Missing entries produce a clear error pointing at the config path.
+fn pick_search_entry<'a>(cfg: &'a Config, sel: Option<&str>, path: &Path) -> Result<&'a SearchKey> {
+    let sel = sel.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("auto");
+    let sel_low = sel.to_ascii_lowercase();
+    let entry = match sel_low.as_str() {
+        "auto" => cfg
+            .search
+            .iter()
+            .find(|s| s.name.to_ascii_lowercase().contains("bocha"))
+            .or_else(|| cfg.search.iter().find(|s| s.name.to_ascii_lowercase().contains("yuanbao")))
+            .or_else(|| cfg.search.first()),
+        "bocha" => cfg.search.iter().find(|s| s.name.to_ascii_lowercase().contains("bocha")),
+        "yuanbao" => cfg.search.iter().find(|s| s.name.to_ascii_lowercase().contains("yuanbao")),
+        other => cfg.search.iter().find(|s| s.name.to_ascii_lowercase().contains(other)),
+    }
+    .ok_or_else(|| match sel_low.as_str() {
+        "auto" => anyhow::anyhow!(
+            "no web-search key configured: add a `search:` entry with `name: bocha` (Bocha) or `name: yuanbao` (腾讯元宝搜索) and its key to {}",
+            path.display()
+        ),
+        "bocha" => anyhow::anyhow!(
+            "no Bocha search key configured: add a `search:` entry like `- name: bochaai, key: sk-...` to {}",
+            path.display()
+        ),
+        "yuanbao" => anyhow::anyhow!(
+            "no Yuanbao search key configured: add a `search:` entry like `- name: yuanbao, key: <API KEY>` to {}",
+            path.display()
+        ),
+        _ => anyhow::anyhow!(
+            "unknown search provider `{sel}` (expected: auto | bocha | yuanbao); add a matching `search:` entry to {}",
+            path.display()
+        ),
+    })?;
+    if entry.key.trim().is_empty() {
+        bail!("search entry `{}` has an empty key in {}", entry.name, path.display());
+    }
+    Ok(entry)
+}
+
+/// Run the web search for `--web[=PROVIDER]` and return the formatted result
+/// text: Bocha entries get the usual 5-row summary search, Yuanbao entries a
+/// `SearchPro` request (10 rows requested, the best 5 kept).
+fn web_search(cfg: &Config, sel: Option<&str>, path: &Path, msg: &str, debug: bool) -> Result<String> {
+    let entry = pick_search_entry(cfg, sel, path)?;
+    match search_engine_of(&entry.name) {
+        SearchEngine::Bocha => bocha_search(&entry.key, msg, None, true, 5, 1, &[], &[], debug),
+        SearchEngine::Yuanbao => yuanbao_search(&entry.key, msg, debug),
+    }
 }
 
 /// Send one Bocha request with `body` to `endpoint` and return the parsed
@@ -1787,6 +1851,130 @@ fn bocha_search(
 ) -> Result<String> {
     let data = bocha_search_value(key, query, freshness, summary, count, page, include_domains, exclude_domains, debug)?;
     Ok(bocha_result_text(&data, summary))
+}
+
+// --- Tencent Yuanbao Search (WSA, 服务 API KEY 方式) -----------------------
+
+/// Extract the WSA error (`Response.Error`) from a parsed response, if any.
+fn yuanbao_response_error(v: &Value) -> Option<String> {
+    let resp = v.get("Response").unwrap_or(v);
+    let err = resp.get("Error")?;
+    let code = err.get("Code").and_then(|c| c.as_str()).unwrap_or("unknown");
+    let msg = err.get("Message").and_then(|m| m.as_str()).unwrap_or("unknown error");
+    Some(format!("yuanbao search failed ({code}): {msg}"))
+}
+
+/// Send one Yuanbao `SearchPro` request with `body` and return the parsed
+/// `Response` object. Auth is the WSA service API KEY (`Authorization:
+/// Bearer <key>`); the envelope is `{"Response": {..., "Error": {...}}}` and
+/// errors are reported via `Response.Error.Code/Message`. `debug` prints the
+/// actual HTTP request and response.
+fn yuanbao_request(key: &str, body: &Value, debug: bool) -> Result<Value> {
+    let body_bytes = serde_json::to_vec(body).context("cannot serialize yuanbao request body")?;
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STR));
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {key}")).context("invalid yuanbao api key")?);
+    if debug {
+        debug_print_request(YUANBAO_API, &headers, &body_bytes);
+    }
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("failed to build HTTP client")?;
+    let resp = client
+        .post(YUANBAO_API)
+        .headers(headers)
+        .body(body_bytes.clone())
+        .send()
+        .with_context(|| format!("request to {YUANBAO_API} failed"))?;
+    let status = resp.status();
+    let resp_headers = resp.headers().clone();
+    let text = resp.text().context("cannot read yuanbao search response")?;
+    if debug {
+        debug_print_response(status, &resp_headers, &text);
+    }
+    if !status.is_success() {
+        let snippet: String = text.chars().take(500).collect();
+        bail!("{YUANBAO_API} returned HTTP {status}: {snippet}");
+    }
+    let v: Value = serde_json::from_str(&text).context("yuanbao search returned invalid JSON")?;
+    if let Some(err) = yuanbao_response_error(&v) {
+        bail!("{err}");
+    }
+    Ok(v.get("Response").cloned().unwrap_or(v))
+}
+
+/// Send one Yuanbao web-search (`SearchPro`) request with `Query` and `Cnt`
+/// (the API only accepts 10/20/30/40/50; we request 10) and return the parsed
+/// `Response`.
+fn yuanbao_search_value(key: &str, query: &str, debug: bool) -> Result<Value> {
+    let body = json!({ "Query": query, "Cnt": 10 });
+    yuanbao_request(key, &body, debug)
+}
+
+/// Parse the `Response.Pages` array of JSON-string page objects into their
+/// values, skipping entries without a usable title/url (or that fail to
+/// parse). Each `Pages` element is itself a JSON string.
+fn yuanbao_result_items(data: &Value) -> Vec<Value> {
+    let mut items = Vec::new();
+    let Some(pages) = data.get("Pages").and_then(|p| p.as_array()) else {
+        return items;
+    };
+    for page in pages {
+        let Ok(v) = serde_json::from_str::<Value>(page.as_str().unwrap_or("")) else {
+            continue;
+        };
+        let title = v.get("title").and_then(|t| t.as_str()).unwrap_or("").trim();
+        let url = v.get("url").and_then(|u| u.as_str()).unwrap_or("").trim();
+        if title.is_empty() || url.is_empty() {
+            continue;
+        }
+        items.push(v);
+    }
+    items
+}
+
+/// Format a Yuanbao search response into the same numbered plain-text block
+/// used by Bocha (title / URL / snippet / site · date), keeping the best 5
+/// rows (the API returns them relevance-ranked). `passage` is the standard
+/// summary; it may be a long paragraph, so the snippet is capped at 500 chars.
+fn yuanbao_result_text(data: &Value) -> String {
+    let items = yuanbao_result_items(data);
+    if items.is_empty() {
+        return "（未返回搜索结果）".to_string();
+    }
+    let mut out = String::new();
+    for (i, it) in items.iter().take(5).enumerate() {
+        let title = it.get("title").and_then(|t| t.as_str()).unwrap_or("").trim();
+        let url = it.get("url").and_then(|u| u.as_str()).unwrap_or("").trim();
+        let snippet: String = it
+            .get("passage")
+            .or_else(|| it.get("content"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(500)
+            .collect();
+        let site = it.get("site").and_then(|x| x.as_str()).unwrap_or("").trim();
+        let date = it.get("date").and_then(|x| x.as_str()).unwrap_or("").trim();
+        out.push_str(&format!("[{:>2}] {title}\n    {url}\n", i + 1));
+        if !snippet.is_empty() {
+            out.push_str(&format!("    {snippet}\n"));
+        }
+        if !site.is_empty() || !date.is_empty() {
+            out.push_str(&format!("    {} · {}\n", site, date));
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// Run one Yuanbao web search and return the formatted result text.
+fn yuanbao_search(key: &str, query: &str, debug: bool) -> Result<String> {
+    let data = yuanbao_search_value(key, query, debug)?;
+    Ok(yuanbao_result_text(&data))
 }
 
 /// Build the augmented user message for `--web`: the web search results as
@@ -2136,23 +2324,22 @@ fn chat_once(
     bail!("all {} model(s) failed: {}", targets.len(), errors.join(" | "));
 }
 
-/// `sys ai chat` core: with `web`, first runs a Bocha web search on the
-/// message and augments it with the results as grounding context, then runs
-/// `chat_once` and prints the reply when the request was non-streaming
-/// (streaming already printed to stdout).
+/// `sys ai chat` core: with `--web[=PROVIDER]`, first runs the selected web
+/// search (Bocha / Tencent Yuanbao) on the message and augments it with the
+/// results as grounding context, then runs `chat_once` and prints the reply
+/// when the request was non-streaming (streaming already printed to stdout).
 fn chat_with(
     cfg: &mut Config,
     path: &Path,
     msg: &str,
-    web: bool,
+    web: Option<&str>,
     debug: bool,
     no_stream: bool,
     model_override: Option<&str>,
     update: bool,
 ) -> Result<()> {
-    let payload = if web {
-        let key = pick_search_key(cfg, path)?;
-        let results = bocha_search(key, msg, None, true, 5, 1, &[], &[], debug)?;
+    let payload = if web.is_some() {
+        let results = web_search(cfg, web, path, msg, debug)?;
         eprintln!(
             "sys: web search done ({} chars of results fed to the model)",
             results.chars().count()
@@ -2484,7 +2671,7 @@ pub fn cmd_chat(
     remove: bool,
     query_model: Option<&str>,
     free: Option<&str>,
-    web: bool,
+    web: Option<&str>,
 ) -> Result<()> {
     // Free mode on either trigger: `--free[=router]`, or the default
     // config.yaml being absent. An explicit `-c` always loads and validates
@@ -2516,7 +2703,7 @@ pub fn cmd_chat(
         bail!("free mode does not support --query-model, --test or --update");
     }
 
-    if web && test {
+    if web.is_some() && test {
         bail!("--web is not supported with --test");
     }
 
@@ -3696,7 +3883,7 @@ clients:
         assert!(text.contains("available"), "expected available list, got: {text}");
     }
 
-    // --- `sys ai chat --web`: config search section + Bocha result parsing ----
+    // --- `sys ai chat --web`: config search section + provider selection + result parsing ---
 
     #[test]
     fn config_parses_search_section() {
@@ -3729,22 +3916,56 @@ clients:
     }
 
     #[test]
-    fn pick_search_key_prefers_bocha_then_first() {
-        let key = |n: &str| SearchKey { name: n.to_string(), key: "sk-x".to_string() };
+    fn pick_search_entry_auto_bocha_then_yuanbao_then_first() {
+        let key = |n: &str| SearchKey { name: n.to_string(), key: "k".to_string() };
+        // auto: the entry whose name mentions `bocha` wins even when not first.
         let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("other"), key("bochaai")] };
-        // The entry whose name mentions `bocha` wins even when it is not first.
-        assert_eq!(pick_search_key(&cfg, Path::new("c.yaml")).unwrap(), "sk-x");
-        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("bocha")] };
-        assert_eq!(pick_search_key(&cfg, Path::new("c.yaml")).unwrap(), "sk-x");
-        // No bocha entry: fall back to the first entry.
+        assert_eq!(pick_search_entry(&cfg, None, Path::new("c.yaml")).unwrap().name, "bochaai");
+        // auto with both engines configured: bocha still preferred.
+        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("yuanbao"), key("bocha")] };
+        assert_eq!(pick_search_entry(&cfg, Some("auto"), Path::new("c.yaml")).unwrap().name, "bocha");
+        // auto without bocha: the yuanbao entry.
+        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("other"), key("yuanbao")] };
+        assert_eq!(pick_search_entry(&cfg, None, Path::new("c.yaml")).unwrap().name, "yuanbao");
+        // auto with neither engine: the first entry.
         let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("first")] };
-        assert_eq!(pick_search_key(&cfg, Path::new("c.yaml")).unwrap(), "sk-x");
+        assert_eq!(pick_search_entry(&cfg, None, Path::new("c.yaml")).unwrap().name, "first");
         // No entries: a clear error pointing at the config path.
         let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: Vec::new() };
-        let err = pick_search_key(&cfg, Path::new("c.yaml")).unwrap_err();
+        let err = pick_search_entry(&cfg, None, Path::new("c.yaml")).unwrap_err();
         let text = format!("{err:#}");
-        assert!(text.contains("no Bocha search key configured"), "got: {text}");
+        assert!(text.contains("no web-search key configured"), "got: {text}");
         assert!(text.contains("c.yaml"), "got: {text}");
+    }
+
+    #[test]
+    fn pick_search_entry_explicit_provider_and_unknown() {
+        let key = |n: &str| SearchKey { name: n.to_string(), key: "k".to_string() };
+        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("bocha"), key("yuanbao")] };
+        assert_eq!(pick_search_entry(&cfg, Some("yuanbao"), Path::new("c.yaml")).unwrap().name, "yuanbao");
+        assert_eq!(pick_search_entry(&cfg, Some("bocha"), Path::new("c.yaml")).unwrap().name, "bocha");
+        // Pinned provider missing: engine-specific error.
+        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("bocha")] };
+        let err = pick_search_entry(&cfg, Some("yuanbao"), Path::new("c.yaml")).unwrap_err();
+        assert!(format!("{err:#}").contains("no Yuanbao search key configured"), "got: {err:#}");
+        // Unknown selector: clear error.
+        let err = pick_search_entry(&cfg, Some("nope"), Path::new("c.yaml")).unwrap_err();
+        assert!(format!("{err:#}").contains("unknown search provider `nope`"), "got: {err:#}");
+        // An entry whose name matches the selector is used as-is.
+        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("my-bocha-proxy")] };
+        assert_eq!(pick_search_entry(&cfg, Some("my-bocha-proxy"), Path::new("c.yaml")).unwrap().name, "my-bocha-proxy");
+        // Empty key is rejected.
+        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![SearchKey { name: "yuanbao".to_string(), key: String::new() }] };
+        let err = pick_search_entry(&cfg, Some("yuanbao"), Path::new("c.yaml")).unwrap_err();
+        assert!(format!("{err:#}").contains("empty key"), "got: {err:#}");
+    }
+
+    #[test]
+    fn search_engine_of_detects_yuanbao_by_name() {
+        assert_eq!(search_engine_of("yuanbao"), SearchEngine::Yuanbao);
+        assert_eq!(search_engine_of("YuanBao-1"), SearchEngine::Yuanbao);
+        assert_eq!(search_engine_of("bochaai"), SearchEngine::Bocha);
+        assert_eq!(search_engine_of("anything"), SearchEngine::Bocha);
     }
 
     #[test]
@@ -3843,5 +4064,70 @@ clients:
         assert!(msg.contains("[ 1] 标题\n    https://a.example/1"), "got: {msg}");
         assert!(msg.contains("=== 用户问题 ==="), "got: {msg}");
         assert!(msg.ends_with("今天天气如何"), "got: {msg}");
+    }
+
+    // --- Tencent Yuanbao Search (WSA) result parsing -------------------------
+
+    #[test]
+    fn yuanbao_pages_parse_json_strings() {
+        let v: Value = serde_json::from_str(
+            r#"{
+  "Response": {
+    "Pages": [
+      "{\"title\":\"三星堆的由来\",\"url\":\"https://x.example/a\",\"passage\":\"长摘要A\",\"site\":\"腾讯网\",\"date\":\"2024-09-03 12:59:00\",\"score\":0.9}",
+      "{\"title\":\"无链接\",\"url\":\"\"}",
+      "not json at all",
+      "{\"url\":\"https://x.example/no-title\"}",
+      "{\"title\":\"第二条\",\"url\":\"https://x.example/b\",\"passage\":\"摘要B\"}"
+    ],
+    "Query": "三星堆",
+    "RequestId": "r1"
+  }
+}"#,
+        )
+        .unwrap();
+        let text = yuanbao_result_text(&v);
+        assert!(text.contains("[ 1] 三星堆的由来\n    https://x.example/a"), "got: {text}");
+        assert!(text.contains("长摘要A"), "got: {text}");
+        assert!(text.contains("腾讯网 · 2024-09-03 12:59:00"), "got: {text}");
+        assert!(text.contains("[ 2] 第二条\n    https://x.example/b"), "got: {text}");
+        assert!(text.contains("摘要B"), "got: {text}");
+        // Rows without a title/url and unparseable strings are skipped.
+        assert!(!text.contains("无链接"), "got: {text}");
+        assert!(!text.contains("no-title"), "got: {text}");
+    }
+
+    #[test]
+    fn yuanbao_result_keeps_five_best() {
+        let mut pages = Vec::new();
+        for i in 0..8 {
+            let p = json!({"title": format!("标题{i}"), "url": format!("https://x.example/{i}")}).to_string();
+            pages.push(json!(p));
+        }
+        let v = json!({"Response": {"Pages": pages}});
+        let text = yuanbao_result_text(&v);
+        assert!(text.contains("[ 5] 标题4\n    https://x.example/4"), "got: {text}");
+        assert!(!text.contains("标题5"), "got: {text}");
+    }
+
+    #[test]
+    fn yuanbao_result_text_empty_when_no_pages() {
+        let v: Value = serde_json::from_str(r#"{"Response": {"Pages": []}}"#).unwrap();
+        assert_eq!(yuanbao_result_text(&v), "（未返回搜索结果）");
+        assert_eq!(yuanbao_result_text(&Value::Null), "（未返回搜索结果）");
+    }
+
+    #[test]
+    fn yuanbao_response_error_reports_code_and_message() {
+        let v: Value = serde_json::from_str(
+            r#"{"Response": {"Error": {"Code": "UnauthorizedOperation", "Message": "请检查服务密钥 API KEY 是否正确"}, "RequestId": "r1"}}"#,
+        )
+        .unwrap();
+        let err = yuanbao_response_error(&v).expect("error must be detected");
+        assert!(err.contains("UnauthorizedOperation"), "got: {err}");
+        assert!(err.contains("服务密钥"), "got: {err}");
+        // No Error object: None.
+        let v: Value = serde_json::from_str(r#"{"Response": {"Pages": []}}"#).unwrap();
+        assert!(yuanbao_response_error(&v).is_none());
     }
 }

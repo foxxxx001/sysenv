@@ -239,7 +239,7 @@ sys env list
 | `ai info` | 查本地配置（provider / model / 官网定价 / models 接口） | `info provider [KW]` `info model [KW]` `info sale-price PROV` `info list-model PROV` `info models PROV`；`-o json\|csv\|yaml\|md`；`--free[=ROUTER]`（providers / models） |
 | `ai balance` | 用 api_key 查官方余额 | `sys ai balance minimax`（minimax / agnes / alibaba-cn / deepseek / tencent 有处理器，其余给控制台） |
 | `ai price` | 查模型价格（models.dev 默认 / openrouter 目录） | `sys ai price openai,anthropic`；`--src openrouter` `--limit` `--json` `-o` |
-| `ai chat` | 与配置的 LLM 聊天（OpenAI / Anthropic 兼容） | `-m` `--list-provider` `--list-model` `--no-stream` `--debug` `--update` `--test` `--query-model` `--free` `--web`；`sys ai chat "你好"` |
+| `ai chat` | 与配置的 LLM 聊天（OpenAI / Anthropic 兼容） | `-m` `--list-provider` `--list-model` `--no-stream` `--debug` `--update` `--test` `--query-model` `--free` `--web[=PROVIDER]`；`sys ai chat "你好"` |
 | `ai server` | 以 OpenAI 兼容 API 提供本地服务 | `sys ai server [ADDR]`（默认 127.0.0.1:10000）；`--help` 查运行状态 |
 | `ai image` | 通过 Images API 生成图片 | `-o DIR` `-n N` `-s SIZE` `--url` `--list-provider` `--list-model`；`sys ai image "a red fox in the snow"` |
 | `ai config` | 导出 / 应用 / 反向导入配置到其他 AI 工具 | 8 种格式；`-m` `-f` `-c` `--show` `--update` `--import` `--src` `--list`；`sys ai config codex --show` |
@@ -378,7 +378,7 @@ sys ai cn-model gpt-6-1-sol --refresh  # 强制重新抓取（--refresh 属 ai �
 
 * `--free[=ROUTER]`：**忽略配置文件，只用内置免费路由**（无配置文件时自动启用）：`kilo-auto/free`（Kilo Gateway，匿名直连）与 `blockrun/free`（BlockRun 匿名免费端点 `https://blockrun.ai/api/v1`，模型 `nvidia/llama-3.2-11b-vision`）始终可用；`openrouter/free` 仅在设置 `OPENROUTER_API_KEY` 后追加。`--free` 不带参数在所有可用路由间加权轮询；`--free=kilo` / `--free=blockrun` / `--free=openrouter` 固定单路由（别名接受 `kilo-auto` / `kilo-auto/free` / `blockrun/free` / `openrouter/free`），指定路由不可用时明确报错
 
-* `--web`：**先联网搜索再回答**——用消息作为 query 调博查（Bocha）`POST /v1/web-search`（取 5 条带摘要的结果），把结果作为上下文拼进消息，再交给大模型基于搜索结果作答并附来源链接；搜索 key 从配置文件顶层 `search:` 段读取（`- name: bochaai, key: sk-...`，name 含 `bocha` 的条目优先，否则取首个；key 在 open.bochaai.com 申请），未配置时报错提示。`--debug` 会打印博查请求与响应；`--web` 与 `--test` 互斥
+* `--web[=PROVIDER]`：**先联网搜索再回答**——用消息作为 query 调配置的搜索提供器（取带摘要的结果），把结果作为上下文拼进消息，再交给大模型基于搜索结果作答并附来源链接。PROVIDER：`auto`（默认，优先 name 含 `bocha` 的条目，其次含 `yuanbao`，否则取首个）、`bocha`（博查 Bocha，`POST /v1/web-search`，key 在 open.bochaai.com 申请）、`yuanbao`（腾讯元宝搜索 WSA `POST https://api.wsa.cloud.tencent.com/SearchPro`，服务 API KEY、Bearer 单 key，元宝搜索控制台创建）。搜索 key 从配置文件顶层 `search:` 段读取（如 `- name: bochaai, key: sk-...`、`- name: yuanbao, key: <API KEY>`），未配置时报错提示。`--debug` 会打印搜索请求与响应；`--web` 与 `--test` 互斥
 
 ```
 sys ai chat "你好"                     # 用默认配置聊天（~/.sysenv/config.yaml）
@@ -389,7 +389,8 @@ sys ai chat "你好" --no-stream         # 关闭流式
 sys ai chat "你好" --debug             # 打印实际请求与响应（含 header）
 sys ai chat "hi" --free                # 用内置免费路由聊天（kilo-auto / blockrun，有 key 时含 openrouter）
 sys ai chat "hi" --free=blockrun       # 固定 BlockRun 匿名免费端点（https://blockrun.ai/api/v1）
-sys ai chat "今日深圳天气" --web        # 先经博查联网搜索，再基于结果回答（需配置顶层 search: 段）
+sys ai chat "今日深圳天气" --web        # 联网搜索后基于结果回答（auto：优先博查；需配置顶层 search: 段）
+sys ai chat "今日深圳天气" --web=yuanbao  # 指定用腾讯元宝搜索（name 含 yuanbao 的条目）
 sys ai chat "你好" -m agnes:agnes-3.0-flash   # 覆盖顶层 model，只用 agnes 的该模型
 sys ai chat "你好" -m "agnes:*,claude:claude-3-5-sonnet"  # 多模型逗号分隔，加权轮询
 sys ai chat "你好" -m "group:cheap"               # 用分组名选中所有归属 cheap 组的模型
