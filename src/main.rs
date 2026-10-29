@@ -573,43 +573,8 @@ enum AiCmd {
     /// model of a group) | comma-separated (half-/full-width) lists.
     /// Selected models are used with weighted rotation (weight 0-9; a failed
     /// request lowers the weight by 1, a replacement that succeeds raises it
-    /// by 1, written back to the config).
-    ///
-    /// --list-provider / --list-model print the configured providers /
-    /// models and exit.
-    ///
-    /// Message: positional words joined with spaces, or stdin when piped
-    /// (and no words given).
-    ///
-    /// --no-stream disables SSE streaming (the config's `stream: true`
-    /// enables it by default); --debug prints the actual HTTP request
-    /// (method/URL/headers/body) and response to stderr; --update fills
-    /// missing max_input_tokens / type of the selected models from models.dev
-    /// and writes them back.
-    ///
-    /// --query-model PROV queries that provider's own models API and exits
-    /// (`{api_base}/models` for OpenAI-compatible, `{api_base}/v1/models`
-    /// for Anthropic); --test sends a streaming chat to every selected model,
-    /// measures only the time to the first token, and sets weight 0 in the
-    /// config for failures (HTTP error such as 429, connection error,
-    /// timeout, no content) — --remove deletes the failed models instead;
-    /// --parallel N tests N models concurrently (default: CPU core count).
-    ///
-    /// --free[=ROUTER] ignores the config file and uses the built-in
-    /// anonymous free routers kilo-auto/free and blockrun/free
-    /// (openrouter/free only when OPENROUTER_API_KEY is set), rotating
-    /// between them; also used automatically when no config.yaml exists.
-    ///
-    /// --web[=PROVIDER] queries a configured web-search provider first (the
-    /// top-level `webs:` section of the config, legacy `search:` accepted;
-    /// the top-level `web:` key sets the default selector, default `auto` =
-    /// the first `webs:` entry), then has the model answer grounded in the
-    /// web results (with snippets). --web-count N limits the results fed to
-    /// the model (default 5); --web-site SITE restricts the search to one
-    /// site/domain; --without-src drops the source links from the answer
-    /// (shown by default).
-    ///
-    /// -c/--config FILE overrides the config.
+    /// by 1, written back to the config). Each option below is documented in
+    /// the Options list; run `sys ai chat -h` for the one-line summary.
     ///
     /// Examples: sys ai chat "你好" | echo x | sys ai chat |
     /// sys ai chat "hi" -m "agnes:*,claude:claude-3-5-sonnet" |
@@ -640,20 +605,13 @@ enum AiCmd {
     ///
     /// Model selection is the same as `sys ai chat` (the config's top-level
     /// model or -m/--model; multiple targets are weighted-rotated, failures
-    /// lower their weight, replacements raise it). The prompt is the
-    /// positional words joined with spaces, or stdin when piped.
-    /// Options: -o/--output DIR (save directory, default the current one,
-    /// created if missing), -n/--count N (number of images, default 1),
-    /// -s/--size SIZE (passed to the API verbatim, default 1024x1024, e.g.
-    /// 512x512 / 1792x1024), --url (request image URLs and download them;
-    /// the default requests b64_json and decodes locally, no second network
-    /// hop). Files are saved as sys-ai-image-<YYYYMMDD-HHMMSS>-<n>.<ext>,
-    /// the extension detected from the magic bytes (png/jpg/gif/webp);
-    /// existing names get -1/-2 suffixes instead of being overwritten.
-    /// Only type: openai providers work (anthropic has no Images API).
-    /// --list-provider / --list-model list the configured providers/models.
-    /// -c/--config FILE overrides the config. --debug prints the actual
-    /// HTTP request & response to stderr.
+    /// lower their weight, replacements raise it).
+    ///
+    /// Files are saved as sys-ai-image-<YYYYMMDD-HHMMSS>-<n>.<ext>, the
+    /// extension detected from the magic bytes (png/jpg/gif/webp); existing
+    /// names get -1/-2 suffixes instead of being overwritten. Only type:
+    /// openai providers work (anthropic has no Images API).
+    ///
     /// Examples: sys ai image "a red fox in the snow" | sys ai image 樱花 树下 小猫 -o pics -n 2 -s 512x512 |
     /// sys ai image "海报主视觉" -m bigmodel:cogview-4 | sys ai image "x" --url
     Image(ImageArgs),
@@ -663,28 +621,11 @@ enum AiCmd {
     /// with a backup, --update merges in place, --import reads a tool config
     /// back, --src overrides the agent config directory
     ///
-    /// Usage: `sys ai config FORMAT [-m MODEL] [-f FILE] [-c FILE] [--show]
-    /// [--update] [--import] [--src DIR] [--list]`.
     /// -m/--models selects the exported models with the same syntax as
-    /// `sys ai chat -m` (`provider:model` / `provider:*` / bare model name /
-    /// comma-separated lists; the legacy positional SELECT is a single
-    /// selector). Default: the config's top-level `model:` selection, or the
-    /// first provider's first model when unset.
-    /// --show prints the target software's config file path, then the config
-    /// that would be applied (nothing is written). -f FILE writes the export
-    /// (the previous file is backed up as .bak-YYYYMMDD-HHMMSS); without -f
-    /// the config is printed to stdout. --update merges the missing selected
-    /// models into the software's default config file (codebuddy / workbuddy
-    /// / trae / zcoder; the file is backed up first, existing entries and
-    /// other top-level keys are kept). --import reads provider/model params
-    /// from the software's config (codebuddy / workbuddy / opencode /
-    /// zcoder) back into ~/.sysenv/config.yaml (backed up first; existing
-    /// providers and models are kept; a provider is identified by its
-    /// api_base — entries pointing at the same api_base merge into one
-    /// block). --src DIR looks up the software's conventional config file
-    /// name directly inside DIR instead of the home-relative default
-    /// (-f FILE always wins). --list prints every supported format whose
-    /// default config file actually exists (FORMAT may be omitted).
+    /// `sys ai chat -m`; default: the config's top-level `model:` selection,
+    /// or the first provider's first model when unset (the legacy positional
+    /// SELECT is a single selector).
+    ///
     /// Examples: sys ai config codex --show | sys ai config codex -f ~/.codex/config.toml |
     /// sys ai config litellm -m "agnes:*" | sys ai config workbuddy --update |
     /// sys ai config opencode --import | sys ai config --list
