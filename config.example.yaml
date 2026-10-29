@@ -41,6 +41,10 @@ clients:
 # web: auto
 
 # webs：联网搜索 API key（`sys ai chat --web[=PROVIDER]` 联网搜索使用）
+# 可选参数（均需配合 --web）：
+# - `--web-count N`：喂给模型的搜索条数（默认 5，范围 1..=50）
+# - `--web-site SITE`：只在该站点/域名内搜索（博查服务端过滤，元宝/DeepSeek 本地按 URL 过滤）
+# - `--without-src`：回答中不附来源链接（默认显示来源）
 # - `--web=bocha`：强制博查（name 含 bocha 的条目；key 在博查开放平台 open.bochaai.com 申请）
 # - `--web=deepseek`：强制 DeepSeek 官方 Search API（name 含 deepseek 的条目；key 即 DeepSeek 开放平台 API Key，
 #   `POST https://api.deepseek.com/v1/tools/search`，按成功请求计费，文档 https://api-docs.deepseek.com/guides/search/）

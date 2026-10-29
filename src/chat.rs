@@ -1739,12 +1739,61 @@ fn pick_search_entry<'a>(cfg: &'a Config, sel: Option<&str>, path: &Path) -> Res
 /// Run the web search for `--web[=PROVIDER]` and return the formatted result
 /// text: Bocha entries get the usual 5-row summary search, Yuanbao entries a
 /// `SearchPro` request (10 rows requested, the best 5 kept).
-fn web_search(cfg: &Config, sel: Option<&str>, path: &Path, msg: &str, debug: bool) -> Result<String> {
+/// Options for `--web` search: how many results to feed the model (default
+/// 5), an optional site/domain restriction, and whether source links should be
+/// hidden (`--without-src`, sources are shown by default).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct WebSearchOpts {
+    pub(crate) count: Option<u32>,
+    pub(crate) site: Option<String>,
+    pub(crate) without_src: bool,
+}
+
+/// Extract the host (domain) part from a user-supplied site: strips scheme,
+/// path, query, fragment and port. `https://www.sznews.com/news?a=1` ->
+/// `www.sznews.com`.
+fn host_of(site: &str) -> String {
+    let mut s = site.trim().to_string();
+    if let Some(idx) = s.find("://") {
+        s = s[idx + 3..].to_string();
+    }
+    for sep in ['/', '?', '#', ':'] {
+        if let Some(idx) = s.find(sep) {
+            s = s[..idx].to_string();
+        }
+    }
+    s.trim().trim_end_matches('.').to_string()
+}
+
+/// The normalized domain list for Bocha's `include_domains` (empty = no limit).
+fn site_domains(site: Option<&str>) -> Vec<String> {
+    match site.map(host_of).filter(|s| !s.is_empty()) {
+        Some(h) => vec![h],
+        None => Vec::new(),
+    }
+}
+
+/// Local site filter for providers without a native domain parameter: the URL
+/// must contain the normalized host (case-insensitive). `None`/empty = keep all.
+fn url_matches_site(url: &str, site: Option<&str>) -> bool {
+    match site.map(host_of).filter(|s| !s.is_empty()) {
+        Some(h) => url.to_lowercase().contains(&h.to_lowercase()),
+        None => true,
+    }
+}
+
+fn web_search(cfg: &Config, sel: Option<&str>, path: &Path, msg: &str, debug: bool, opts: &WebSearchOpts) -> Result<String> {
     let entry = pick_search_entry(cfg, sel, path)?;
+    let count = opts.count.unwrap_or(5).clamp(1, 50);
+    let site = opts.site.as_deref();
+    let with_src = !opts.without_src;
     match search_engine_of(&entry.name) {
-        SearchEngine::Bocha => bocha_search(&entry.key, msg, None, true, 5, 1, &[], &[], debug),
-        SearchEngine::Yuanbao => yuanbao_search(entry, msg, debug),
-        SearchEngine::Deepseek => deepseek_search(entry, msg, debug),
+        SearchEngine::Bocha => {
+            let domains = site_domains(site);
+            bocha_search(&entry.key, msg, None, true, count, 1, &domains, &[], with_src, debug)
+        }
+        SearchEngine::Yuanbao => yuanbao_search(entry, msg, count, site, with_src, debug),
+        SearchEngine::Deepseek => deepseek_search(entry, msg, count, site, with_src, debug),
     }
 }
 
@@ -1860,7 +1909,7 @@ fn bocha_result_items(data: &Value) -> Vec<&Value> {
 /// Format a Bocha search result into a plain text block: a numbered list with
 /// URL / snippet / site / publish time (`include_summary` adds the detail
 /// lines).
-fn bocha_result_text(data: &Value, include_summary: bool) -> String {
+fn bocha_result_text(data: &Value, include_summary: bool, include_src: bool) -> String {
     let items = bocha_result_items(data);
     if items.is_empty() {
         return "（未返回搜索结果）".to_string();
@@ -1882,7 +1931,10 @@ fn bocha_result_text(data: &Value, include_summary: bool) -> String {
             continue;
         }
         n += 1;
-        out.push_str(&format!("[{:>2}] {title}\n    {url}\n", n));
+        out.push_str(&format!("[{:>2}] {title}\n", n));
+        if include_src {
+            out.push_str(&format!("    {url}\n"));
+        }
         if include_summary {
             let snippet = it
                 .get("summary")
@@ -1926,10 +1978,11 @@ fn bocha_search(
     page: u32,
     include_domains: &[String],
     exclude_domains: &[String],
+    include_src: bool,
     debug: bool,
 ) -> Result<String> {
     let data = bocha_search_value(key, query, freshness, summary, count, page, include_domains, exclude_domains, debug)?;
-    Ok(bocha_result_text(&data, summary))
+    Ok(bocha_result_text(&data, summary, include_src))
 }
 
 // --- Tencent Yuanbao Search (WSA: 服务 API KEY / 腾讯云标准方式 TC3) ---------
@@ -2090,11 +2143,17 @@ fn yuanbao_request(entry: &SearchKey, body: &Value, debug: bool) -> Result<Value
     Ok(v.get("Response").cloned().unwrap_or(v))
 }
 
+/// The SearchPro `Cnt` field only accepts 10/20/30/40/50; pick the smallest
+/// allowed value that covers `count` (at least 10).
+fn yuanbao_cnt(count: u32) -> u32 {
+    const ALLOWED: [u32; 5] = [10, 20, 30, 40, 50];
+    *ALLOWED.iter().find(|&&c| c >= count.max(1)).unwrap_or(&50)
+}
+
 /// Send one Yuanbao web-search (`SearchPro`) request with `Query` and `Cnt`
-/// (the API only accepts 10/20/30/40/50; we request 10) and return the parsed
-/// `Response`.
-fn yuanbao_search_value(entry: &SearchKey, query: &str, debug: bool) -> Result<Value> {
-    let body = json!({ "Query": query, "Cnt": 10 });
+/// (the API only accepts 10/20/30/40/50) and return the parsed `Response`.
+fn yuanbao_search_value(entry: &SearchKey, query: &str, count: u32, debug: bool) -> Result<Value> {
+    let body = json!({ "Query": query, "Cnt": yuanbao_cnt(count) });
     yuanbao_request(entry, &body, debug)
 }
 
@@ -2128,16 +2187,25 @@ fn yuanbao_result_items(data: &Value) -> Vec<Value> {
 }
 
 /// Format a Yuanbao search response into the same numbered plain-text block
-/// used by Bocha (title / URL / snippet / site · date), keeping the best 5
-/// rows (the API returns them relevance-ranked). `passage` is the standard
-/// summary; it may be a long paragraph, so the snippet is capped at 500 chars.
-fn yuanbao_result_text(data: &Value) -> String {
-    let items = yuanbao_result_items(data);
+/// used by Bocha (title / URL / snippet / site · date), keeping the best
+/// `count` rows (the API returns them relevance-ranked). `site` filters the
+/// results locally by URL; `include_src=false` drops the URL lines.
+/// `passage` is the standard summary; it may be a long paragraph, so the
+/// snippet is capped at 500 chars.
+fn yuanbao_result_text(data: &Value, count: u32, site: Option<&str>, include_src: bool) -> String {
+    let items: Vec<Value> = yuanbao_result_items(data)
+        .into_iter()
+        .filter(|v| {
+            let url = v.get("url").and_then(|u| u.as_str()).unwrap_or("");
+            url_matches_site(url, site)
+        })
+        .take(count.max(1) as usize)
+        .collect();
     if items.is_empty() {
         return "（未返回搜索结果）".to_string();
     }
     let mut out = String::new();
-    for (i, it) in items.iter().take(5).enumerate() {
+    for (i, it) in items.iter().enumerate() {
         let title = it.get("title").and_then(|t| t.as_str()).unwrap_or("").trim();
         let url = it.get("url").and_then(|u| u.as_str()).unwrap_or("").trim();
         let snippet: String = it
@@ -2149,23 +2217,26 @@ fn yuanbao_result_text(data: &Value) -> String {
             .chars()
             .take(500)
             .collect();
-        let site = it.get("site").and_then(|x| x.as_str()).unwrap_or("").trim();
+        let site_name = it.get("site").and_then(|x| x.as_str()).unwrap_or("").trim();
         let date = it.get("date").and_then(|x| x.as_str()).unwrap_or("").trim();
-        out.push_str(&format!("[{:>2}] {title}\n    {url}\n", i + 1));
+        out.push_str(&format!("[{:>2}] {title}\n", i + 1));
+        if include_src {
+            out.push_str(&format!("    {url}\n"));
+        }
         if !snippet.is_empty() {
             out.push_str(&format!("    {snippet}\n"));
         }
-        if !site.is_empty() || !date.is_empty() {
-            out.push_str(&format!("    {} · {}\n", site, date));
+        if !site_name.is_empty() || !date.is_empty() {
+            out.push_str(&format!("    {} · {}\n", site_name, date));
         }
     }
     out.trim_end().to_string()
 }
 
 /// Run one Yuanbao web search and return the formatted result text.
-fn yuanbao_search(entry: &SearchKey, query: &str, debug: bool) -> Result<String> {
-    let data = yuanbao_search_value(entry, query, debug)?;
-    Ok(yuanbao_result_text(&data))
+fn yuanbao_search(entry: &SearchKey, query: &str, count: u32, site: Option<&str>, include_src: bool, debug: bool) -> Result<String> {
+    let data = yuanbao_search_value(entry, query, count, debug)?;
+    Ok(yuanbao_result_text(&data, count, site, include_src))
 }
 
 /// Send one DeepSeek `tools/search` request with `body` and return the parsed
@@ -2212,18 +2283,20 @@ fn deepseek_request(entry: &SearchKey, body: &Value, debug: bool) -> Result<Valu
     Ok(v)
 }
 
-/// Send one DeepSeek `tools/search` request for `query` (10 results, no page
-/// content) and return the parsed `{"results": [...]}` value.
-fn deepseek_search_value(entry: &SearchKey, query: &str, debug: bool) -> Result<Value> {
-    let body = json!({ "query": query, "count": 10, "need_content": false });
+/// Send one DeepSeek `tools/search` request for `query` (`count` results, no
+/// page content) and return the parsed `{"results": [...]}` value.
+fn deepseek_search_value(entry: &SearchKey, query: &str, count: u32, debug: bool) -> Result<Value> {
+    let body = json!({ "query": query, "count": count.clamp(1, 50), "need_content": false });
     deepseek_request(entry, &body, debug)
 }
 
 /// Format a DeepSeek search response into the same numbered plain-text block
 /// used by Bocha / Yuanbao (title / URL / summary / site · date), keeping the
-/// best 5 rows (the API returns them relevance-ranked). `summary` is model
-/// oriented (600-800 chars), so the snippet is capped at 500 chars.
-fn deepseek_result_text(data: &Value) -> String {
+/// best `count` rows (the API returns them relevance-ranked). `site` filters
+/// the results locally by URL; `include_src=false` drops the URL lines.
+/// `summary` is model oriented (600-800 chars), so the snippet is capped at
+/// 500 chars.
+fn deepseek_result_text(data: &Value, count: u32, site: Option<&str>, include_src: bool) -> String {
     let Some(results) = data.get("results").and_then(|r| r.as_array()) else {
         return "（未返回搜索结果）".to_string();
     };
@@ -2231,7 +2304,7 @@ fn deepseek_result_text(data: &Value) -> String {
     for r in results {
         let title = r.get("title").and_then(|t| t.as_str()).unwrap_or("").trim();
         let url = r.get("url").and_then(|u| u.as_str()).unwrap_or("").trim();
-        if title.is_empty() || url.is_empty() {
+        if title.is_empty() || url.is_empty() || !url_matches_site(url, site) {
             continue;
         }
         items.push(r);
@@ -2240,7 +2313,7 @@ fn deepseek_result_text(data: &Value) -> String {
         return "（未返回搜索结果）".to_string();
     }
     let mut out = String::new();
-    for (i, it) in items.iter().take(5).enumerate() {
+    for (i, it) in items.iter().take(count.max(1) as usize).enumerate() {
         let title = it.get("title").and_then(|t| t.as_str()).unwrap_or("").trim();
         let url = it.get("url").and_then(|u| u.as_str()).unwrap_or("").trim();
         let summary: String = it
@@ -2252,30 +2325,39 @@ fn deepseek_result_text(data: &Value) -> String {
             .chars()
             .take(500)
             .collect();
-        let site = it.get("site_name").and_then(|x| x.as_str()).unwrap_or("").trim();
+        let site_name = it.get("site_name").and_then(|x| x.as_str()).unwrap_or("").trim();
         let date = it.get("date").and_then(|x| x.as_str()).unwrap_or("").trim();
-        out.push_str(&format!("[{:>2}] {title}\n    {url}\n", i + 1));
+        out.push_str(&format!("[{:>2}] {title}\n", i + 1));
+        if include_src {
+            out.push_str(&format!("    {url}\n"));
+        }
         if !summary.is_empty() {
             out.push_str(&format!("    {summary}\n"));
         }
-        if !site.is_empty() || !date.is_empty() {
-            out.push_str(&format!("    {site} · {date}\n"));
+        if !site_name.is_empty() || !date.is_empty() {
+            out.push_str(&format!("    {site_name} · {date}\n"));
         }
     }
     out.trim_end().to_string()
 }
 
 /// Run one DeepSeek web search and return the formatted result text.
-fn deepseek_search(entry: &SearchKey, query: &str, debug: bool) -> Result<String> {
-    let data = deepseek_search_value(entry, query, debug)?;
-    Ok(deepseek_result_text(&data))
+fn deepseek_search(entry: &SearchKey, query: &str, count: u32, site: Option<&str>, include_src: bool, debug: bool) -> Result<String> {
+    let data = deepseek_search_value(entry, query, count, debug)?;
+    Ok(deepseek_result_text(&data, count, site, include_src))
 }
 
 /// Build the augmented user message for `--web`: the web search results as
-/// grounding context plus the original question.
-fn web_search_message(results: &str, question: &str) -> String {
+/// grounding context plus the original question. `with_src` asks the model to
+/// attach source links (default); without it the model is told not to.
+fn web_search_message(results: &str, question: &str, with_src: bool) -> String {
+    let src_rule = if with_src {
+        "并在回答中附上来源链接"
+    } else {
+        "不要附上来源链接或 URL"
+    };
     format!(
-        "请基于以下联网搜索结果回答用户的问题。优先引用搜索结果中的信息，并在回答中附上来源链接；如果搜索结果不足以回答，请明确说明。\n\n=== 联网搜索结果 ===\n{results}\n\n=== 用户问题 ===\n{question}"
+        "请基于以下联网搜索结果回答用户的问题。优先引用搜索结果中的信息，{src_rule}；如果搜索结果不足以回答，请明确说明。\n\n=== 联网搜索结果 ===\n{results}\n\n=== 用户问题 ===\n{question}"
     )
 }
 
@@ -2627,18 +2709,19 @@ fn chat_with(
     path: &Path,
     msg: &str,
     web: Option<&str>,
+    web_opts: &WebSearchOpts,
     debug: bool,
     no_stream: bool,
     model_override: Option<&str>,
     update: bool,
 ) -> Result<()> {
     let payload = if web.is_some() {
-        let results = web_search(cfg, web, path, msg, debug)?;
+        let results = web_search(cfg, web, path, msg, debug, web_opts)?;
         eprintln!(
             "sys: web search done ({} chars of results fed to the model)",
             results.chars().count()
         );
-        web_search_message(&results, msg)
+        web_search_message(&results, msg, !web_opts.without_src)
     } else {
         msg.to_string()
     };
@@ -2966,6 +3049,7 @@ pub fn cmd_chat(
     query_model: Option<&str>,
     free: Option<&str>,
     web: Option<&str>,
+    web_opts: &WebSearchOpts,
 ) -> Result<()> {
     // Free mode on either trigger: `--free[=router]`, or the default
     // config.yaml being absent. An explicit `-c` always loads and validates
@@ -3026,7 +3110,7 @@ pub fn cmd_chat(
     } else {
         bail!("provide a message: `sys ai chat \"your message\"` (or pipe text via stdin)");
     };
-    chat_with(&mut cfg, &path, &msg, web, debug, no_stream, model, update)
+    chat_with(&mut cfg, &path, &msg, web, web_opts, debug, no_stream, model, update)
 }
 
 // ---------------------------------------------------------------------------
@@ -4371,14 +4455,14 @@ webs:
 }"#,
         )
         .unwrap();
-        let text = deepseek_result_text(&v);
+        let text = deepseek_result_text(&v, 5, None, true);
         assert!(text.contains("[ 1] 标题A\n    https://a.example/1"), "got: {text}");
         assert!(text.contains("长摘要A，供模型阅读"), "got: {text}");
         assert!(text.contains("站点A · 2026-06-01T00:00:00+00:00"), "got: {text}");
         assert!(text.contains("[ 2] 标题B\n    https://b.example/2"), "got: {text}");
         // 无 title/url 的条目被跳过。
         let v: Value = serde_json::from_str(r#"{"results": [{"title": "", "url": "https://x"}, {"title": "ok", "url": ""}]}"#).unwrap();
-        assert_eq!(deepseek_result_text(&v), "（未返回搜索结果）");
+        assert_eq!(deepseek_result_text(&v, 5, None, true), "（未返回搜索结果）");
     }
 
     #[test]
@@ -4396,11 +4480,11 @@ webs:
 }"#,
         )
         .unwrap();
-        let text = bocha_result_text(&v, false);
+        let text = bocha_result_text(&v, false, true);
         assert!(text.contains("[ 1] 标题A\n    https://a.example/1"), "got: {text}");
         assert!(text.contains("[ 2] 标题B\n    https://b.example/2"), "got: {text}");
         assert!(!text.contains("摘要A"), "summary must be off by default: {text}");
-        let text = bocha_result_text(&v, true);
+        let text = bocha_result_text(&v, true, true);
         assert!(text.contains("摘要A"), "got: {text}");
         assert!(text.contains("站点A · 2026-10-01T00:00:00+08:00"), "got: {text}");
     }
@@ -4416,7 +4500,7 @@ webs:
 }"#,
         )
         .unwrap();
-        let text = bocha_result_text(&v, true);
+        let text = bocha_result_text(&v, true, true);
         assert!(text.contains("[ 1] 老格式A\n    https://old.example/a"), "got: {text}");
         assert!(text.contains("[ 2] 老格式B\n    https://old.example/b"), "got: {text}");
     }
@@ -4435,7 +4519,7 @@ webs:
 }"#,
         )
         .unwrap();
-        let text = bocha_result_text(&v, false);
+        let text = bocha_result_text(&v, false, true);
         assert!(text.contains("[ 1] 重复\n    https://x.example/dup"), "got: {text}");
         assert!(text.contains("[ 2] 有效\n    https://x.example/ok"), "got: {text}");
         assert_eq!(text.matches("https://x.example/dup").count(), 1);
@@ -4457,7 +4541,7 @@ webs:
 }"#,
         )
         .unwrap();
-        let text = bocha_result_text(&v, false);
+        let text = bocha_result_text(&v, false, true);
         assert!(text.contains("[ 1] 消息源A\n    https://x.example/a"), "got: {text}");
         assert!(text.contains("[ 2] 网页B\n    https://x.example/b"), "got: {text}");
     }
@@ -4465,18 +4549,103 @@ webs:
     #[test]
     fn bocha_result_text_empty_when_no_rows() {
         let v: Value = serde_json::from_str(r#"{"webPages": {"value": []}}"#).unwrap();
-        assert_eq!(bocha_result_text(&v, true), "（未返回搜索结果）");
-        assert_eq!(bocha_result_text(&Value::Null, true), "（未返回搜索结果）");
+        assert_eq!(bocha_result_text(&v, true, true), "（未返回搜索结果）");
+        assert_eq!(bocha_result_text(&Value::Null, true, true), "（未返回搜索结果）");
     }
 
     #[test]
     fn web_search_message_contains_results_and_question() {
-        let msg = web_search_message("[ 1] 标题\n    https://a.example/1\n    摘要A", "今天天气如何");
+        let msg = web_search_message("[ 1] 标题\n    https://a.example/1\n    摘要A", "今天天气如何", true);
         assert!(msg.starts_with("请基于以下联网搜索结果回答用户的问题"), "got: {msg}");
         assert!(msg.contains("=== 联网搜索结果 ==="), "got: {msg}");
         assert!(msg.contains("[ 1] 标题\n    https://a.example/1"), "got: {msg}");
         assert!(msg.contains("=== 用户问题 ==="), "got: {msg}");
         assert!(msg.ends_with("今天天气如何"), "got: {msg}");
+        // with_src=true asks for source links; with_src=false forbids them.
+        assert!(msg.contains("附上来源链接"), "got: {msg}");
+        let msg2 = web_search_message("x", "q", false);
+        assert!(!msg2.contains("并在回答中附上来源链接"), "got: {msg2}");
+        assert!(msg2.contains("不要附上来源链接或 URL"), "got: {msg2}");
+    }
+
+    #[test]
+    fn host_of_strips_scheme_path_query_and_port() {
+        assert_eq!(host_of("sznews.com"), "sznews.com");
+        assert_eq!(host_of("https://sznews.com"), "sznews.com");
+        assert_eq!(host_of("https://www.sznews.com/news?a=1"), "www.sznews.com");
+        assert_eq!(host_of("  http://example.org:8080/path  "), "example.org");
+        assert_eq!(host_of(""), "");
+        assert_eq!(host_of("https://"), "");
+        assert_eq!(host_of("gov.cn."), "gov.cn");
+        assert_eq!(site_domains(Some("https://sz.gov.cn/x")), vec!["sz.gov.cn".to_string()]);
+        assert!(site_domains(Some("  ")).is_empty());
+        assert!(site_domains(None).is_empty());
+        assert!(url_matches_site("https://www.sznews.com/a", Some("sznews.com")));
+        assert!(url_matches_site("https://news.sznews.com/a", Some("https://sznews.com")));
+        assert!(!url_matches_site("https://other.org/a", Some("sznews.com")));
+        assert!(url_matches_site("https://other.org/a", None));
+    }
+
+    #[test]
+    fn yuanbao_cnt_maps_to_allowed_values() {
+        assert_eq!(yuanbao_cnt(1), 10);
+        assert_eq!(yuanbao_cnt(5), 10);
+        assert_eq!(yuanbao_cnt(10), 10);
+        assert_eq!(yuanbao_cnt(15), 20);
+        assert_eq!(yuanbao_cnt(30), 30);
+        assert_eq!(yuanbao_cnt(50), 50);
+        assert_eq!(yuanbao_cnt(99), 50);
+    }
+
+    #[test]
+    fn web_result_count_site_and_without_src_apply() {
+        // DeepSeek: count trims rows, site filters by URL, include_src=false drops URLs.
+        let ds: Value = serde_json::from_str(
+            r#"{"results": [
+                {"title": "A", "url": "https://a.example/1", "summary": "sA"},
+                {"title": "B", "url": "https://b.example/2", "summary": "sB"},
+                {"title": "C", "url": "https://a.example/3", "summary": "sC"}
+            ]}"#,
+        )
+        .unwrap();
+        let text = deepseek_result_text(&ds, 2, None, true);
+        assert_eq!(text.matches("[ 1]").count() + text.matches("[ 2]").count(), 2, "count=2 should keep 2 rows: {text}");
+        assert!(text.contains("https://a.example/1"), "got: {text}");
+        let text = deepseek_result_text(&ds, 5, Some("a.example"), true);
+        assert!(text.contains("[ 1] A"), "got: {text}");
+        assert!(!text.contains("[ 2] B"), "site filter should drop B: {text}");
+        assert!(text.contains("[ 2] C"), "got: {text}");
+        let text = deepseek_result_text(&ds, 5, None, false);
+        assert!(!text.contains("https://"), "without_src should drop URLs: {text}");
+        assert!(text.contains("[ 3] C"), "got: {text}");
+
+        // Yuanbao: same behavior through its JSON-string Pages shape.
+        let yb: Value = serde_json::from_str(
+            r#"{"Response": {"Pages": [
+                "{\"title\": \"X\", \"url\": \"https://x.example/1\", \"passage\": \"pX\"}",
+                "{\"title\": \"Y\", \"url\": \"https://y.example/2\", \"passage\": \"pY\"}",
+                "{\"title\": \"Z\", \"url\": \"https://x.example/3\", \"passage\": \"pZ\"}"
+            ]}}"#,
+        )
+        .unwrap();
+        let text = yuanbao_result_text(&yb, 1, None, true);
+        assert_eq!(text.matches("[ 1]").count(), 1, "count=1 should keep 1 row: {text}");
+        let text = yuanbao_result_text(&yb, 5, Some("x.example"), false);
+        assert!(text.contains("[ 1] X") && text.contains("[ 2] Z"), "got: {text}");
+        assert!(!text.contains("https://"), "without_src should drop URLs: {text}");
+        assert!(!text.contains("[ 3] Y"), "site filter should drop Y: {text}");
+
+        // Bocha: include_src=false drops URL lines, rows stay numbered.
+        let bc: Value = serde_json::from_str(
+            r#"{"webPages": {"value": [
+                {"name": "N1", "url": "https://n.example/1", "snippet": "s1"},
+                {"name": "N2", "url": "https://n.example/2", "snippet": "s2"}
+            ]}}"#,
+        )
+        .unwrap();
+        let text = bocha_result_text(&bc, false, false);
+        assert!(!text.contains("https://"), "without_src should drop URLs: {text}");
+        assert!(text.contains("[ 1] N1") && text.contains("[ 2] N2"), "got: {text}");
     }
 
     // --- Tencent Yuanbao Search (WSA) result parsing -------------------------
@@ -4499,7 +4668,7 @@ webs:
 }"#,
         )
         .unwrap();
-        let text = yuanbao_result_text(&v);
+        let text = yuanbao_result_text(&v, 5, None, true);
         assert!(text.contains("[ 1] 三星堆的由来\n    https://x.example/a"), "got: {text}");
         assert!(text.contains("长摘要A"), "got: {text}");
         assert!(text.contains("腾讯网 · 2024-09-03 12:59:00"), "got: {text}");
@@ -4518,7 +4687,7 @@ webs:
             pages.push(json!(p));
         }
         let v = json!({"Response": {"Pages": pages}});
-        let text = yuanbao_result_text(&v);
+        let text = yuanbao_result_text(&v, 5, None, true);
         assert!(text.contains("[ 5] 标题4\n    https://x.example/4"), "got: {text}");
         assert!(!text.contains("标题5"), "got: {text}");
     }
@@ -4526,8 +4695,8 @@ webs:
     #[test]
     fn yuanbao_result_text_empty_when_no_pages() {
         let v: Value = serde_json::from_str(r#"{"Response": {"Pages": []}}"#).unwrap();
-        assert_eq!(yuanbao_result_text(&v), "（未返回搜索结果）");
-        assert_eq!(yuanbao_result_text(&Value::Null), "（未返回搜索结果）");
+        assert_eq!(yuanbao_result_text(&v, 5, None, true), "（未返回搜索结果）");
+        assert_eq!(yuanbao_result_text(&Value::Null, 5, None, true), "（未返回搜索结果）");
     }
 
     #[test]

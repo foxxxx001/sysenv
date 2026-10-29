@@ -379,6 +379,9 @@ sys ai cn-model gpt-6-1-sol --refresh  # 强制重新抓取（--refresh 属 ai �
 * `--free[=ROUTER]`：**忽略配置文件，只用内置免费路由**（无配置文件时自动启用）：`kilo-auto/free`（Kilo Gateway，匿名直连）与 `blockrun/free`（BlockRun 匿名免费端点 `https://blockrun.ai/api/v1`，模型 `nvidia/llama-3.2-11b-vision`）始终可用；`openrouter/free` 仅在设置 `OPENROUTER_API_KEY` 后追加。`--free` 不带参数在所有可用路由间加权轮询；`--free=kilo` / `--free=blockrun` / `--free=openrouter` 固定单路由（别名接受 `kilo-auto` / `kilo-auto/free` / `blockrun/free` / `openrouter/free`），指定路由不可用时明确报错
 
 * `--web[=PROVIDER]`：**先联网搜索再回答**——用消息作为 query 调配置的搜索提供器（取带摘要的结果），把结果作为上下文拼进消息，再交给大模型基于搜索结果作答并附来源链接。搜索条目配在顶层 `webs:` 段（旧 `search:` 段兼容）；顶层 `web:` 指定默认选择器（缺省 `auto`），命令行 `--web[=PROVIDER]` 优先级更高。PROVIDER：`auto`（默认，**用 `webs:` 第一个条目**，配置顺序即优先级）、`bocha`（博查 Bocha，`POST /v1/web-search`，key 在 open.bochaai.com 申请）、`deepseek`（DeepSeek 官方 Search API `POST https://api.deepseek.com/v1/tools/search`，key 即 DeepSeek 开放平台 API Key，按成功请求计费，文档 https://api-docs.deepseek.com/guides/search/）、`yuanbao`（腾讯元宝搜索 WSA `SearchPro`，支持两种鉴权：服务 API KEY 走 `POST https://api.wsa.cloud.tencent.com/SearchPro`（Bearer 单 key），或腾讯云标准方式走 `https://wsa.tencentcloudapi.com/`（TC3-HMAC-SHA256 签名，配置 `SecretId`+`SecretKey`，推荐））。如 `- name: bochaai, key: sk-...`、`- name: deepseek, key: sk-...`、`- name: yuanbao, SecretId: AKID..., SecretKey: ...`，未配置时报错提示。`--debug` 会打印搜索请求与响应；`--web` 与 `--test` 互斥
+* `--web-count N`：配合 `--web`，喂给模型的搜索条数（默认 5，范围 1..=50；博查直接改 count，元宝 Cnt 取最近允许值 10/20/30/40/50，DeepSeek 直接改 count）
+* `--web-site SITE`：配合 `--web`，只在指定站点/域名内搜索（如 `sznews.com` 或 `https://sznews.com/news`；博查用 include_domains 服务端过滤，元宝/DeepSeek 本地按 URL 过滤）
+* `--without-src`：配合 `--web`，回答中不显示来源链接（默认显示）
 
 ```
 sys ai chat "你好"                     # 用默认配置聊天（~/.sysenv/config.yaml）

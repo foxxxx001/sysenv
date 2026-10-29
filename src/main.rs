@@ -914,15 +914,28 @@ struct ChatArgs {
     /// file. Also used automatically when no config.yaml exists.
     #[arg(long, value_name = "ROUTER", num_args = 0..=1, default_missing_value = "all")]
     free: Option<String>,
-    /// Web search first: query a configured search provider with the message
-    /// (top-level `search:` key of the config), then have the model answer
-    /// grounded in the results (with snippets). Optional PROVIDER selects the
-    /// provider: `auto` (default; prefers an entry whose name contains `bocha`,
-    /// then one containing `yuanbao`, then the first entry), `bocha` (Bocha AI,
-    /// e.g. `- name: bochaai, key: sk-...`) or `yuanbao` (Tencent Yuanbao
-    /// Search WSA service API KEY, e.g. `- name: yuanbao, key: <API KEY>`).
+    /// Web search first: query the configured search provider (top-level
+    /// `webs:` section of the config, legacy `search:` accepted) with the
+    /// message, then have the model answer grounded in the results (with
+    /// snippets). Optional PROVIDER selects the entry: `auto` (default; the
+    /// first `webs:` entry, config order = priority) or an entry name such as
+    /// `bocha` / `deepseek` / `yuanbao`. The top-level `web:` key sets the
+    /// default selector; this flag wins over it.
     #[arg(long, value_name = "PROVIDER", num_args = 0..=1, default_missing_value = "auto")]
     web: Option<String>,
+    /// With --web: number of search results to feed the model (default: 5;
+    /// clamped to 1..=50)
+    #[arg(long, value_name = "N")]
+    web_count: Option<u32>,
+    /// With --web: restrict the search to one site/domain (e.g. sznews.com or
+    /// https://sznews.com/news); Bocha filters server-side, Yuanbao/DeepSeek
+    /// filter locally by URL
+    #[arg(long, value_name = "SITE")]
+    web_site: Option<String>,
+    /// With --web: do not show source links in the answer (sources are shown
+    /// by default)
+    #[arg(long)]
+    without_src: bool,
 }
 
 /// `sys ai server [ADDR]` — serve the configured providers as an
@@ -1470,6 +1483,11 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             c.query_model.as_deref(),
             c.free.as_deref(),
             c.web.as_deref(),
+            &chat::WebSearchOpts {
+                count: c.web_count,
+                site: c.web_site,
+                without_src: c.without_src,
+            },
         ),
         AiCmd::Server(s) => {
             let bind = server::parse_addr(s.addr.as_deref().unwrap_or(""));
