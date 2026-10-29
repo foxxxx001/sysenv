@@ -574,33 +574,47 @@ enum AiCmd {
     /// Selected models are used with weighted rotation (weight 0-9; a failed
     /// request lowers the weight by 1, a replacement that succeeds raises it
     /// by 1, written back to the config).
+    ///
     /// --list-provider / --list-model print the configured providers /
-    /// models and exit. Message: positional words joined with spaces, or
-    /// stdin when piped (and no words given). --no-stream disables SSE
-    /// streaming (the config's `stream: true` enables it by default);
-    /// --debug prints the actual HTTP request (method/URL/headers/body) and
-    /// response to stderr; --update fills missing max_input_tokens / type of
-    /// the selected models from models.dev and writes them back;
+    /// models and exit.
+    ///
+    /// Message: positional words joined with spaces, or stdin when piped
+    /// (and no words given).
+    ///
+    /// --no-stream disables SSE streaming (the config's `stream: true`
+    /// enables it by default); --debug prints the actual HTTP request
+    /// (method/URL/headers/body) and response to stderr; --update fills
+    /// missing max_input_tokens / type of the selected models from models.dev
+    /// and writes them back.
+    ///
     /// --query-model PROV queries that provider's own models API and exits
     /// (`{api_base}/models` for OpenAI-compatible, `{api_base}/v1/models`
     /// for Anthropic); --test sends a streaming chat to every selected model,
     /// measures only the time to the first token, and sets weight 0 in the
     /// config for failures (HTTP error such as 429, connection error,
     /// timeout, no content) — --remove deletes the failed models instead;
-    /// --parallel N tests N models concurrently (default: CPU core count);
+    /// --parallel N tests N models concurrently (default: CPU core count).
+    ///
     /// --free[=ROUTER] ignores the config file and uses the built-in
     /// anonymous free routers kilo-auto/free and blockrun/free
     /// (openrouter/free only when OPENROUTER_API_KEY is set), rotating
     /// between them; also used automatically when no config.yaml exists.
-    /// --web[=PROVIDER] queries a configured web-search provider first
-    /// (top-level `search:` key of the config: `bocha` = Bocha AI, key from
-    /// open.bochaai.com; `yuanbao` = Tencent Yuanbao Search WSA, service API
-    /// KEY from the 元宝搜索 console; `auto` prefers bocha, then yuanbao) with
-    /// the message, then has the model answer grounded in the web results
-    /// (with snippets). -c/--config FILE
-    /// overrides the config. Examples: sys ai chat "你好" | echo x | sys ai chat |
-    /// sys ai chat "hi" -m "agnes:*,claude:claude-3-5-sonnet" | sys ai chat "hi" --free
-    /// | sys ai chat "今日深圳天气" --web | sys ai chat "今日深圳天气" --web=yuanbao
+    ///
+    /// --web[=PROVIDER] queries a configured web-search provider first (the
+    /// top-level `webs:` section of the config, legacy `search:` accepted;
+    /// the top-level `web:` key sets the default selector, default `auto` =
+    /// the first `webs:` entry), then has the model answer grounded in the
+    /// web results (with snippets). --web-count N limits the results fed to
+    /// the model (default 5); --web-site SITE restricts the search to one
+    /// site/domain; --without-src drops the source links from the answer
+    /// (shown by default).
+    ///
+    /// -c/--config FILE overrides the config.
+    ///
+    /// Examples: sys ai chat "你好" | echo x | sys ai chat |
+    /// sys ai chat "hi" -m "agnes:*,claude:claude-3-5-sonnet" |
+    /// sys ai chat "hi" --free | sys ai chat "今日深圳天气" --web |
+    /// sys ai chat "今日深圳天气" --web=yuanbao
     Chat(ChatArgs),
     /// Serve the configured providers as an OpenAI-compatible API server
     /// (default 127.0.0.1:10000; a bare port or a bare IP keeps the other
