@@ -48,7 +48,7 @@ pub(crate) const USER_AGENT_STR: &str = concat!("sys/", env!("CARGO_PKG_VERSION"
 // Config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Config {
     pub(crate) model: Option<String>,
     pub(crate) stream: bool,
@@ -56,10 +56,15 @@ pub(crate) struct Config {
     /// Built-in free-routers mode (--free or missing config): no config file,
     /// weight rotation state is kept in memory and nothing is written back.
     pub(crate) free: bool,
-    /// Web-search API keys configured under the top-level `search` key
-    /// (e.g. `- name: bochaai, key: sk-...`), used by `sys ai chat --web`.
+    /// Top-level `web:` selector: which search entry `--web` uses by default
+    /// (`auto` = the first `webs:` entry; or `bocha` / `deepseek` / `yuanbao` /
+    /// any entry name). Command-line `--web[=PROVIDER]` overrides it.
+    pub(crate) web: String,
+    /// Web-search API keys configured under the top-level `webs` key (the
+    /// legacy `search` key is also accepted), e.g. `- name: bochaai, key: ...`.
     /// The engine is detected from the entry name: containing `yuanbao`
-    /// drives Tencent Yuanbao Search, everything else drives Bocha.
+    /// drives Tencent Yuanbao Search, containing `deepseek` drives DeepSeek
+    /// Search, everything else drives Bocha.
     pub(crate) search: Vec<SearchKey>,
 }
 
@@ -210,11 +215,9 @@ pub(crate) fn parse_free_router(s: &str) -> Result<&'static str> {
 /// `OPENROUTER_API_KEY`).
 fn filter_free_selector(providers: Vec<Provider>, selector: Option<&str>) -> Result<Config> {
     let mut cfg = Config {
-        model: None,
-        stream: false,
         providers,
         free: true,
-        search: Vec::new(),
+        ..Default::default()
     };
     let Some(sel) = selector.map(str::trim).filter(|s| !s.is_empty() && *s != "all") else {
         return Ok(cfg);
@@ -549,8 +552,18 @@ fn config_from_yaml(y: &YVal) -> Result<Config> {
             providers.push(p);
         }
     }
+    // 顶层 `web`：--web 默认搜索选择器（auto = 第一个 webs 条目；或 bocha /
+    // deepseek / yuanbao / 条目名）。命令行 `--web[=PROVIDER]` 优先级更高。
+    let web = y
+        .get("web")
+        .and_then(|v| v.scalar())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("auto")
+        .to_string();
+    // `webs` 段为当前配置名，兼容旧 `search` 段。
     let mut search = Vec::new();
-    if let Some(list) = y.get("search").and_then(|v| v.list()) {
+    if let Some(list) = y.get("webs").or_else(|| y.get("search")).and_then(|v| v.list()) {
         for s in list {
             let name = s.get("name").and_then(|v| v.scalar()).unwrap_or("").trim().to_string();
             if name.is_empty() {
@@ -572,7 +585,7 @@ fn config_from_yaml(y: &YVal) -> Result<Config> {
             }
         }
     }
-    Ok(Config { model, stream, providers, free: false, search })
+    Ok(Config { model, stream, providers, free: false, web, search })
 }
 
 // ---------------------------------------------------------------------------
@@ -1647,23 +1660,26 @@ fn search_engine_of(name: &str) -> SearchEngine {
 }
 
 /// Resolve the web-search entry for `--web[=PROVIDER]`. `sel` is the optional
-/// `--web` value: `None` / `"auto"` prefer the first entry whose name mentions
-/// `bocha`, then one mentioning `deepseek`, then one mentioning `yuanbao`,
-/// then the first entry; `"bocha"` / `"deepseek"` / `"yuanbao"` pin that engine
-/// (the first entry whose name contains the word); anything else must match an
-/// entry name (case-insensitive substring).
+/// command-line `--web` value, which wins over the config top-level `web:`
+/// selector; both default to `"auto"`. `"auto"` uses the **first** configured
+/// entry (config order = priority); `"bocha"` / `"deepseek"` / `"yuanbao"`
+/// pin that engine (the first entry whose name contains the word); anything
+/// else must match an entry name (case-insensitive substring).
 /// Missing entries produce a clear error pointing at the config path.
 fn pick_search_entry<'a>(cfg: &'a Config, sel: Option<&str>, path: &Path) -> Result<&'a SearchKey> {
-    let sel = sel.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("auto");
+    // 优先级：--web 命令行值 > 配置顶层 `web` > "auto"。
+    let sel = sel
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let w = cfg.web.trim();
+            (!w.is_empty()).then_some(w)
+        })
+        .unwrap_or("auto");
     let sel_low = sel.to_ascii_lowercase();
     let entry = match sel_low.as_str() {
-        "auto" => cfg
-            .search
-            .iter()
-            .find(|s| s.name.to_ascii_lowercase().contains("bocha"))
-            .or_else(|| cfg.search.iter().find(|s| s.name.to_ascii_lowercase().contains("deepseek")))
-            .or_else(|| cfg.search.iter().find(|s| s.name.to_ascii_lowercase().contains("yuanbao")))
-            .or_else(|| cfg.search.first()),
+        // auto：用第一个配置的搜索条目。
+        "auto" => cfg.search.first(),
         "bocha" => cfg.search.iter().find(|s| s.name.to_ascii_lowercase().contains("bocha")),
         "deepseek" => cfg.search.iter().find(|s| s.name.to_ascii_lowercase().contains("deepseek")),
         "yuanbao" => cfg.search.iter().find(|s| s.name.to_ascii_lowercase().contains("yuanbao")),
@@ -1671,23 +1687,23 @@ fn pick_search_entry<'a>(cfg: &'a Config, sel: Option<&str>, path: &Path) -> Res
     }
     .ok_or_else(|| match sel_low.as_str() {
         "auto" => anyhow::anyhow!(
-            "no web-search key configured: add a `search:` entry with `name: bocha` (Bocha), `name: deepseek` (DeepSeek Search) or `name: yuanbao` (腾讯元宝搜索) and its key to {}",
+            "no web-search key configured: add a `webs:` entry with `name: bocha` (Bocha), `name: deepseek` (DeepSeek Search) or `name: yuanbao` (腾讯元宝搜索) and its key to {}",
             path.display()
         ),
         "bocha" => anyhow::anyhow!(
-            "no Bocha search key configured: add a `search:` entry like `- name: bochaai, key: sk-...` to {}",
+            "no Bocha search key configured: add a `webs:` entry like `- name: bochaai, key: sk-...` to {}",
             path.display()
         ),
         "deepseek" => anyhow::anyhow!(
-            "no DeepSeek search key configured: add a `search:` entry like `- name: deepseek, key: <DeepSeek API Key>` to {}",
+            "no DeepSeek search key configured: add a `webs:` entry like `- name: deepseek, key: <DeepSeek API Key>` to {}",
             path.display()
         ),
         "yuanbao" => anyhow::anyhow!(
-            "no Yuanbao search key configured: add a `search:` entry like `- name: yuanbao, key: <API KEY>` to {}",
+            "no Yuanbao search key configured: add a `webs:` entry like `- name: yuanbao, key: <API KEY>` to {}",
             path.display()
         ),
         _ => anyhow::anyhow!(
-            "unknown search provider `{sel}` (expected: auto | bocha | deepseek | yuanbao); add a matching `search:` entry to {}",
+            "unknown search provider `{sel}` (expected: auto | bocha | deepseek | yuanbao); add a matching `webs:` entry to {}",
             path.display()
         ),
     })?;
@@ -3807,7 +3823,7 @@ clients:
       - name: m1
 "#,
         );
-        apply_test_removals(&Config { model: None, stream: false, providers: Vec::new(), free: false, search: Vec::new() }, &p, &[]).unwrap();
+        apply_test_removals(&Config { search: Vec::new(), ..Default::default() }, &p, &[]).unwrap();
         let stem = std::path::Path::new(&p).file_stem().unwrap().to_string_lossy().to_string();
         let dir = std::path::Path::new(&p).parent().unwrap();
         let n = std::fs::read_dir(dir)
@@ -4149,13 +4165,7 @@ clients:
 
     #[test]
     fn query_provider_models_rejects_unknown_provider() {
-        let cfg = Config {
-            model: None,
-            stream: false,
-            providers: vec![local_provider(1234)],
-            free: false,
-            search: Vec::new(),
-        };
+        let cfg = Config { providers: vec![local_provider(1234)], ..Default::default() };
         let err = query_provider_models(&cfg, "nope").unwrap_err();
         let text = format!("{err:#}");
         assert!(text.contains("available"), "expected available list, got: {text}");
@@ -4218,6 +4228,37 @@ clients:
     }
 
     #[test]
+    fn config_parses_webs_section_and_top_level_web() {
+        let y = parse_yaml(
+            r#"web: yuanbao
+webs:
+  - name: bocha
+    key: sk-b
+  - name: yuanbao
+    SecretId: AKIDX
+    SecretKey: SKY
+"#,
+        )
+        .unwrap();
+        let cfg = config_from_yaml(&y).unwrap();
+        assert_eq!(cfg.web, "yuanbao");
+        assert_eq!(cfg.search.len(), 2);
+        assert_eq!(cfg.search[0].name, "bocha");
+        assert_eq!(cfg.search[1].secret_id.as_deref(), Some("AKIDX"));
+        // 顶层 web 缺省为 auto；旧 `search` 段仍兼容。
+        let y = parse_yaml(
+            r#"search:
+  - name: deepseek
+    key: sk-d
+"#,
+        )
+        .unwrap();
+        let cfg = config_from_yaml(&y).unwrap();
+        assert_eq!(cfg.web, "auto");
+        assert_eq!(cfg.search[0].name, "deepseek");
+    }
+
+    #[test]
     fn tc3_authorization_matches_reference_vector() {
         // 独立参考向量（Python hashlib/hmac 同算法计算）：timestamp
         // 1551113065 = 2019-02-25 UTC，service wsa，请求体 {"Query":"x","Cnt":10}。
@@ -4235,25 +4276,29 @@ clients:
     }
 
     #[test]
-    fn pick_search_entry_auto_bocha_then_yuanbao_then_first() {
+    fn pick_search_entry_auto_takes_first_and_top_level_web() {
         let key = |n: &str| SearchKey { name: n.to_string(), key: "k".to_string(), ..Default::default() };
-        // auto: the entry whose name mentions `bocha` wins even when not first.
-        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("other"), key("bochaai")] };
+        // auto: the FIRST configured entry wins, regardless of engine name.
+        let cfg = Config { search: vec![key("other"), key("bochaai")], ..Default::default() };
+        assert_eq!(pick_search_entry(&cfg, None, Path::new("c.yaml")).unwrap().name, "other");
+        let cfg = Config { search: vec![key("yuanbao"), key("bocha")], ..Default::default() };
+        assert_eq!(pick_search_entry(&cfg, Some("auto"), Path::new("c.yaml")).unwrap().name, "yuanbao");
+        // Top-level `web:` picks the engine/entry when no --web flag is given.
+        let cfg = Config { web: "bocha".to_string(), search: vec![key("other"), key("bochaai")], ..Default::default() };
         assert_eq!(pick_search_entry(&cfg, None, Path::new("c.yaml")).unwrap().name, "bochaai");
-        // auto with both engines configured: bocha still preferred.
-        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("yuanbao"), key("bocha")] };
-        assert_eq!(pick_search_entry(&cfg, Some("auto"), Path::new("c.yaml")).unwrap().name, "bocha");
-        // auto without bocha: the yuanbao entry.
-        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("other"), key("yuanbao")] };
-        assert_eq!(pick_search_entry(&cfg, None, Path::new("c.yaml")).unwrap().name, "yuanbao");
-        // auto without bocha: deepseek is preferred over yuanbao.
-        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("yuanbao"), key("deepseek")] };
-        assert_eq!(pick_search_entry(&cfg, None, Path::new("c.yaml")).unwrap().name, "deepseek");
-        // auto with neither engine: the first entry.
-        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("first")] };
+        let cfg = Config { web: "deepseek".to_string(), search: vec![key("other"), key("deepseek-1")], ..Default::default() };
+        assert_eq!(pick_search_entry(&cfg, None, Path::new("c.yaml")).unwrap().name, "deepseek-1");
+        // A top-level `web:` matching an entry name directly.
+        let cfg = Config { web: "other".to_string(), search: vec![key("other"), key("bochaai")], ..Default::default() };
+        assert_eq!(pick_search_entry(&cfg, None, Path::new("c.yaml")).unwrap().name, "other");
+        // Command-line --web overrides the top-level `web:`.
+        let cfg = Config { web: "bocha".to_string(), search: vec![key("bochaai"), key("yuanbao")], ..Default::default() };
+        assert_eq!(pick_search_entry(&cfg, Some("yuanbao"), Path::new("c.yaml")).unwrap().name, "yuanbao");
+        // auto with a single entry: the first entry.
+        let cfg = Config { search: vec![key("first")], ..Default::default() };
         assert_eq!(pick_search_entry(&cfg, None, Path::new("c.yaml")).unwrap().name, "first");
         // No entries: a clear error pointing at the config path.
-        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: Vec::new() };
+        let cfg = Config { search: Vec::new(), ..Default::default() };
         let err = pick_search_entry(&cfg, None, Path::new("c.yaml")).unwrap_err();
         let text = format!("{err:#}");
         assert!(text.contains("no web-search key configured"), "got: {text}");
@@ -4263,13 +4308,13 @@ clients:
     #[test]
     fn pick_search_entry_explicit_provider_and_unknown() {
         let key = |n: &str| SearchKey { name: n.to_string(), key: "k".to_string(), ..Default::default() };
-        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("bocha"), key("deepseek"), key("yuanbao")] };
+        let cfg = Config { search: vec![key("bocha"), key("deepseek"), key("yuanbao")], ..Default::default() };
         assert_eq!(pick_search_entry(&cfg, Some("yuanbao"), Path::new("c.yaml")).unwrap().name, "yuanbao");
         assert_eq!(pick_search_entry(&cfg, Some("bocha"), Path::new("c.yaml")).unwrap().name, "bocha");
         assert_eq!(pick_search_entry(&cfg, Some("deepseek"), Path::new("c.yaml")).unwrap().name, "deepseek");
         assert_eq!(pick_search_entry(&cfg, Some("auto"), Path::new("c.yaml")).unwrap().name, "bocha");
         // Pinned provider missing: engine-specific error.
-        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("bocha")] };
+        let cfg = Config { search: vec![key("bocha")], ..Default::default() };
         let err = pick_search_entry(&cfg, Some("yuanbao"), Path::new("c.yaml")).unwrap_err();
         assert!(format!("{err:#}").contains("no Yuanbao search key configured"), "got: {err:#}");
         let err = pick_search_entry(&cfg, Some("deepseek"), Path::new("c.yaml")).unwrap_err();
@@ -4278,19 +4323,19 @@ clients:
         let err = pick_search_entry(&cfg, Some("nope"), Path::new("c.yaml")).unwrap_err();
         assert!(format!("{err:#}").contains("unknown search provider `nope`"), "got: {err:#}");
         // An entry whose name matches the selector is used as-is.
-        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("my-bocha-proxy")] };
+        let cfg = Config { search: vec![key("my-bocha-proxy")], ..Default::default() };
         assert_eq!(pick_search_entry(&cfg, Some("my-bocha-proxy"), Path::new("c.yaml")).unwrap().name, "my-bocha-proxy");
         // A yuanbao entry with neither `key` nor `SecretId`+`SecretKey` is rejected.
-        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![SearchKey { name: "yuanbao".to_string(), key: String::new(), ..Default::default() }] };
+        let cfg = Config { search: vec![SearchKey { name: "yuanbao".to_string(), key: String::new(), ..Default::default() }], ..Default::default() };
         let err = pick_search_entry(&cfg, Some("yuanbao"), Path::new("c.yaml")).unwrap_err();
         assert!(format!("{err:#}").contains("SecretId"), "got: {err:#}");
         // A yuanbao entry with the TC3 key pair passes the check.
-        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![SearchKey {
+        let cfg = Config { search: vec![SearchKey {
             name: "yuanbao".to_string(),
             key: String::new(),
             secret_id: Some("AKIDtest".to_string()),
             secret_key: Some("sk-test".to_string()),
-        }] };
+        }], ..Default::default() };
         assert_eq!(pick_search_entry(&cfg, Some("yuanbao"), Path::new("c.yaml")).unwrap().name, "yuanbao");
     }
 

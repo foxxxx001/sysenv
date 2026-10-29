@@ -34,15 +34,20 @@ clients:
     models:
       - name: claude-3-5-sonnet
 
-# search：联网搜索 API key（`sys ai chat --web[=PROVIDER]` 联网搜索使用）
-# - `--web`（auto）：优先用 name 含 bocha 的条目，其次 name 含 deepseek、再其次 name 含 yuanbao 的条目，否则取首个
+# 顶层 web：`--web` 默认使用哪个搜索（命令行 `--web[=PROVIDER]` 优先级更高）
+#   - auto（默认）：用 webs 段第一个条目（配置顺序即优先级）
+#   - bocha / deepseek / yuanbao：锁定对应引擎（name 含该词的第一个条目）
+#   - 其他值：按条目名匹配
+# web: auto
+
+# webs：联网搜索 API key（`sys ai chat --web[=PROVIDER]` 联网搜索使用）
 # - `--web=bocha`：强制博查（name 含 bocha 的条目；key 在博查开放平台 open.bochaai.com 申请）
 # - `--web=deepseek`：强制 DeepSeek 官方 Search API（name 含 deepseek 的条目；key 即 DeepSeek 开放平台 API Key，
 #   `POST https://api.deepseek.com/v1/tools/search`，按成功请求计费，文档 https://api-docs.deepseek.com/guides/search/）
 # - `--web=yuanbao`：强制腾讯元宝搜索（name 含 yuanbao 的条目）。支持两种鉴权：
 #   1) 服务 API KEY（Bearer 单 key，元宝搜索控制台创建）；
 #   2) 腾讯云标准方式：`SecretId`（AKID 开头）+ `SecretKey`（CAM 密钥，TC3-HMAC-SHA256 签名，推荐）
-search:
+webs:
   - name: bochaai
     key: sk-REPLACE-WITH-YOUR-KEY
   - name: deepseek
