@@ -23,14 +23,14 @@
 
 use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_MAX_TOKENS: u64 = 1024;
 pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -63,10 +63,15 @@ pub(crate) struct Config {
     pub(crate) search: Vec<SearchKey>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct SearchKey {
     pub(crate) name: String,
+    /// 单 key（服务 API KEY 方式）：Bocha `sk-...`，或元宝搜索 Bearer 单 key。
     pub(crate) key: String,
+    /// 腾讯云标准方式（TC3-HMAC-SHA256 签名）的 SecretId（`AKID...`）。
+    pub(crate) secret_id: Option<String>,
+    /// 腾讯云标准方式（TC3-HMAC-SHA256 签名）的 SecretKey。
+    pub(crate) secret_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -548,9 +553,22 @@ fn config_from_yaml(y: &YVal) -> Result<Config> {
     if let Some(list) = y.get("search").and_then(|v| v.list()) {
         for s in list {
             let name = s.get("name").and_then(|v| v.scalar()).unwrap_or("").trim().to_string();
+            if name.is_empty() {
+                continue;
+            }
+            // 单 key（`key`）或腾讯云标准方式双钥（`SecretId`+`SecretKey`，兼容小写）。
             let key = s.get("key").and_then(|v| v.scalar()).unwrap_or("").trim().to_string();
-            if !name.is_empty() && !key.is_empty() {
-                search.push(SearchKey { name, key });
+            let field = |k1: &str, k2: &str| {
+                s.get(k1)
+                    .or_else(|| s.get(k2))
+                    .and_then(|v| v.scalar())
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+            };
+            let secret_id = field("SecretId", "secret_id");
+            let secret_key = field("SecretKey", "secret_key");
+            if !key.is_empty() || secret_id.is_some() || secret_key.is_some() {
+                search.push(SearchKey { name, key, secret_id, secret_key });
             }
         }
     }
@@ -1656,8 +1674,31 @@ fn pick_search_entry<'a>(cfg: &'a Config, sel: Option<&str>, path: &Path) -> Res
             path.display()
         ),
     })?;
-    if entry.key.trim().is_empty() {
-        bail!("search entry `{}` has an empty key in {}", entry.name, path.display());
+    match search_engine_of(&entry.name) {
+        SearchEngine::Bocha if entry.key.trim().is_empty() => {
+            bail!("search entry `{}` has an empty key in {}", entry.name, path.display());
+        }
+        SearchEngine::Yuanbao => {
+            let has_single = !entry.key.trim().is_empty();
+            let has_pair = entry
+                .secret_id
+                .as_ref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false)
+                && entry
+                    .secret_key
+                    .as_ref()
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+            if !has_single && !has_pair {
+                bail!(
+                    "yuanbao search entry `{}` needs `key` (Bearer API KEY) or `SecretId`+`SecretKey` (TC3 签名) in {}",
+                    entry.name,
+                    path.display()
+                );
+            }
+        }
+        SearchEngine::Bocha => {}
     }
     Ok(entry)
 }
@@ -1669,7 +1710,7 @@ fn web_search(cfg: &Config, sel: Option<&str>, path: &Path, msg: &str, debug: bo
     let entry = pick_search_entry(cfg, sel, path)?;
     match search_engine_of(&entry.name) {
         SearchEngine::Bocha => bocha_search(&entry.key, msg, None, true, 5, 1, &[], &[], debug),
-        SearchEngine::Yuanbao => yuanbao_search(&entry.key, msg, debug),
+        SearchEngine::Yuanbao => yuanbao_search(entry, msg, debug),
     }
 }
 
@@ -1857,7 +1898,79 @@ fn bocha_search(
     Ok(bocha_result_text(&data, summary))
 }
 
-// --- Tencent Yuanbao Search (WSA, 服务 API KEY 方式) -----------------------
+// --- Tencent Yuanbao Search (WSA: 服务 API KEY / 腾讯云标准方式 TC3) ---------
+
+/// 腾讯云 TC3-HMAC-SHA256 签名（签名方法 v3；公共参数与 Authorization 构造见
+/// https://cloud.tencent.com/document/api/1806/121815）。返回可直接放进
+/// `Authorization` 头的完整值：
+/// `TC3-HMAC-SHA256 Credential=<SecretId>/<date>/wsa/tc3_request, SignedHeaders=content-type;host, Signature=...`
+fn tc3_authorization(secret_id: &str, secret_key: &str, timestamp: i64, payload: &[u8]) -> Result<String> {
+    use hmac::{Hmac, Mac};
+    use sha2::{Digest, Sha256};
+    type HmacSha256 = Hmac<Sha256>;
+
+    let service = "wsa";
+    let host = "wsa.tencentcloudapi.com";
+    let algorithm = "TC3-HMAC-SHA256";
+
+    let date = chrono::DateTime::from_timestamp(timestamp, 0)
+        .context("invalid timestamp")?
+        .format("%Y-%m-%d")
+        .to_string();
+
+    // 1) CanonicalRequest：POST + URI "/" + 空查询串 + 规范化头 + 签名头 + 请求体 SHA-256。
+    let canonical_headers = format!("content-type:application/json\nhost:{host}\n");
+    let signed_headers = "content-type;host";
+    let canonical_request = format!(
+        "POST\n/\n\n{canonical_headers}\n{signed_headers}\n{}",
+        hex_lower(&sha256_digest(payload))
+    );
+
+    // 2) StringToSign。
+    let credential_scope = format!("{date}/{service}/tc3_request");
+    let string_to_sign = format!(
+        "{algorithm}\n{timestamp}\n{credential_scope}\n{}",
+        hex_lower(&sha256_digest(canonical_request.as_bytes()))
+    );
+
+    // 3) 派生签名密钥链并计算签名。
+    let secret_date = hmac_sha256_digest(format!("TC3{secret_key}").as_bytes(), date.as_bytes());
+    let secret_service = hmac_sha256_digest(&secret_date, service.as_bytes());
+    let secret_signing = hmac_sha256_digest(&secret_service, b"tc3_request");
+    let signature = hex_lower(&hmac_sha256_digest(&secret_signing, string_to_sign.as_bytes()));
+
+    Ok(format!(
+        "{algorithm} Credential={secret_id}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}"
+    ))
+}
+
+/// SHA-256 摘要（32 字节）。
+fn sha256_digest(data: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(data);
+    h.finalize().into()
+}
+
+/// HMAC-SHA256 摘要（32 字节）。
+fn hmac_sha256_digest(key: &[u8], data: &[u8]) -> [u8; 32] {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(data);
+    mac.finalize().into_bytes().into()
+}
+
+/// 小写十六进制编码。
+fn hex_lower(data: &[u8]) -> String {
+    let mut s = String::with_capacity(data.len() * 2);
+    for b in data {
+        s.push(char::from_digit((b >> 4) as u32, 16).expect("nibble is 0-15"));
+        s.push(char::from_digit((b & 0xf) as u32, 16).expect("nibble is 0-15"));
+    }
+    s
+}
 
 /// Extract the WSA error (`Response.Error`) from a parsed response, if any.
 fn yuanbao_response_error(v: &Value) -> Option<String> {
@@ -1869,18 +1982,51 @@ fn yuanbao_response_error(v: &Value) -> Option<String> {
 }
 
 /// Send one Yuanbao `SearchPro` request with `body` and return the parsed
-/// `Response` object. Auth is the WSA service API KEY (`Authorization:
-/// Bearer <key>`); the envelope is `{"Response": {..., "Error": {...}}}` and
-/// errors are reported via `Response.Error.Code/Message`. `debug` prints the
-/// actual HTTP request and response.
-fn yuanbao_request(key: &str, body: &Value, debug: bool) -> Result<Value> {
+/// `Response` object. Two auth modes are supported, chosen per entry:
+/// - `SecretId` + `SecretKey` set → Tencent Cloud standard mode (TC3-HMAC-SHA256
+///   signature, domain `wsa.tencentcloudapi.com`, headers `X-TC-*`);
+/// - otherwise → service API KEY mode (`Authorization: Bearer <key>`,
+///   domain `api.wsa.cloud.tencent.com`).
+/// The envelope is `{"Response": {..., "Error": {...}}}` and errors are
+/// reported via `Response.Error.Code/Message`. `debug` prints the actual HTTP
+/// request and response.
+fn yuanbao_request(entry: &SearchKey, body: &Value, debug: bool) -> Result<Value> {
     let body_bytes = serde_json::to_vec(body).context("cannot serialize yuanbao request body")?;
     let mut headers = HeaderMap::new();
     headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STR));
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {key}")).context("invalid yuanbao api key")?);
+
+    let endpoint = match (&entry.secret_id, &entry.secret_key) {
+        (Some(sid), Some(skey)) if !sid.trim().is_empty() && !skey.trim().is_empty() => {
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .context("system clock before epoch")?
+                .as_secs() as i64;
+            headers.insert(
+                "X-TC-Action".parse::<HeaderName>().unwrap(),
+                HeaderValue::from_static("SearchPro"),
+            );
+            headers.insert(
+                "X-TC-Version".parse::<HeaderName>().unwrap(),
+                HeaderValue::from_static("2025-05-08"),
+            );
+            headers.insert(
+                "X-TC-Timestamp".parse::<HeaderName>().unwrap(),
+                HeaderValue::from_str(&ts.to_string()).unwrap(),
+            );
+            let auth = tc3_authorization(sid, skey, ts, &body_bytes)?;
+            headers.insert(AUTHORIZATION, HeaderValue::from_str(&auth).context("invalid yuanbao authorization")?);
+            "https://wsa.tencentcloudapi.com/".to_string()
+        }
+        _ => {
+            let auth = format!("Bearer {}", entry.key);
+            headers.insert(AUTHORIZATION, HeaderValue::from_str(&auth).context("invalid yuanbao api key")?);
+            YUANBAO_API.to_string()
+        }
+    };
+
     if debug {
-        debug_print_request(YUANBAO_API, &headers, &body_bytes);
+        debug_print_request(&endpoint, &headers, &body_bytes);
     }
 
     let client = Client::builder()
@@ -1888,11 +2034,11 @@ fn yuanbao_request(key: &str, body: &Value, debug: bool) -> Result<Value> {
         .build()
         .context("failed to build HTTP client")?;
     let resp = client
-        .post(YUANBAO_API)
+        .post(&endpoint)
         .headers(headers)
         .body(body_bytes.clone())
         .send()
-        .with_context(|| format!("request to {YUANBAO_API} failed"))?;
+        .with_context(|| format!("request to {endpoint} failed"))?;
     let status = resp.status();
     let resp_headers = resp.headers().clone();
     let text = resp.text().context("cannot read yuanbao search response")?;
@@ -1901,7 +2047,7 @@ fn yuanbao_request(key: &str, body: &Value, debug: bool) -> Result<Value> {
     }
     if !status.is_success() {
         let snippet: String = text.chars().take(500).collect();
-        bail!("{YUANBAO_API} returned HTTP {status}: {snippet}");
+        bail!("{endpoint} returned HTTP {status}: {snippet}");
     }
     let v: Value = serde_json::from_str(&text).context("yuanbao search returned invalid JSON")?;
     if let Some(err) = yuanbao_response_error(&v) {
@@ -1913,9 +2059,9 @@ fn yuanbao_request(key: &str, body: &Value, debug: bool) -> Result<Value> {
 /// Send one Yuanbao web-search (`SearchPro`) request with `Query` and `Cnt`
 /// (the API only accepts 10/20/30/40/50; we request 10) and return the parsed
 /// `Response`.
-fn yuanbao_search_value(key: &str, query: &str, debug: bool) -> Result<Value> {
+fn yuanbao_search_value(entry: &SearchKey, query: &str, debug: bool) -> Result<Value> {
     let body = json!({ "Query": query, "Cnt": 10 });
-    yuanbao_request(key, &body, debug)
+    yuanbao_request(entry, &body, debug)
 }
 
 /// Parse the `Response.Pages` array of JSON-string page objects into their
@@ -1983,8 +2129,8 @@ fn yuanbao_result_text(data: &Value) -> String {
 }
 
 /// Run one Yuanbao web search and return the formatted result text.
-fn yuanbao_search(key: &str, query: &str, debug: bool) -> Result<String> {
-    let data = yuanbao_search_value(key, query, debug)?;
+fn yuanbao_search(entry: &SearchKey, query: &str, debug: bool) -> Result<String> {
+    let data = yuanbao_search_value(entry, query, debug)?;
     Ok(yuanbao_result_text(&data))
 }
 
@@ -3927,8 +4073,49 @@ clients:
     }
 
     #[test]
+    fn config_parses_search_secret_pair() {
+        // 腾讯云标准方式：大写 `SecretId`/`SecretKey` 与小写变体都被解析为双钥。
+        let y = parse_yaml(
+            r#"search:
+  - name: yuanbao
+    SecretId: AKIDCUZZEXAMPLE
+    SecretKey: QelfMSMwVs4EXAMPLE
+  - name: yuanbao2
+    secret_id: AKIDLOWER
+    secret_key: lowerkey
+"#,
+        )
+        .unwrap();
+        let cfg = config_from_yaml(&y).unwrap();
+        assert_eq!(cfg.search.len(), 2);
+        assert_eq!(cfg.search[0].name, "yuanbao");
+        assert!(cfg.search[0].key.is_empty());
+        assert_eq!(cfg.search[0].secret_id.as_deref(), Some("AKIDCUZZEXAMPLE"));
+        assert_eq!(cfg.search[0].secret_key.as_deref(), Some("QelfMSMwVs4EXAMPLE"));
+        assert_eq!(cfg.search[1].secret_id.as_deref(), Some("AKIDLOWER"));
+        assert_eq!(cfg.search[1].secret_key.as_deref(), Some("lowerkey"));
+    }
+
+    #[test]
+    fn tc3_authorization_matches_reference_vector() {
+        // 独立参考向量（Python hashlib/hmac 同算法计算）：timestamp
+        // 1551113065 = 2019-02-25 UTC，service wsa，请求体 {"Query":"x","Cnt":10}。
+        let auth = tc3_authorization(
+            "AKIDEXAMPLE",
+            "Gu5t9xGARNpq86cd98joQYCN3EXAMPLE",
+            1551113065,
+            br#"{"Query":"x","Cnt":10}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            auth,
+            "TC3-HMAC-SHA256 Credential=AKIDEXAMPLE/2019-02-25/wsa/tc3_request, SignedHeaders=content-type;host, Signature=ab04db9072c2651edd76382490ff789f23a416a13dcea1d3c88804c179c9088d"
+        );
+    }
+
+    #[test]
     fn pick_search_entry_auto_bocha_then_yuanbao_then_first() {
-        let key = |n: &str| SearchKey { name: n.to_string(), key: "k".to_string() };
+        let key = |n: &str| SearchKey { name: n.to_string(), key: "k".to_string(), ..Default::default() };
         // auto: the entry whose name mentions `bocha` wins even when not first.
         let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("other"), key("bochaai")] };
         assert_eq!(pick_search_entry(&cfg, None, Path::new("c.yaml")).unwrap().name, "bochaai");
@@ -3951,7 +4138,7 @@ clients:
 
     #[test]
     fn pick_search_entry_explicit_provider_and_unknown() {
-        let key = |n: &str| SearchKey { name: n.to_string(), key: "k".to_string() };
+        let key = |n: &str| SearchKey { name: n.to_string(), key: "k".to_string(), ..Default::default() };
         let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("bocha"), key("yuanbao")] };
         assert_eq!(pick_search_entry(&cfg, Some("yuanbao"), Path::new("c.yaml")).unwrap().name, "yuanbao");
         assert_eq!(pick_search_entry(&cfg, Some("bocha"), Path::new("c.yaml")).unwrap().name, "bocha");
@@ -3965,10 +4152,18 @@ clients:
         // An entry whose name matches the selector is used as-is.
         let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("my-bocha-proxy")] };
         assert_eq!(pick_search_entry(&cfg, Some("my-bocha-proxy"), Path::new("c.yaml")).unwrap().name, "my-bocha-proxy");
-        // Empty key is rejected.
-        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![SearchKey { name: "yuanbao".to_string(), key: String::new() }] };
+        // A yuanbao entry with neither `key` nor `SecretId`+`SecretKey` is rejected.
+        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![SearchKey { name: "yuanbao".to_string(), key: String::new(), ..Default::default() }] };
         let err = pick_search_entry(&cfg, Some("yuanbao"), Path::new("c.yaml")).unwrap_err();
-        assert!(format!("{err:#}").contains("empty key"), "got: {err:#}");
+        assert!(format!("{err:#}").contains("SecretId"), "got: {err:#}");
+        // A yuanbao entry with the TC3 key pair passes the check.
+        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![SearchKey {
+            name: "yuanbao".to_string(),
+            key: String::new(),
+            secret_id: Some("AKIDtest".to_string()),
+            secret_key: Some("sk-test".to_string()),
+        }] };
+        assert_eq!(pick_search_entry(&cfg, Some("yuanbao"), Path::new("c.yaml")).unwrap().name, "yuanbao");
     }
 
     #[test]

@@ -378,7 +378,7 @@ sys ai cn-model gpt-6-1-sol --refresh  # 强制重新抓取（--refresh 属 ai �
 
 * `--free[=ROUTER]`：**忽略配置文件，只用内置免费路由**（无配置文件时自动启用）：`kilo-auto/free`（Kilo Gateway，匿名直连）与 `blockrun/free`（BlockRun 匿名免费端点 `https://blockrun.ai/api/v1`，模型 `nvidia/llama-3.2-11b-vision`）始终可用；`openrouter/free` 仅在设置 `OPENROUTER_API_KEY` 后追加。`--free` 不带参数在所有可用路由间加权轮询；`--free=kilo` / `--free=blockrun` / `--free=openrouter` 固定单路由（别名接受 `kilo-auto` / `kilo-auto/free` / `blockrun/free` / `openrouter/free`），指定路由不可用时明确报错
 
-* `--web[=PROVIDER]`：**先联网搜索再回答**——用消息作为 query 调配置的搜索提供器（取带摘要的结果），把结果作为上下文拼进消息，再交给大模型基于搜索结果作答并附来源链接。PROVIDER：`auto`（默认，优先 name 含 `bocha` 的条目，其次含 `yuanbao`，否则取首个）、`bocha`（博查 Bocha，`POST /v1/web-search`，key 在 open.bochaai.com 申请）、`yuanbao`（腾讯元宝搜索 WSA `POST https://api.wsa.cloud.tencent.com/SearchPro`，服务 API KEY、Bearer 单 key，元宝搜索控制台创建）。搜索 key 从配置文件顶层 `search:` 段读取（如 `- name: bochaai, key: sk-...`、`- name: yuanbao, key: <API KEY>`），未配置时报错提示。`--debug` 会打印搜索请求与响应；`--web` 与 `--test` 互斥
+* `--web[=PROVIDER]`：**先联网搜索再回答**——用消息作为 query 调配置的搜索提供器（取带摘要的结果），把结果作为上下文拼进消息，再交给大模型基于搜索结果作答并附来源链接。PROVIDER：`auto`（默认，优先 name 含 `bocha` 的条目，其次含 `yuanbao`，否则取首个）、`bocha`（博查 Bocha，`POST /v1/web-search`，key 在 open.bochaai.com 申请）、`yuanbao`（腾讯元宝搜索 WSA `SearchPro`，支持两种鉴权：服务 API KEY 走 `POST https://api.wsa.cloud.tencent.com/SearchPro`（Bearer 单 key），或腾讯云标准方式走 `https://wsa.tencentcloudapi.com/`（TC3-HMAC-SHA256 签名，配置 `SecretId`+`SecretKey`，推荐））。搜索 key 从配置文件顶层 `search:` 段读取（如 `- name: bochaai, key: sk-...`、`- name: yuanbao, SecretId: AKID..., SecretKey: ...`），未配置时报错提示。`--debug` 会打印搜索请求与响应；`--web` 与 `--test` 互斥
 
 ```
 sys ai chat "你好"                     # 用默认配置聊天（~/.sysenv/config.yaml）

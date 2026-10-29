@@ -37,12 +37,15 @@ clients:
 # search：联网搜索 API key（`sys ai chat --web[=PROVIDER]` 联网搜索使用）
 # - `--web`（auto）：优先用 name 含 bocha 的条目，其次 name 含 yuanbao 的条目，否则取首个
 # - `--web=bocha`：强制博查（name 含 bocha 的条目；key 在博查开放平台 open.bochaai.com 申请）
-# - `--web=yuanbao`：强制腾讯元宝搜索（name 含 yuanbao 的条目；key 为元宝搜索控制台创建的“服务 API KEY”，Bearer 单 key）
+# - `--web=yuanbao`：强制腾讯元宝搜索（name 含 yuanbao 的条目）。支持两种鉴权：
+#   1) 服务 API KEY（Bearer 单 key，元宝搜索控制台创建）；
+#   2) 腾讯云标准方式：`SecretId`（AKID 开头）+ `SecretKey`（CAM 密钥，TC3-HMAC-SHA256 签名，推荐）
 search:
   - name: bochaai
     key: sk-REPLACE-WITH-YOUR-KEY
   - name: yuanbao
-    key: REPLACE-WITH-YOUR-API-KEY
+    SecretId: AKIDREPLACE-WITH-YOUR-SECRET-ID
+    SecretKey: REPLACE-WITH-YOUR-SECRET-KEY
 
 # tasks：ai task 任务模板（name 必填，desc 描述，msg 聊天消息）
 # `ai task -t * "用户需求"`：对全部任务打分（0-10 分匹配度，0 不匹配 / 10 完全匹配），输出 TASK / DESC / SCORE 并按分数排序
