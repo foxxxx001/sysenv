@@ -1791,7 +1791,9 @@ fn bocha_result_text(data: &Value, include_summary: bool) -> String {
         return "（未返回搜索结果）".to_string();
     }
     let mut out = String::new();
-    for (i, it) in items.iter().enumerate() {
+    let mut seen = std::collections::HashSet::new();
+    let mut n = 0usize;
+    for it in items.iter() {
         let title = it
             .get("name")
             .or_else(|| it.get("webpage"))
@@ -1800,10 +1802,12 @@ fn bocha_result_text(data: &Value, include_summary: bool) -> String {
             .unwrap_or("")
             .trim();
         let url = it.get("url").and_then(|x| x.as_str()).unwrap_or("").trim();
-        if title.is_empty() || url.is_empty() {
+        // Skip rows without a title/url and duplicate URLs (keeps the first).
+        if title.is_empty() || url.is_empty() || !seen.insert(url) {
             continue;
         }
-        out.push_str(&format!("[{:>2}] {title}\n    {url}\n", i + 1));
+        n += 1;
+        out.push_str(&format!("[{:>2}] {title}\n    {url}\n", n));
         if include_summary {
             let snippet = it
                 .get("summary")
@@ -1919,7 +1923,14 @@ fn yuanbao_search_value(key: &str, query: &str, debug: bool) -> Result<Value> {
 /// parse). Each `Pages` element is itself a JSON string.
 fn yuanbao_result_items(data: &Value) -> Vec<Value> {
     let mut items = Vec::new();
-    let Some(pages) = data.get("Pages").and_then(|p| p.as_array()) else {
+    // Accept both the raw API envelope (`Response.Pages`) and the already
+    // unwrapped `Response` object returned by `yuanbao_request` (`Pages`).
+    let pages = data
+        .get("Response")
+        .and_then(|r| r.get("Pages"))
+        .or_else(|| data.get("Pages"))
+        .and_then(|p| p.as_array());
+    let Some(pages) = pages else {
         return items;
     };
     for page in pages {
