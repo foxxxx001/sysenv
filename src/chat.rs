@@ -1607,7 +1607,7 @@ pub(crate) fn debug_print_response(status: reqwest::StatusCode, headers: &Header
 
 // ---------------------------------------------------------------------------
 // `sys ai chat --web[=PROVIDER]`: web search providers
-// (Bocha `POST /v1/web-search` / Tencent Yuanbao `SearchPro`)
+// (Bocha `POST /v1/web-search` / Tencent Yuanbao `SearchPro` / DeepSeek Search)
 // ---------------------------------------------------------------------------
 
 /// Bocha AI web search endpoint (official: `POST /v1/web-search`).
@@ -1617,6 +1617,10 @@ const BOCHA_API: &str = "https://api.bochaai.com/v1/web-search";
 /// Docs: https://cloud.tencent.com/document/product/1806/130615
 const YUANBAO_API: &str = "https://api.wsa.cloud.tencent.com/SearchPro";
 
+/// DeepSeek Search endpoint (official: `POST /v1/tools/search`).
+/// Docs: https://api-docs.deepseek.com/guides/search/
+const DEEPSEEK_SEARCH_API: &str = "https://api.deepseek.com/v1/tools/search";
+
 /// The web-search engine an entry drives, detected from its `name`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchEngine {
@@ -1624,13 +1628,19 @@ enum SearchEngine {
     Bocha,
     /// 腾讯元宝搜索（WSA，服务 API KEY 方式 `POST /SearchPro`）。
     Yuanbao,
+    /// DeepSeek 官方 Search API（`POST /v1/tools/search`）。
+    Deepseek,
 }
 
 /// Map an entry name to the engine it drives: containing `yuanbao` selects
-/// Tencent Yuanbao Search, every other name drives Bocha.
+/// Tencent Yuanbao Search, containing `deepseek` selects DeepSeek Search,
+/// every other name drives Bocha.
 fn search_engine_of(name: &str) -> SearchEngine {
-    if name.to_ascii_lowercase().contains("yuanbao") {
+    let lower = name.to_ascii_lowercase();
+    if lower.contains("yuanbao") {
         SearchEngine::Yuanbao
+    } else if lower.contains("deepseek") {
+        SearchEngine::Deepseek
     } else {
         SearchEngine::Bocha
     }
@@ -1638,9 +1648,10 @@ fn search_engine_of(name: &str) -> SearchEngine {
 
 /// Resolve the web-search entry for `--web[=PROVIDER]`. `sel` is the optional
 /// `--web` value: `None` / `"auto"` prefer the first entry whose name mentions
-/// `bocha`, then one mentioning `yuanbao`, then the first entry; `"bocha"` /
-/// `"yuanbao"` pin that engine (the first entry whose name contains the word);
-/// anything else must match an entry name (case-insensitive substring).
+/// `bocha`, then one mentioning `deepseek`, then one mentioning `yuanbao`,
+/// then the first entry; `"bocha"` / `"deepseek"` / `"yuanbao"` pin that engine
+/// (the first entry whose name contains the word); anything else must match an
+/// entry name (case-insensitive substring).
 /// Missing entries produce a clear error pointing at the config path.
 fn pick_search_entry<'a>(cfg: &'a Config, sel: Option<&str>, path: &Path) -> Result<&'a SearchKey> {
     let sel = sel.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("auto");
@@ -1650,19 +1661,25 @@ fn pick_search_entry<'a>(cfg: &'a Config, sel: Option<&str>, path: &Path) -> Res
             .search
             .iter()
             .find(|s| s.name.to_ascii_lowercase().contains("bocha"))
+            .or_else(|| cfg.search.iter().find(|s| s.name.to_ascii_lowercase().contains("deepseek")))
             .or_else(|| cfg.search.iter().find(|s| s.name.to_ascii_lowercase().contains("yuanbao")))
             .or_else(|| cfg.search.first()),
         "bocha" => cfg.search.iter().find(|s| s.name.to_ascii_lowercase().contains("bocha")),
+        "deepseek" => cfg.search.iter().find(|s| s.name.to_ascii_lowercase().contains("deepseek")),
         "yuanbao" => cfg.search.iter().find(|s| s.name.to_ascii_lowercase().contains("yuanbao")),
         other => cfg.search.iter().find(|s| s.name.to_ascii_lowercase().contains(other)),
     }
     .ok_or_else(|| match sel_low.as_str() {
         "auto" => anyhow::anyhow!(
-            "no web-search key configured: add a `search:` entry with `name: bocha` (Bocha) or `name: yuanbao` (腾讯元宝搜索) and its key to {}",
+            "no web-search key configured: add a `search:` entry with `name: bocha` (Bocha), `name: deepseek` (DeepSeek Search) or `name: yuanbao` (腾讯元宝搜索) and its key to {}",
             path.display()
         ),
         "bocha" => anyhow::anyhow!(
             "no Bocha search key configured: add a `search:` entry like `- name: bochaai, key: sk-...` to {}",
+            path.display()
+        ),
+        "deepseek" => anyhow::anyhow!(
+            "no DeepSeek search key configured: add a `search:` entry like `- name: deepseek, key: <DeepSeek API Key>` to {}",
             path.display()
         ),
         "yuanbao" => anyhow::anyhow!(
@@ -1670,12 +1687,12 @@ fn pick_search_entry<'a>(cfg: &'a Config, sel: Option<&str>, path: &Path) -> Res
             path.display()
         ),
         _ => anyhow::anyhow!(
-            "unknown search provider `{sel}` (expected: auto | bocha | yuanbao); add a matching `search:` entry to {}",
+            "unknown search provider `{sel}` (expected: auto | bocha | deepseek | yuanbao); add a matching `search:` entry to {}",
             path.display()
         ),
     })?;
     match search_engine_of(&entry.name) {
-        SearchEngine::Bocha if entry.key.trim().is_empty() => {
+        SearchEngine::Bocha | SearchEngine::Deepseek if entry.key.trim().is_empty() => {
             bail!("search entry `{}` has an empty key in {}", entry.name, path.display());
         }
         SearchEngine::Yuanbao => {
@@ -1698,7 +1715,7 @@ fn pick_search_entry<'a>(cfg: &'a Config, sel: Option<&str>, path: &Path) -> Res
                 );
             }
         }
-        SearchEngine::Bocha => {}
+        SearchEngine::Bocha | SearchEngine::Deepseek => {}
     }
     Ok(entry)
 }
@@ -1711,6 +1728,7 @@ fn web_search(cfg: &Config, sel: Option<&str>, path: &Path, msg: &str, debug: bo
     match search_engine_of(&entry.name) {
         SearchEngine::Bocha => bocha_search(&entry.key, msg, None, true, 5, 1, &[], &[], debug),
         SearchEngine::Yuanbao => yuanbao_search(entry, msg, debug),
+        SearchEngine::Deepseek => deepseek_search(entry, msg, debug),
     }
 }
 
@@ -2132,6 +2150,109 @@ fn yuanbao_result_text(data: &Value) -> String {
 fn yuanbao_search(entry: &SearchKey, query: &str, debug: bool) -> Result<String> {
     let data = yuanbao_search_value(entry, query, debug)?;
     Ok(yuanbao_result_text(&data))
+}
+
+/// Send one DeepSeek `tools/search` request with `body` and return the parsed
+/// value. Auth is `Authorization: Bearer <DeepSeek API Key>`; the response is
+/// `{"results": [...]}` and errors follow the OpenAI-compatible
+/// `{"error": {"message", "type", "code"}}` format. `debug` prints the actual
+/// HTTP request and response.
+fn deepseek_request(entry: &SearchKey, body: &Value, debug: bool) -> Result<Value> {
+    let body_bytes = serde_json::to_vec(body).context("cannot serialize deepseek search request body")?;
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STR));
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", entry.key)).context("invalid deepseek api key")?);
+    if debug {
+        debug_print_request(DEEPSEEK_SEARCH_API, &headers, &body_bytes);
+    }
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("failed to build HTTP client")?;
+    let resp = client
+        .post(DEEPSEEK_SEARCH_API)
+        .headers(headers)
+        .body(body_bytes.clone())
+        .send()
+        .with_context(|| format!("request to {DEEPSEEK_SEARCH_API} failed"))?;
+    let status = resp.status();
+    let resp_headers = resp.headers().clone();
+    let text = resp.text().context("cannot read deepseek search response")?;
+    if debug {
+        debug_print_response(status, &resp_headers, &text);
+    }
+    if !status.is_success() {
+        let snippet: String = text.chars().take(500).collect();
+        bail!("{DEEPSEEK_SEARCH_API} returned HTTP {status}: {snippet}");
+    }
+    let v: Value = serde_json::from_str(&text).context("deepseek search returned invalid JSON")?;
+    if let Some(err) = v.get("error") {
+        let raw = err.to_string();
+        let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or(&raw);
+        bail!("deepseek search failed: {msg}");
+    }
+    Ok(v)
+}
+
+/// Send one DeepSeek `tools/search` request for `query` (10 results, no page
+/// content) and return the parsed `{"results": [...]}` value.
+fn deepseek_search_value(entry: &SearchKey, query: &str, debug: bool) -> Result<Value> {
+    let body = json!({ "query": query, "count": 10, "need_content": false });
+    deepseek_request(entry, &body, debug)
+}
+
+/// Format a DeepSeek search response into the same numbered plain-text block
+/// used by Bocha / Yuanbao (title / URL / summary / site · date), keeping the
+/// best 5 rows (the API returns them relevance-ranked). `summary` is model
+/// oriented (600-800 chars), so the snippet is capped at 500 chars.
+fn deepseek_result_text(data: &Value) -> String {
+    let Some(results) = data.get("results").and_then(|r| r.as_array()) else {
+        return "（未返回搜索结果）".to_string();
+    };
+    let mut items: Vec<&Value> = Vec::new();
+    for r in results {
+        let title = r.get("title").and_then(|t| t.as_str()).unwrap_or("").trim();
+        let url = r.get("url").and_then(|u| u.as_str()).unwrap_or("").trim();
+        if title.is_empty() || url.is_empty() {
+            continue;
+        }
+        items.push(r);
+    }
+    if items.is_empty() {
+        return "（未返回搜索结果）".to_string();
+    }
+    let mut out = String::new();
+    for (i, it) in items.iter().take(5).enumerate() {
+        let title = it.get("title").and_then(|t| t.as_str()).unwrap_or("").trim();
+        let url = it.get("url").and_then(|u| u.as_str()).unwrap_or("").trim();
+        let summary: String = it
+            .get("summary")
+            .or_else(|| it.get("snippet"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(500)
+            .collect();
+        let site = it.get("site_name").and_then(|x| x.as_str()).unwrap_or("").trim();
+        let date = it.get("date").and_then(|x| x.as_str()).unwrap_or("").trim();
+        out.push_str(&format!("[{:>2}] {title}\n    {url}\n", i + 1));
+        if !summary.is_empty() {
+            out.push_str(&format!("    {summary}\n"));
+        }
+        if !site.is_empty() || !date.is_empty() {
+            out.push_str(&format!("    {site} · {date}\n"));
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// Run one DeepSeek web search and return the formatted result text.
+fn deepseek_search(entry: &SearchKey, query: &str, debug: bool) -> Result<String> {
+    let data = deepseek_search_value(entry, query, debug)?;
+    Ok(deepseek_result_text(&data))
 }
 
 /// Build the augmented user message for `--web`: the web search results as
@@ -4125,6 +4246,9 @@ clients:
         // auto without bocha: the yuanbao entry.
         let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("other"), key("yuanbao")] };
         assert_eq!(pick_search_entry(&cfg, None, Path::new("c.yaml")).unwrap().name, "yuanbao");
+        // auto without bocha: deepseek is preferred over yuanbao.
+        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("yuanbao"), key("deepseek")] };
+        assert_eq!(pick_search_entry(&cfg, None, Path::new("c.yaml")).unwrap().name, "deepseek");
         // auto with neither engine: the first entry.
         let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("first")] };
         assert_eq!(pick_search_entry(&cfg, None, Path::new("c.yaml")).unwrap().name, "first");
@@ -4139,13 +4263,17 @@ clients:
     #[test]
     fn pick_search_entry_explicit_provider_and_unknown() {
         let key = |n: &str| SearchKey { name: n.to_string(), key: "k".to_string(), ..Default::default() };
-        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("bocha"), key("yuanbao")] };
+        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("bocha"), key("deepseek"), key("yuanbao")] };
         assert_eq!(pick_search_entry(&cfg, Some("yuanbao"), Path::new("c.yaml")).unwrap().name, "yuanbao");
         assert_eq!(pick_search_entry(&cfg, Some("bocha"), Path::new("c.yaml")).unwrap().name, "bocha");
+        assert_eq!(pick_search_entry(&cfg, Some("deepseek"), Path::new("c.yaml")).unwrap().name, "deepseek");
+        assert_eq!(pick_search_entry(&cfg, Some("auto"), Path::new("c.yaml")).unwrap().name, "bocha");
         // Pinned provider missing: engine-specific error.
         let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("bocha")] };
         let err = pick_search_entry(&cfg, Some("yuanbao"), Path::new("c.yaml")).unwrap_err();
         assert!(format!("{err:#}").contains("no Yuanbao search key configured"), "got: {err:#}");
+        let err = pick_search_entry(&cfg, Some("deepseek"), Path::new("c.yaml")).unwrap_err();
+        assert!(format!("{err:#}").contains("no DeepSeek search key configured"), "got: {err:#}");
         // Unknown selector: clear error.
         let err = pick_search_entry(&cfg, Some("nope"), Path::new("c.yaml")).unwrap_err();
         assert!(format!("{err:#}").contains("unknown search provider `nope`"), "got: {err:#}");
@@ -4170,8 +4298,42 @@ clients:
     fn search_engine_of_detects_yuanbao_by_name() {
         assert_eq!(search_engine_of("yuanbao"), SearchEngine::Yuanbao);
         assert_eq!(search_engine_of("YuanBao-1"), SearchEngine::Yuanbao);
+        assert_eq!(search_engine_of("deepseek"), SearchEngine::Deepseek);
+        assert_eq!(search_engine_of("DeepSeek-search"), SearchEngine::Deepseek);
         assert_eq!(search_engine_of("bochaai"), SearchEngine::Bocha);
         assert_eq!(search_engine_of("anything"), SearchEngine::Bocha);
+    }
+
+    #[test]
+    fn deepseek_results_parse_and_format() {
+        let v: Value = serde_json::from_str(
+            r#"{
+  "results": [
+    {
+      "rerank_score": 2.4,
+      "title": "标题A",
+      "url": "https://a.example/1",
+      "snippet": "短摘要A",
+      "summary": "长摘要A，供模型阅读",
+      "content": "",
+      "site_name": "站点A",
+      "site_icon": null,
+      "date": "2026-06-01T00:00:00+00:00",
+      "authority": 3
+    },
+    {"title": "标题B", "url": "https://b.example/2", "summary": "摘要B", "site_name": null, "date": null}
+  ]
+}"#,
+        )
+        .unwrap();
+        let text = deepseek_result_text(&v);
+        assert!(text.contains("[ 1] 标题A\n    https://a.example/1"), "got: {text}");
+        assert!(text.contains("长摘要A，供模型阅读"), "got: {text}");
+        assert!(text.contains("站点A · 2026-06-01T00:00:00+00:00"), "got: {text}");
+        assert!(text.contains("[ 2] 标题B\n    https://b.example/2"), "got: {text}");
+        // 无 title/url 的条目被跳过。
+        let v: Value = serde_json::from_str(r#"{"results": [{"title": "", "url": "https://x"}, {"title": "ok", "url": ""}]}"#).unwrap();
+        assert_eq!(deepseek_result_text(&v), "（未返回搜索结果）");
     }
 
     #[test]
