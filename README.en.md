@@ -170,7 +170,7 @@ sys env list
 | `ai info` | inspect the local config (provider / model / official pricing / models API) | `info provider [KW]` `info model [KW]` `info sale-price PROV` `info list-model PROV` `info models PROV`; `-o json\|csv\|yaml\|md`; `--free[=ROUTER]` (providers / models) |
 | `ai balance` | query the official balance with the api_key | `sys ai balance minimax` (minimax / agnes / alibaba-cn / deepseek / tencent have real handlers, the rest print the console URL) |
 | `ai price` | query model prices (models.dev by default / the openrouter catalogue) | `sys ai price openai,anthropic`; `--src openrouter` `--limit` `--json` `-o` |
-| `ai chat` | chat with a configured LLM (OpenAI / Anthropic compatible) | `-m` `--list-provider` `--list-model` `--no-stream` `--debug` `--update` `--test` `--query-model` `--free`; `sys ai chat "hi"` |
+| `ai chat` | chat with a configured LLM (OpenAI / Anthropic compatible) | `-m` `--list-provider` `--list-model` `--no-stream` `--debug` `--update` `--test` `--query-model` `--free` `--web`; `sys ai chat "hi"` |
 | `ai server` | serve an OpenAI-compatible API locally | `sys ai server [ADDR]` (default 127.0.0.1:10000); `--help` queries whether it is running |
 | `ai image` | generate images through the Images API | `-o DIR` `-n N` `-s SIZE` `--url` `--list-provider` `--list-model`; `sys ai image "a red fox in the snow"` |
 | `ai config` | export / apply / reverse-import the config for other AI tools | 8 formats; `-m` `-f` `-c` `--show` `--update` `--import` `--src` `--list`; `sys ai config codex --show` |
@@ -276,6 +276,8 @@ Chats with the configured providers using the OpenAI `/v1/chat/completions` or t
 - `--debug`: prints the **actual HTTP request** (method / URL / headers / body) and **response** (status / headers / body) to stderr without polluting stdout
 - `--free[=ROUTER]`: **ignores the config file and uses only the built-in free routers** (auto-enabled when no config file exists): `kilo-auto/free` (Kilo Gateway, anonymous) and `blockrun/free` (BlockRun anonymous free endpoint `https://blockrun.ai/api/v1`, model `nvidia/llama-3.2-11b-vision`) are always available; `openrouter/free` is appended only when `OPENROUTER_API_KEY` is set. Bare `--free` weighted round-robins across all available routers; `--free=kilo` / `--free=blockrun` / `--free=openrouter` pins one router (aliases `kilo-auto` / `kilo-auto/free` / `blockrun/free` / `openrouter/free` accepted), with a clear error when the pinned router is unavailable
 
+- `--web`: **search the web first, then answer** — the message is used as the query against Bocha `POST /v1/web-search` (5 results with snippets), the results are embedded into the message as grounding context, and the model answers based on them with source links; the search key comes from the top-level `search:` section of the config (`- name: bochaai, key: sk-...`; an entry whose name contains `bocha` wins, otherwise the first one; get a key at open.bochaai.com), with a clear error when it is missing. `--debug` prints the Bocha request and response; `--web` conflicts with `--test`
+
 ```
 sys ai chat "hi"                       # chat with the default config (~/.sysenv/config.yaml)
 sys ai chat hi there                   # multiple args are joined
@@ -285,6 +287,7 @@ sys ai chat "hi" --no-stream           # disable streaming
 sys ai chat "hi" --debug               # print the actual request & response (incl. headers)
 sys ai chat "hi" --free                # built-in free routers (kilo-auto / blockrun; openrouter when the key is set)
 sys ai chat "hi" --free=blockrun       # pin BlockRun anonymous free endpoint (https://blockrun.ai/api/v1)
+sys ai chat "weather in Shenzhen today" --web  # Bocha web search first, then answer grounded in the results (needs the top-level `search:` section)
 sys ai chat "hi" -m agnes:agnes-3.0-flash   # override the top-level model; only that agnes model
 sys ai chat "hi" -m "agnes:*,claude:claude-3-5-sonnet"  # comma-separated models, weighted round-robin
 sys ai chat "hi" -m "group:cheap"      # select every model of the cheap group by group name

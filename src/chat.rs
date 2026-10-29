@@ -56,6 +56,15 @@ pub(crate) struct Config {
     /// Built-in free-routers mode (--free or missing config): no config file,
     /// weight rotation state is kept in memory and nothing is written back.
     pub(crate) free: bool,
+    /// Web-search API keys configured under the top-level `search` key
+    /// (e.g. `- name: bochaai, key: sk-...`), used by `sys ai chat --web`.
+    pub(crate) search: Vec<SearchKey>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SearchKey {
+    pub(crate) name: String,
+    pub(crate) key: String,
 }
 
 #[derive(Debug, Clone)]
@@ -198,6 +207,7 @@ fn filter_free_selector(providers: Vec<Provider>, selector: Option<&str>) -> Res
         stream: false,
         providers,
         free: true,
+        search: Vec::new(),
     };
     let Some(sel) = selector.map(str::trim).filter(|s| !s.is_empty() && *s != "all") else {
         return Ok(cfg);
@@ -532,7 +542,17 @@ fn config_from_yaml(y: &YVal) -> Result<Config> {
             providers.push(p);
         }
     }
-    Ok(Config { model, stream, providers, free: false })
+    let mut search = Vec::new();
+    if let Some(list) = y.get("search").and_then(|v| v.list()) {
+        for s in list {
+            let name = s.get("name").and_then(|v| v.scalar()).unwrap_or("").trim().to_string();
+            let key = s.get("key").and_then(|v| v.scalar()).unwrap_or("").trim().to_string();
+            if !name.is_empty() && !key.is_empty() {
+                search.push(SearchKey { name, key });
+            }
+        }
+    }
+    Ok(Config { model, stream, providers, free: false, search })
 }
 
 // ---------------------------------------------------------------------------
@@ -1565,6 +1585,218 @@ pub(crate) fn debug_print_response(status: reqwest::StatusCode, headers: &Header
     eprintln!();
 }
 
+// ---------------------------------------------------------------------------
+// `sys ai chat --web`: Bocha web search (POST /v1/web-search)
+// ---------------------------------------------------------------------------
+
+/// Bocha AI web search endpoint (official: `POST /v1/web-search`).
+const BOCHA_API: &str = "https://api.bochaai.com/v1/web-search";
+
+/// Pick the web-search API key from the config: the first entry whose name
+/// mentions `bocha` (e.g. `bochaai` / `bocha`), otherwise the first entry.
+fn pick_search_key<'a>(cfg: &'a Config, path: &Path) -> Result<&'a str> {
+    cfg.search
+        .iter()
+        .find(|s| s.name.to_ascii_lowercase().contains("bocha"))
+        .or_else(|| cfg.search.first())
+        .map(|s| s.key.as_str())
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no Bocha search key configured: add a `search:` entry like `- name: bochaai, key: sk-...` to {}",
+                path.display()
+            )
+        })
+}
+
+/// Send one Bocha request with `body` to `endpoint` and return the parsed
+/// `data` value. The envelope is `{code, log_id, msg, data}`; a non-200 `code`
+/// is an error even on HTTP 200. `debug` prints the actual HTTP request and
+/// response.
+fn bocha_request(endpoint: &str, key: &str, body: &Value, debug: bool) -> Result<Value> {
+    let body_bytes = serde_json::to_vec(body).context("cannot serialize bocha request body")?;
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STR));
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {key}")).context("invalid bocha api_key")?);
+    if debug {
+        debug_print_request(endpoint, &headers, &body_bytes);
+    }
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("failed to build HTTP client")?;
+    let resp = client
+        .post(endpoint)
+        .headers(headers)
+        .body(body_bytes.clone())
+        .send()
+        .with_context(|| format!("request to {endpoint} failed"))?;
+    let status = resp.status();
+    let resp_headers = resp.headers().clone();
+    let text = resp.text().context("cannot read bocha search response")?;
+    if debug {
+        debug_print_response(status, &resp_headers, &text);
+    }
+    if !status.is_success() {
+        let snippet: String = text.chars().take(500).collect();
+        bail!("{endpoint} returned HTTP {status}: {snippet}");
+    }
+    let v: Value = serde_json::from_str(&text).context("bocha search returned invalid JSON")?;
+    let code = v.get("code").and_then(|c| c.as_i64()).unwrap_or(200);
+    if code != 200 {
+        let msg = v.get("msg").and_then(|m| m.as_str()).unwrap_or("unknown error");
+        bail!("bocha search failed (code {code}): {msg}");
+    }
+    Ok(v.get("data").cloned().unwrap_or(v))
+}
+
+/// Send one Bocha web-search request with the official request parameters
+/// (`query` / `freshness` / `summary` / `count` / `page` / `include_domains` /
+/// `exclude_domains`) and return the parsed JSON response.
+#[allow(clippy::too_many_arguments)]
+fn bocha_search_value(
+    key: &str,
+    query: &str,
+    freshness: Option<&str>,
+    summary: bool,
+    count: u32,
+    page: u32,
+    include_domains: &[String],
+    exclude_domains: &[String],
+    debug: bool,
+) -> Result<Value> {
+    let mut body = json!({ "query": query });
+    if summary {
+        body["summary"] = json!(true);
+    }
+    if let Some(f) = freshness.filter(|s| !s.trim().is_empty()) {
+        body["freshness"] = json!(f.trim());
+    }
+    if count > 0 {
+        body["count"] = json!(count.clamp(1, 50));
+    }
+    if page > 1 {
+        body["page"] = json!(page);
+    }
+    if !include_domains.is_empty() {
+        body["include_domains"] = json!(include_domains);
+    }
+    if !exclude_domains.is_empty() {
+        body["exclude_domains"] = json!(exclude_domains);
+    }
+    bocha_request(BOCHA_API, key, &body, debug)
+}
+
+/// Collect result-item nodes from every shape the Bocha API returns:
+/// `data.webPages.value[]` (current), `data.web_results[]` (legacy) and
+/// `data.messages[]` entries with `type == "source"` whose `content.value`
+/// holds the webpage list (AI-search shape).
+fn bocha_result_items(data: &Value) -> Vec<&Value> {
+    let mut items: Vec<&Value> = Vec::new();
+    if let Some(arr) = data.get("messages").and_then(|m| m.as_array()) {
+        for m in arr {
+            let is_source = m
+                .get("type")
+                .and_then(|t| t.as_str())
+                .map(|t| t == "source")
+                .unwrap_or(false);
+            if is_source {
+                if let Some(v) = m.get("content").and_then(|c| c.get("value")).and_then(|v| v.as_array()) {
+                    items.extend(v.iter());
+                }
+            }
+        }
+    }
+    if let Some(arr) = data.get("webPages").and_then(|w| w.get("value")).and_then(|v| v.as_array()) {
+        items.extend(arr.iter());
+    }
+    if let Some(arr) = data.get("web_results").and_then(|v| v.as_array()) {
+        items.extend(arr.iter());
+    }
+    items
+}
+
+/// Format a Bocha search result into a plain text block: a numbered list with
+/// URL / snippet / site / publish time (`include_summary` adds the detail
+/// lines).
+fn bocha_result_text(data: &Value, include_summary: bool) -> String {
+    let items = bocha_result_items(data);
+    if items.is_empty() {
+        return "（未返回搜索结果）".to_string();
+    }
+    let mut out = String::new();
+    for (i, it) in items.iter().enumerate() {
+        let title = it
+            .get("name")
+            .or_else(|| it.get("webpage"))
+            .or_else(|| it.get("title"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim();
+        let url = it.get("url").and_then(|x| x.as_str()).unwrap_or("").trim();
+        if title.is_empty() || url.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("[{:>2}] {title}\n    {url}\n", i + 1));
+        if include_summary {
+            let snippet = it
+                .get("summary")
+                .or_else(|| it.get("snippet"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .trim();
+            let site = it
+                .get("siteName")
+                .or_else(|| it.get("site_name"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .trim();
+            let date = it
+                .get("datePublished")
+                .or_else(|| it.get("dateLastCrawled"))
+                .or_else(|| it.get("page_timestamp"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .trim();
+            if !snippet.is_empty() {
+                out.push_str(&format!("    {snippet}\n"));
+            }
+            if !site.is_empty() || !date.is_empty() {
+                out.push_str(&format!("    {} · {}\n", site, date));
+            }
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// Run one Bocha web search and return the formatted result text (title /
+/// URL / snippet / site / publish time rows).
+#[allow(clippy::too_many_arguments)]
+fn bocha_search(
+    key: &str,
+    query: &str,
+    freshness: Option<&str>,
+    summary: bool,
+    count: u32,
+    page: u32,
+    include_domains: &[String],
+    exclude_domains: &[String],
+    debug: bool,
+) -> Result<String> {
+    let data = bocha_search_value(key, query, freshness, summary, count, page, include_domains, exclude_domains, debug)?;
+    Ok(bocha_result_text(&data, summary))
+}
+
+/// Build the augmented user message for `--web`: the web search results as
+/// grounding context plus the original question.
+fn web_search_message(results: &str, question: &str) -> String {
+    format!(
+        "请基于以下联网搜索结果回答用户的问题。优先引用搜索结果中的信息，并在回答中附上来源链接；如果搜索结果不足以回答，请明确说明。\n\n=== 联网搜索结果 ===\n{results}\n\n=== 用户问题 ===\n{question}"
+    )
+}
+
 /// Extract the assistant text from a non-streaming response body.
 fn extract_content(body: &str, kind: &str) -> Result<String> {
     let v: Value =
@@ -1904,10 +2136,32 @@ fn chat_once(
     bail!("all {} model(s) failed: {}", targets.len(), errors.join(" | "));
 }
 
-/// `sys ai chat` core: runs `chat_once` and prints the reply when the
-/// request was non-streaming (streaming already printed to stdout).
-fn chat_with(cfg: &mut Config, path: &Path, msg: &str, debug: bool, no_stream: bool, model_override: Option<&str>, update: bool) -> Result<()> {
-    let text = chat_once(cfg, path, msg, debug, no_stream, model_override, update)?;
+/// `sys ai chat` core: with `web`, first runs a Bocha web search on the
+/// message and augments it with the results as grounding context, then runs
+/// `chat_once` and prints the reply when the request was non-streaming
+/// (streaming already printed to stdout).
+fn chat_with(
+    cfg: &mut Config,
+    path: &Path,
+    msg: &str,
+    web: bool,
+    debug: bool,
+    no_stream: bool,
+    model_override: Option<&str>,
+    update: bool,
+) -> Result<()> {
+    let payload = if web {
+        let key = pick_search_key(cfg, path)?;
+        let results = bocha_search(key, msg, None, true, 5, 1, &[], &[], debug)?;
+        eprintln!(
+            "sys: web search done ({} chars of results fed to the model)",
+            results.chars().count()
+        );
+        web_search_message(&results, msg)
+    } else {
+        msg.to_string()
+    };
+    let text = chat_once(cfg, path, &payload, debug, no_stream, model_override, update)?;
     let stream = cfg.stream && !debug && !no_stream;
     if !stream {
         println!("{text}");
@@ -2230,6 +2484,7 @@ pub fn cmd_chat(
     remove: bool,
     query_model: Option<&str>,
     free: Option<&str>,
+    web: bool,
 ) -> Result<()> {
     // Free mode on either trigger: `--free[=router]`, or the default
     // config.yaml being absent. An explicit `-c` always loads and validates
@@ -2261,6 +2516,10 @@ pub fn cmd_chat(
         bail!("free mode does not support --query-model, --test or --update");
     }
 
+    if web && test {
+        bail!("--web is not supported with --test");
+    }
+
     if let Some(pname) = query_model {
         return query_provider_models(&cfg, pname);
     }
@@ -2286,7 +2545,7 @@ pub fn cmd_chat(
     } else {
         bail!("provide a message: `sys ai chat \"your message\"` (or pipe text via stdin)");
     };
-    chat_with(&mut cfg, &path, &msg, debug, no_stream, model, update)
+    chat_with(&mut cfg, &path, &msg, web, debug, no_stream, model, update)
 }
 
 // ---------------------------------------------------------------------------
@@ -3083,7 +3342,7 @@ clients:
       - name: m1
 "#,
         );
-        apply_test_removals(&Config { model: None, stream: false, providers: Vec::new(), free: false }, &p, &[]).unwrap();
+        apply_test_removals(&Config { model: None, stream: false, providers: Vec::new(), free: false, search: Vec::new() }, &p, &[]).unwrap();
         let stem = std::path::Path::new(&p).file_stem().unwrap().to_string_lossy().to_string();
         let dir = std::path::Path::new(&p).parent().unwrap();
         let n = std::fs::read_dir(dir)
@@ -3430,9 +3689,159 @@ clients:
             stream: false,
             providers: vec![local_provider(1234)],
             free: false,
+            search: Vec::new(),
         };
         let err = query_provider_models(&cfg, "nope").unwrap_err();
         let text = format!("{err:#}");
         assert!(text.contains("available"), "expected available list, got: {text}");
+    }
+
+    // --- `sys ai chat --web`: config search section + Bocha result parsing ----
+
+    #[test]
+    fn config_parses_search_section() {
+        let y = parse_yaml(
+            r#"search:
+  - name: bochaai
+    key: sk-test-key
+"#,
+        )
+        .unwrap();
+        let cfg = config_from_yaml(&y).unwrap();
+        assert_eq!(cfg.search.len(), 1);
+        assert_eq!(cfg.search[0].name, "bochaai");
+        assert_eq!(cfg.search[0].key, "sk-test-key");
+        assert!(cfg.providers.is_empty());
+        // Entries missing name or key are skipped silently.
+        let y = parse_yaml(
+            r#"search:
+  - name: nokey
+  - key: noname
+  - name: ok
+    key: sk-good
+"#,
+        )
+        .unwrap();
+        let cfg = config_from_yaml(&y).unwrap();
+        assert_eq!(cfg.search.len(), 1);
+        assert_eq!(cfg.search[0].name, "ok");
+        assert_eq!(cfg.search[0].key, "sk-good");
+    }
+
+    #[test]
+    fn pick_search_key_prefers_bocha_then_first() {
+        let key = |n: &str| SearchKey { name: n.to_string(), key: "sk-x".to_string() };
+        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("other"), key("bochaai")] };
+        // The entry whose name mentions `bocha` wins even when it is not first.
+        assert_eq!(pick_search_key(&cfg, Path::new("c.yaml")).unwrap(), "sk-x");
+        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("bocha")] };
+        assert_eq!(pick_search_key(&cfg, Path::new("c.yaml")).unwrap(), "sk-x");
+        // No bocha entry: fall back to the first entry.
+        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: vec![key("first")] };
+        assert_eq!(pick_search_key(&cfg, Path::new("c.yaml")).unwrap(), "sk-x");
+        // No entries: a clear error pointing at the config path.
+        let cfg = Config { model: None, stream: false, providers: Vec::new(), free: false, search: Vec::new() };
+        let err = pick_search_key(&cfg, Path::new("c.yaml")).unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("no Bocha search key configured"), "got: {text}");
+        assert!(text.contains("c.yaml"), "got: {text}");
+    }
+
+    #[test]
+    fn bocha_rows_parse_webpages_value() {
+        let v: Value = serde_json::from_str(
+            r#"{
+  "queryContext": {"originalQuery": "x"},
+  "webPages": {
+    "totalEstimatedMatches": 2,
+    "value": [
+      {"name": "标题A", "url": "https://a.example/1", "snippet": "摘要A", "siteName": "站点A", "datePublished": "2026-10-01T00:00:00+08:00"},
+      {"name": "标题B", "url": "https://b.example/2"}
+    ]
+  }
+}"#,
+        )
+        .unwrap();
+        let text = bocha_result_text(&v, false);
+        assert!(text.contains("[ 1] 标题A\n    https://a.example/1"), "got: {text}");
+        assert!(text.contains("[ 2] 标题B\n    https://b.example/2"), "got: {text}");
+        assert!(!text.contains("摘要A"), "summary must be off by default: {text}");
+        let text = bocha_result_text(&v, true);
+        assert!(text.contains("摘要A"), "got: {text}");
+        assert!(text.contains("站点A · 2026-10-01T00:00:00+08:00"), "got: {text}");
+    }
+
+    #[test]
+    fn bocha_rows_parse_legacy_web_results() {
+        let v: Value = serde_json::from_str(
+            r#"{
+  "web_results": [
+    {"title": "老格式A", "url": "https://old.example/a", "summary": "摘要", "site_name": "站", "page_timestamp": "2026-10-01"},
+    {"title": "老格式B", "url": "https://old.example/b"}
+  ]
+}"#,
+        )
+        .unwrap();
+        let text = bocha_result_text(&v, true);
+        assert!(text.contains("[ 1] 老格式A\n    https://old.example/a"), "got: {text}");
+        assert!(text.contains("[ 2] 老格式B\n    https://old.example/b"), "got: {text}");
+    }
+
+    #[test]
+    fn bocha_rows_skip_invalid_and_dedupe() {
+        let v: Value = serde_json::from_str(
+            r#"{
+  "webPages": {"value": [
+    {"name": "", "url": "https://x.example/empty-title"},
+    {"name": "无链接", "url": ""},
+    {"name": "重复", "url": "https://x.example/dup"},
+    {"name": "重复", "url": "https://x.example/dup"},
+    {"name": "有效", "url": "https://x.example/ok"}
+  ]}
+}"#,
+        )
+        .unwrap();
+        let text = bocha_result_text(&v, false);
+        assert!(text.contains("[ 1] 重复\n    https://x.example/dup"), "got: {text}");
+        assert!(text.contains("[ 2] 有效\n    https://x.example/ok"), "got: {text}");
+        assert_eq!(text.matches("https://x.example/dup").count(), 1);
+    }
+
+    #[test]
+    fn bocha_result_items_covers_messages_and_webpages() {
+        // Rows are gathered from messages-source and webPages.value alike.
+        let v: Value = serde_json::from_str(
+            r#"{
+  "messages": [
+    {"role": "assistant", "type": "source", "content": {"value": [
+      {"name": "消息源A", "url": "https://x.example/a"}
+    ]}}
+  ],
+  "webPages": {"value": [
+    {"name": "网页B", "url": "https://x.example/b"}
+  ]}
+}"#,
+        )
+        .unwrap();
+        let text = bocha_result_text(&v, false);
+        assert!(text.contains("[ 1] 消息源A\n    https://x.example/a"), "got: {text}");
+        assert!(text.contains("[ 2] 网页B\n    https://x.example/b"), "got: {text}");
+    }
+
+    #[test]
+    fn bocha_result_text_empty_when_no_rows() {
+        let v: Value = serde_json::from_str(r#"{"webPages": {"value": []}}"#).unwrap();
+        assert_eq!(bocha_result_text(&v, true), "（未返回搜索结果）");
+        assert_eq!(bocha_result_text(&Value::Null, true), "（未返回搜索结果）");
+    }
+
+    #[test]
+    fn web_search_message_contains_results_and_question() {
+        let msg = web_search_message("[ 1] 标题\n    https://a.example/1\n    摘要A", "今天天气如何");
+        assert!(msg.starts_with("请基于以下联网搜索结果回答用户的问题"), "got: {msg}");
+        assert!(msg.contains("=== 联网搜索结果 ==="), "got: {msg}");
+        assert!(msg.contains("[ 1] 标题\n    https://a.example/1"), "got: {msg}");
+        assert!(msg.contains("=== 用户问题 ==="), "got: {msg}");
+        assert!(msg.ends_with("今天天气如何"), "got: {msg}");
     }
 }

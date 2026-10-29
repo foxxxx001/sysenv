@@ -5856,6 +5856,7 @@ mod tests {
             model: None,
             stream: false,
             free: false,
+            search: Vec::new(),
             providers: vec![
                 chat::Provider {
                     kind: "openai".into(),
@@ -6394,6 +6395,7 @@ mod tests {
             model: Some("agnes:agn-1".to_string()),
             stream: false,
             free: false,
+            search: Vec::new(),
             providers: vec![
                 chat::Provider {
                     kind: "openai".to_string(),

@@ -34,8 +34,8 @@ clients:
     models:
       - name: claude-3-5-sonnet
 
-# search：联网搜索 API key（`sysenv search` 与 ai task 的 bochaai 搜索源共用）
-# 首个 name 为 bochaai 的条目生效；key 在博查开放平台（open.bochaai.com）申请
+# search：联网搜索 API key（`sys ai chat --web` 联网搜索使用；name 含 bocha 的条目优先，否则取首个）
+# key 在博查开放平台（open.bochaai.com）申请
 search:
   - name: bochaai
     key: sk-REPLACE-WITH-YOUR-KEY

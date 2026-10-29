@@ -591,9 +591,14 @@ enum AiCmd {
     /// --free[=ROUTER] ignores the config file and uses the built-in
     /// anonymous free routers kilo-auto/free and blockrun/free
     /// (openrouter/free only when OPENROUTER_API_KEY is set), rotating
-    /// between them; also used automatically when no config.yaml exists. -c/--config FILE
+    /// between them; also used automatically when no config.yaml exists.
+    /// --web queries Bocha first (top-level `search:` key of the config, e.g.
+    /// `- name: bochaai, key: sk-...`; key from open.bochaai.com) with the
+    /// message, then has the model answer grounded in the 5 web results
+    /// (with snippets). -c/--config FILE
     /// overrides the config. Examples: sys ai chat "你好" | echo x | sys ai chat |
     /// sys ai chat "hi" -m "agnes:*,claude:claude-3-5-sonnet" | sys ai chat "hi" --free
+    /// | sys ai chat "今日深圳天气" --web
     Chat(ChatArgs),
     /// Serve the configured providers as an OpenAI-compatible API server
     /// (default 127.0.0.1:10000; a bare port or a bare IP keeps the other
@@ -907,6 +912,11 @@ struct ChatArgs {
     /// file. Also used automatically when no config.yaml exists.
     #[arg(long, value_name = "ROUTER", num_args = 0..=1, default_missing_value = "all")]
     free: Option<String>,
+    /// Web search first: query Bocha with the message (top-level `search:`
+    /// key of the config, e.g. `- name: bochaai, key: sk-...`), then have the
+    /// model answer grounded in the results (5 results, with snippets)
+    #[arg(long)]
+    web: bool,
 }
 
 /// `sys ai server [ADDR]` — serve the configured providers as an
@@ -1453,6 +1463,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             c.remove,
             c.query_model.as_deref(),
             c.free.as_deref(),
+            c.web,
         ),
         AiCmd::Server(s) => {
             let bind = server::parse_addr(s.addr.as_deref().unwrap_or(""));
