@@ -73,5 +73,7 @@ jobs:
           $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLower()
           Write-Output "asset sha256: $hash"
           gh release create $ver --repo $env:GITHUB_REPOSITORY --title "sysenv $ver" --generate-notes 2>&1 | Out-Null
-          gh release upload $ver "$asset#sys-windows-x86_64.exe" --repo $env:GITHUB_REPOSITORY --clobber
+          # 复制为固定资产名再上传（gh 的 file#label 重命名语法在 pwsh 下不可靠，已实测失效）
+          Copy-Item -LiteralPath $asset -Destination "target\release\sys-windows-x86_64.exe" -Force
+          gh release upload $ver "target\release\sys-windows-x86_64.exe" --repo $env:GITHUB_REPOSITORY --clobber
           Write-Output "released: $ver -> sys-windows-x86_64.exe"
