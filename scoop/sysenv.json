@@ -6,7 +6,7 @@
     "architecture": {
         "64bit": {
             "url": "https://github.com/foxxxx001/sysenv/releases/download/0.6.42/sys-windows-x86_64.exe",
-            "hash": "4ac15be7f3ba91f4596a571a9dd29d8df99bbc3d28a8876766ea76c8295a4bc6"
+            "hash": "89f37dc310918c3b20c5c6a8a1a10fbf97d97ae4382e22bd5ba0f84f52aebb4d"
         }
     },
     "bin": [
