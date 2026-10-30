@@ -122,14 +122,16 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     ///
     ///   PATH — print the value(s) at PATH (selector syntax below)
     ///
-    ///   PATH = VALUE — set; `= null` deletes; `PATH = @FILE` reads & parses a
-    ///   file as the value; `PATH = strenv(NAME)` reads an environment variable
+    ///   PATH = VALUE — set; `= null` deletes a key / element / array slice
+    ///   (`list[1:3]=null`); `PATH = @FILE` reads & parses a file as the
+    ///   value; `PATH = strenv(NAME)` reads an environment variable
     ///
     ///   PATH += / -= / *= / /= N — numeric update (or string append for +=)
     ///
     ///   path.filter(pred) — keep matching array elements
     ///
-    ///   path.remove(pred) — delete matching array elements
+    ///   remove(k1,k2) — delete the named keys from an object (root or
+    ///   path.remove(k1,k2)); lists are deleted via slices (`list[1:3]=null`)
     ///
     ///   search(pred) — recursively collect every node matching pred
     ///
@@ -158,7 +160,8 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     ///
     /// Selector syntax: dotted keys `a.b`, array index `list[0]` / `list[-1]`,
     /// wildcard `list[*]`, Python-style slices `list[:2]` / `list[1:3]` /
-    /// `list[::2]` / `list[::-1]` (read-only), quoted keys `m["中文键"]`, root
+    /// `list[::2]` / `list[::-1]` (read-only except `list[1:3]=null`, which
+    /// deletes the range), quoted keys `m["中文键"]`, root
     /// array `[0]` / `[*]`.
     ///
     /// Predicate language: `$this` / `$key`, field paths (`name`, `a.b[0]`),
@@ -183,9 +186,10 @@ struct DataArgs {
     /// 1. SELECTOR — print the value(s) at PATH. Dotted keys `a.b`, array
     ///    index `list[0]` / `list[-1]` (negative counts from the end),
     ///    wildcard `list[*]`, Python-style slices `list[:2]` / `list[1:3]` /
-    ///    `list[1:]` / `list[-2:]` / `list[::2]` / `list[::-1]` (read-only:
-    ///    plain queries, `|count()` pipelines and projection left sides; not
-    ///    in writes or filter/search/remove paths), quoted keys `m["中文键"]`,
+    ///    `list[1:]` / `list[-2:]` / `list[::2]` / `list[::-1]` (read-only
+    ///    except range deletion `PATH[a:b]=null`; usable in plain queries,
+    ///    `|count()` pipelines and projection left sides; not in
+    ///    filter/search paths), quoted keys `m["中文键"]`,
     ///    root-array `[0]` / `[-1]` / `[*]`.
     ///
     /// 2. ASSIGNMENT — `PATH = VALUE` (JSON literal or plain text; `= null`
@@ -198,7 +202,8 @@ struct DataArgs {
     ///
     /// 3. FUNCTIONS — `path.filter(pred)` keeps the matching array elements
     ///    (in place, so `-w` writes back the filtered document),
-    ///    `path.remove(pred)` deletes them, `search(pred)` recursively
+    ///    `remove(k1,k2)` / `path.remove(k1,k2)` deletes the named keys from
+    ///    an object, `search(pred)` recursively
     ///    collects every node matching pred, string / key functions
     ///    `name.contains("x")` / `startsWith` / `endsWith` / `indexOf` /
     ///    `has("k")`, and `count()` node counting: `path|count()`,
@@ -219,7 +224,10 @@ struct DataArgs {
     ///    `cat 4k.json | sys data '{wallpaper,warningText}'`), an array root
     ///    projects every row (same as `[*]|{k1,k2}`). The pipe may also be
     ///    omitted on a deep node: `sites[0]{key,name}` /
-    ///    `sites[0].{key,name}` == `sites[0]|{key,name}`.
+    ///    `sites[0].{key,name}` == `sites[0]|{key,name}`. A projection value
+    ///    path may be a slice / wildcard — `{wallpaper,sites[:3]}` keeps
+    ///    wallpaper and the first 3 elements under `sites` (several matches
+    ///    emit an array).
     ///
     /// 6. OBJECT CONSTRUCTION — every element of `{...}` may additionally be
     ///    `"newKey":<json literal>` (insert a literal value, e.g.
@@ -228,8 +236,12 @@ struct DataArgs {
     ///    `list[0]` (keep the node at that path under its last segment,
     ///    lifting a child node up: `{key2.child1}` -> `"child1": ...`).
     ///    Missing paths become null; literals may be numbers / booleans /
-    ///    null / nested objects and arrays. Works bare, after a pipe and as a
-    ///    trailing projection, e.g.
+    ///    null / nested objects and arrays. Value paths may end in a function
+    ///    chain — `key.split(",")`, `arr.join("|")`, `key.replace("a","b")`,
+    ///    `key.substr(0,1)`, `list.filter(pred)` / `list.search(pred)` (a
+    ///    filtered / searched sub-array), e.g.
+    ///    `{ads, sites: sites.filter(name.contains("4k"))}`. Works bare,
+    ///    after a pipe and as a trailing projection, e.g.
     ///    `cat f.json | sys data '{"name":"Mike",key1,key2.child1,"country":key3.key2}'`.
     ///
     /// 7. VALUE FUNCTIONS — any value expression (path or literal) may end in

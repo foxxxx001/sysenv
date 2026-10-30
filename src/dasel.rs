@@ -31,7 +31,8 @@
 //!
 //! Expressions:
 //!   PATH            print the value at PATH
-//!   PATH = VALUE    set (JSON literals or plain text; `= null` deletes)
+//!   PATH = VALUE    set (JSON literals or plain text; `= null` deletes a key /
+//!                   element, or an array slice: `list[1:3]=null`)
 //!   PATH = @FILE    set from a file (format by extension, else JSON / YAML,
 //!                   else the file text verbatim)
 //!   PATH = strenv(NAME)  set from an environment variable (string; an unset
@@ -39,17 +40,25 @@
 //!   PATH += VALUE / -= / *= / /=    numeric (or string append for +=)
 //!   list.filter(predicate)          keep matching array elements (in place:
 //!                                   `-w` writes back the filtered document)
-//!   list.remove(predicate)          delete matching array elements
+//!   remove(k1,k2,...)               delete the named keys from an object
+//!                                   (root or `path.remove(...)`); lists are
+//!                                   deleted with a slice: `list[1:3]=null`
 //!   search(predicate)               recursively collect matching nodes
 //!   name.endsWith("x")              string / key functions
 //!   data[*]|{id,name}               jq-style key projection (pipes a
 //!                                   selector or filter / search result onto
 //!                                   the listed keys; missing keys -> null)
+//!   {wallpaper,sites[:3]}           a slice / wildcard path inside a
+//!                                   projection emits the matched values as
+//!                                   an array (`sites[:3]` -> first 3)
 //!   {..} elements may be `"key":lit`, `"key":path`, bare paths (child
 //!   lift), and any value expression may end in a function chain:
 //!   `key.split(",")`, `arr.join("|")`, `key.replace("a","b")`,
-//!   `key.substr(0,1)` / `"a,b,c".substr(0,3)`; `"new","a,b,c",substr(0,3)`
-//!   is the comma form of `"new":"a,b,c".substr(0,3)`.
+//!   `key.substr(0,1)` / `"a,b,c".substr(0,3)`, `list.filter(pred)` /
+//!   `list.search(pred)` (a filtered / searched sub-array, e.g.
+//!   `{ads, sites: sites.filter(name.contains("4k"))}`);
+//!   `"new","a,b,c",substr(0,3)` is the comma form of
+//!   `"new":"a,b,c".substr(0,3)`.
 //!
 //! On csv / table / jsonl input (root = row array), a bare method predicate
 //! (`Name.contains("x")`, `has("k")`, …) auto-filters the root array, the
@@ -896,7 +905,33 @@ fn set_value(root: &mut Value, steps: &[Step], new: Value, delete: bool) -> Resu
                 cur = &mut a[idx];
             }
             Step::Index(None) => bail!("`[*]` is only supported when reading"),
-            Step::Slice { .. } => bail!("array slicing `[a:b]` is only supported when reading"),
+            Step::Slice { start, end, step } => {
+                if !cur.is_array() {
+                    bail!("cannot index {} with `[...]`", type_name(cur));
+                }
+                let a = cur.as_array_mut().unwrap();
+                if !last {
+                    bail!("array slicing `[a:b]` is only supported on the final step");
+                }
+                if delete {
+                    // `list[1:3]=null`: delete the selected range in place.
+                    // Indices are removed back-to-front so earlier ones stay
+                    // valid while later ones are taken out.
+                    let st = step.unwrap_or(1);
+                    let (_s, _e, n) = python_slice_bounds(a.len() as isize, *start, *end, st);
+                    let mut idxs: Vec<usize> = (0..n.max(0) as usize)
+                        .map(|k| _s + (k as isize) * st)
+                        .filter(|&idx| idx >= 0 && (idx as usize) < a.len())
+                        .map(|idx| idx as usize)
+                        .collect();
+                    idxs.sort_unstable_by(|x, y| y.cmp(x));
+                    for i in idxs {
+                        a.remove(i);
+                    }
+                    return Ok(());
+                }
+                bail!("array slicing `[a:b]` only supports deletion (write `list[1:3]=null` to delete a range)");
+            }
         }
     }
     Ok(())
@@ -909,7 +944,9 @@ fn set_value(root: &mut Value, steps: &[Step], new: Value, delete: bool) -> Resu
 // dasel-compatible function calls usable as a trailing expression:
 //   list.filter(age >= 18)          keep matching array elements (in place:
 //                                   `-w` writes back the filtered document)
-//   list.remove(name.contains("web"))   delete matching array elements
+//   remove(a,b) (or path.remove(a,b))   delete the named keys from an object;
+//                                   list elements are deleted via slices:
+//                                   `list[1:3]=null`
 //   search(has("name"))             recursively collect matching nodes
 //   name.endsWith("x")              string / key functions on a selector
 //
@@ -1045,6 +1082,13 @@ fn parse_function_expr(expr: &str) -> Option<Result<FunctionCall>> {
         Some(k) => (Some(prefix[..k].to_string()), prefix[k + 1..].to_string()),
         None => (None, prefix),
     };
+    if let Some(p) = &path {
+        if p.contains('{') {
+            // A projection on the left (`{k1,k2}|path.filter(...)`) is not a
+            // function expression; let split_pipeline report the composition.
+            return None;
+        }
+    }
     let name = name.trim().to_string();
     if name.contains('|') {
         // `path | count()` / `filter(...) | count()` style pipeline: the call
@@ -1057,7 +1101,13 @@ fn parse_function_expr(expr: &str) -> Option<Result<FunctionCall>> {
         )));
     }
     if matches!(name.as_str(), "filter" | "remove" | "search") && args.trim().is_empty() {
-        return Some(Err(anyhow::anyhow!("`{name}` needs a predicate argument")));
+        return Some(Err(anyhow::anyhow!(
+            if name == "remove" {
+                "`remove` needs at least one key (e.g. `remove(a,b)`)"
+            } else {
+                "`{name}` needs a predicate argument"
+            }
+        )));
     }
     Some(Ok(FunctionCall {
         path: path.filter(|p| !p.trim().is_empty()),
@@ -1121,6 +1171,12 @@ enum ValueFn {
     /// from `start`; a negative `start` counts from the end; a `length`
     /// beyond the end is truncated; a `start` beyond the string yields "".
     Substr(isize, usize),
+    /// `filter(predicate)` — keep the matching elements of the resolved
+    /// array (the projection form of `path.filter(...)`).
+    Filter(String),
+    /// `search(predicate)` — recursively collect the nodes of the resolved
+    /// value matching the predicate (the projection form of `search(...)`).
+    Search(String),
 }
 
 /// One element of an object-construction projection `{...}`: either a
@@ -1206,12 +1262,13 @@ fn is_quoted_name(part: &str) -> bool {
 }
 
 /// Whether `part` is a bare function call `split(...)` / `join(...)` /
-/// `replace(...)` / `substr(...)` (a top-level, complete call).
+/// `replace(...)` / `substr(...)` / `filter(...)` / `search(...)` (a
+/// top-level, complete call).
 fn is_func_call(part: &str) -> bool {
     let p = part.trim();
     let Some(open) = p.find('(') else { return false };
     let name = &p[..open];
-    matches!(name, "split" | "join" | "replace" | "substr") && p.ends_with(')')
+    matches!(name, "split" | "join" | "replace" | "substr" | "filter" | "search") && p.ends_with(')')
 }
 
 /// Whether the char at `i` is escaped by an odd number of backslashes.
@@ -1312,9 +1369,9 @@ fn split_func_chain(part: &str) -> Result<(String, Vec<ValueFn>)> {
 }
 
 /// The known function name right at the start of `s` (`split(`, `join(`,
-/// `replace(`, `substr(`), or None.
+/// `replace(`, `substr(`, `filter(`, `search(`), or None.
 fn func_name_at(s: &str) -> Option<&'static str> {
-    for name in ["split", "join", "replace", "substr"] {
+    for name in ["split", "join", "replace", "substr", "filter", "search"] {
         if let Some(rest) = s.strip_prefix(name) {
             if rest.starts_with('(') {
                 return Some(name);
@@ -1394,8 +1451,21 @@ fn parse_func_call(seg: &str) -> Result<ValueFn> {
             let len = usize_arg(&args[1], "substr")?;
             Ok(ValueFn::Substr(start, len))
         }
+        "filter" | "search" => {
+            // The argument is a whole predicate, passed through verbatim
+            // (commas inside `contains("a,b")` must not be split).
+            let pred = seg[open + 1..seg.len() - 1].trim().to_string();
+            if pred.is_empty() {
+                bail!("`{name}` needs a predicate argument");
+            }
+            Ok(if name == "filter" {
+                ValueFn::Filter(pred)
+            } else {
+                ValueFn::Search(pred)
+            })
+        }
         other => bail!(
-            "unknown projection function `{other}` (use split / join / replace / substr)"
+            "unknown projection function `{other}` (use split / join / replace / substr / filter / search)"
         ),
     }
 }
@@ -1561,9 +1631,10 @@ fn projection_leaf_name(path: &str) -> String {
 }
 
 /// Resolve one projection item against a node: a literal is cloned verbatim,
-/// a path is looked up with the full selector machinery (first match wins; a
-/// missing path yields null, a malformed path is an error). Any attached
-/// function chain is applied to the resulting value.
+/// a path is looked up with the full selector machinery — a single match is
+/// emitted as-is; several matches (a slice `sites[:3]`, a wildcard `list[*]`)
+/// are emitted as an array; a missing path yields null, a malformed path is
+/// an error. Any attached function chain is applied to the resulting value.
 fn resolve_proj_item(node: &Value, item: &ProjItem) -> Result<(String, Value)> {
     let (key, raw, funcs) = match item {
         ProjItem::Literal { key, value, funcs } => (key.clone(), value.clone(), funcs),
@@ -1571,7 +1642,11 @@ fn resolve_proj_item(node: &Value, item: &ProjItem) -> Result<(String, Value)> {
             let steps = parse_selector(path)
                 .with_context(|| format!("invalid projection path `{path}`"))?;
             let got = get_values(node, &steps);
-            let value = got.into_iter().next().cloned().unwrap_or(Value::Null);
+            let value = match got.len() {
+                0 => Value::Null,
+                1 => got[0].clone(),
+                _ => Value::Array(got.into_iter().cloned().collect()),
+            };
             (key.clone(), value, funcs)
         }
     };
@@ -1636,6 +1711,24 @@ fn apply_funcs(mut value: Value, funcs: &[ValueFn]) -> Result<Value> {
                 let start = start as usize;
                 let end = start.saturating_add(*len).min(chars.len());
                 Value::String(chars[start..end].iter().collect())
+            }
+            ValueFn::Filter(pred) => {
+                let arr = value.as_array().ok_or_else(|| {
+                    anyhow::anyhow!("`filter` needs an array (got {})", type_name(&value))
+                })?;
+                let mut kept = Vec::new();
+                for (i, e) in arr.iter().enumerate() {
+                    let key = Value::Number(serde_json::Number::from(i as u64));
+                    if eval_predicate(e, Some(&key), pred)? {
+                        kept.push(e.clone());
+                    }
+                }
+                Value::Array(kept)
+            }
+            ValueFn::Search(pred) => {
+                let mut found = Vec::new();
+                search_collect(&value, None, pred, &mut found)?;
+                Value::Array(found)
             }
         };
     }
@@ -2147,8 +2240,8 @@ fn stringify(v: &Value) -> String {
 }
 
 /// `contains` on a container checks every string leaf inside it, so
-/// `sites.remove(contains("web"))` deletes elements whose content mentions
-/// the value anywhere.
+/// `sites.filter(contains("web"))` keeps elements whose content mentions
+/// the value anywhere (`search(contains("x"))` collects them instead).
 fn string_contains(v: &Value, needle: &str) -> bool {
     match v {
         Value::String(s) => s.contains(needle),
@@ -2343,8 +2436,11 @@ fn apply_filter(
     }
 }
 
-/// `path.remove(predicate)`: delete the matching array elements in place
-/// (each deleted element is the parent node of the content it contains).
+/// `remove(k1,k2,...)` (root or `path.remove(k1,k2,...)`): delete the named
+/// keys from an object in place — the multi-key counterpart of `PATH = null`.
+/// Unknown keys are ignored; a missing path removes nothing. The target must
+/// be an object. List elements are NOT handled here: delete a slice instead
+/// (`list[1:3]=null`). `-w` writes back the modified document.
 fn apply_remove(
     v: &mut Value,
     call: &FunctionCall,
@@ -2352,28 +2448,135 @@ fn apply_remove(
     compact: bool,
     root: bool,
 ) -> Result<String> {
-    let path = call.path.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("`remove` needs an array path (e.g. `list.remove(...)`)")
-    })?;
-    let steps = parse_selector(path).with_context(|| format!("invalid path for `remove`"))?;
-    let node = array_mut_at(v, &steps)?;
-    if !node.is_array() {
-        bail!("`remove` needs an array (got {})", type_name(node));
+    let keys = parse_remove_keys(&call.args)?;
+    let steps = match call.path.as_deref() {
+        Some(p) => parse_selector(p).with_context(|| format!("invalid path for `remove`"))?,
+        None => vec![],
+    };
+    match resolve_mut_opt(v, &steps)? {
+        Some(node) => {
+            remove_keys(node, &keys)?;
+            if root || steps.is_empty() {
+                serialize_output(v, out_f, compact)
+            } else {
+                serialize_output(node, out_f, compact)
+            }
+        }
+        // The path does not exist: nothing to remove — print the (unchanged)
+        // document, matching the deleted-path output of `PATH = null`.
+        None => serialize_output(v, out_f, compact),
     }
-    let a = node.as_array_mut().unwrap();
-    let mut kept = Vec::new();
-    for (i, e) in a.iter().enumerate() {
-        let key = Value::Number(serde_json::Number::from(i as u64));
-        if !eval_predicate(e, Some(&key), &call.args)? {
-            kept.push(e.clone());
+}
+
+/// `remove` arguments: a comma-separated list of object keys
+/// (`remove(a, "b c", 'd')`). Quoted keys may contain commas; matching
+/// surrounding quotes are stripped. At least one key is required.
+fn parse_remove_keys(args: &str) -> Result<Vec<String>> {
+    let mut keys = Vec::new();
+    let mut cur = String::new();
+    let mut in_quote: Option<char> = None;
+    for c in args.chars() {
+        match in_quote {
+            Some(q) if c == q => {
+                in_quote = None;
+                cur.push(c);
+            }
+            Some(_) => cur.push(c),
+            None => {
+                if c == '"' || c == '\'' {
+                    in_quote = Some(c);
+                    cur.push(c);
+                } else if c == ',' {
+                    keys.push(cur.trim().to_string());
+                    cur.clear();
+                } else {
+                    cur.push(c);
+                }
+            }
         }
     }
-    *a = kept;
-    if root {
-        serialize_output(v, out_f, compact)
-    } else {
-        serialize_output(node, out_f, compact)
+    if in_quote.is_some() {
+        bail!("unbalanced quote in `remove` keys: `{args}`");
     }
+    keys.push(cur.trim().to_string());
+    let keys: Vec<String> = keys
+        .into_iter()
+        .filter(|k| !k.is_empty())
+        .map(|k| {
+            let ch: Vec<char> = k.chars().collect();
+            if ch.len() >= 2
+                && ((ch[0] == '"' && ch[ch.len() - 1] == '"')
+                    || (ch[0] == '\'' && ch[ch.len() - 1] == '\''))
+            {
+                ch[1..ch.len() - 1].iter().collect()
+            } else {
+                k
+            }
+        })
+        .collect();
+    if keys.is_empty() {
+        bail!("`remove` needs at least one key (e.g. `remove(a,b)`)");
+    }
+    Ok(keys)
+}
+
+/// Delete the named keys from an object (unknown keys are ignored).
+fn remove_keys(node: &mut Value, keys: &[String]) -> Result<()> {
+    if !node.is_object() {
+        bail!("`remove` needs an object (got {})", type_name(node));
+    }
+    let m = node.as_object_mut().unwrap();
+    for k in keys {
+        m.remove(k);
+    }
+    Ok(())
+}
+
+/// Walk `steps` strictly (no key creation) and return the node at the final
+/// step: `Ok(Some)` when the path exists, `Ok(None)` when an intermediate key
+/// or index is missing. Type mismatches and read-only steps (`[*]`, slicing)
+/// error. Used by `remove`, which must not create nodes.
+fn resolve_mut_opt<'v>(root: &'v mut Value, steps: &[Step]) -> Result<Option<&'v mut Value>> {
+    if steps.is_empty() {
+        return Ok(Some(root));
+    }
+    let mut cur: &mut Value = root;
+    for (i, step) in steps.iter().enumerate() {
+        let last = i + 1 == steps.len();
+        match step {
+            Step::Key(k) => {
+                if !cur.is_object() {
+                    bail!("cannot index {} with key `{k}`", type_name(cur));
+                }
+                let m = cur.as_object_mut().unwrap();
+                match m.get_mut(k) {
+                    Some(x) if last => return Ok(Some(x)),
+                    Some(x) => cur = x,
+                    None => return Ok(None),
+                }
+            }
+            Step::Index(Some(n)) => {
+                if !cur.is_array() {
+                    bail!("cannot index {} with `[...]`", type_name(cur));
+                }
+                let a = cur.as_array_mut().unwrap();
+                let idx = if *n < 0 { a.len() as isize + *n } else { *n };
+                if idx < 0 || (idx as usize) >= a.len() {
+                    return Ok(None);
+                }
+                let idx = idx as usize;
+                if last {
+                    return Ok(Some(&mut a[idx]));
+                }
+                cur = &mut a[idx];
+            }
+            Step::Index(None) => bail!("`[*]` is only supported when reading"),
+            Step::Slice { .. } => bail!("array slicing `[a:b]` is only supported when reading"),
+        }
+    }
+    // The last step always returned above (every step type ends in a return
+    // when `last`), so this is unreachable for a non-empty `steps`.
+    unreachable!()
 }
 
 /// `search(predicate)` / `path.search(predicate)`: recursively collect every
@@ -2857,6 +3060,12 @@ pub fn cmd_data(
             // plain selector or a filter / search call; the projection applies
             // to each matched node (function results spread their array, like
             // jq's `.[] | select(...) | {...}`).
+            if left.trim().starts_with('{') {
+                bail!(
+                    "the projection must be the right side of `|` (write `path|{{k1,k2}}`); \
+                     to filter inside a projection use `{{k1, k2: path.filter(pred)}}`"
+                );
+            }
             let items = parse_projection(&right)
                 .with_context(|| format!("invalid projection in `{expr}`"))?;
             result_string = match parse_function_expr(&left) {
@@ -3231,7 +3440,7 @@ mod tests {
     #[test]
     fn slice_rejected_on_write_and_functions() {
         let mut v = json!({"list": [1, 2, 3]});
-        // 写入路径拒绝切片（同 [*] 只读）
+        // 写入路径：切片只支持删除（=null），赋值（= 其他值）仍拒绝
         let err = set_value(
             &mut v,
             &parse_selector("list[:2]").unwrap(),
@@ -3239,7 +3448,7 @@ mod tests {
             false,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("only supported when reading"), "{err}");
+        assert!(err.to_string().contains("only supports deletion"), "{err}");
         // filter / search path 拒绝切片
         let fc = FunctionCall {
             path: Some("list[:2]".to_string()),
@@ -3254,6 +3463,79 @@ mod tests {
         assert_eq!(count_matches(&matched), json!(2));
         let matched = get_values(&doc, &parse_selector("data[::2]").unwrap());
         assert_eq!(count_matches(&matched), json!(2));
+    }
+
+    #[test]
+    fn slice_delete_removes_selected_range() {
+        // `list[1:4]=null`: delete the range, keep the rest.
+        let mut v = json!({"list": [1, 2, 3, 4, 5]});
+        set_value(
+            &mut v,
+            &parse_selector("list[1:4]").unwrap(),
+            Value::Null,
+            true,
+        )
+        .unwrap();
+        assert_eq!(v["list"], json!([1, 5]));
+        // Negative bounds count from the end: `[-2:]` deletes the last two.
+        let mut v = json!({"list": [1, 2, 3, 4, 5]});
+        set_value(
+            &mut v,
+            &parse_selector("list[-2:]").unwrap(),
+            Value::Null,
+            true,
+        )
+        .unwrap();
+        assert_eq!(v["list"], json!([1, 2, 3]));
+        // Step slices delete the selected stride: `[::2]` keeps the odds.
+        let mut v = json!({"list": [1, 2, 3, 4, 5]});
+        set_value(
+            &mut v,
+            &parse_selector("list[::2]").unwrap(),
+            Value::Null,
+            true,
+        )
+        .unwrap();
+        assert_eq!(v["list"], json!([2, 4]));
+        // Reverse step: `[::-1]=null` deletes everything.
+        let mut v = json!({"list": [1, 2, 3]});
+        set_value(
+            &mut v,
+            &parse_selector("list[::-1]").unwrap(),
+            Value::Null,
+            true,
+        )
+        .unwrap();
+        assert_eq!(v["list"], json!([]));
+        // Out-of-range and empty slices delete nothing.
+        let mut v = json!({"list": [1, 2, 3]});
+        set_value(
+            &mut v,
+            &parse_selector("list[5:9]").unwrap(),
+            Value::Null,
+            true,
+        )
+        .unwrap();
+        assert_eq!(v["list"], json!([1, 2, 3]));
+        let mut v = json!({"list": [1, 2, 3]});
+        set_value(
+            &mut v,
+            &parse_selector("list[2:2]").unwrap(),
+            Value::Null,
+            true,
+        )
+        .unwrap();
+        assert_eq!(v["list"], json!([1, 2, 3]));
+        // A mid-path slice is still rejected.
+        let mut v = json!({"a": {"list": [1, 2, 3]}});
+        let err = set_value(
+            &mut v,
+            &parse_selector("a.list[0:2].x").unwrap(),
+            Value::Null,
+            true,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("final step"), "{err}");
     }
 
     #[test]
@@ -3767,25 +4049,62 @@ mod tests {
     }
 
     #[test]
-    fn remove_deletes_matching_parent_elements() {
-        let mut v = json!({"sites": [
-            {"name": "web", "url": "https://a.example"},
-            {"name": "db", "url": "https://b.example"},
-            {"name": "web2", "url": "https://c.example"},
-        ]});
-        let fc = parse_function_expr("sites.remove(name.contains(\"web\"))").unwrap().unwrap();
+    fn remove_deletes_named_keys_from_object() {
+        // Root-level `remove(k1,k2)`: the named keys are deleted in place.
+        let mut v = json!({"wallpaper": {"w": 1}, "ads": {"a": 1}, "keep": 3});
+        let fc = parse_function_expr("remove(wallpaper,ads)").unwrap().unwrap();
+        let out = apply_remove(&mut v, &fc, DataFormat::Json, false, true).unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(got, json!({"keep": 3}));
+        // The document itself was mutated in place.
+        assert_eq!(v, json!({"keep": 3}));
+        // Without --root a root remove still prints the whole document.
+        let mut v = json!({"a": 1, "b": 2});
+        let fc = parse_function_expr("remove(a)").unwrap().unwrap();
+        let out = apply_remove(&mut v, &fc, DataFormat::Json, false, false).unwrap();
+        assert!(out.contains("\"b\"") && !out.contains("\"a\""), "root output: {out}");
+    }
+
+    #[test]
+    fn path_remove_deletes_keys_and_ignores_unknown() {
+        // path.remove(...) prints the modified object; unknown keys are ignored.
+        let mut v = json!({"cfg": {"debug": true, "host": "x"}, "keep": 1});
+        let fc = parse_function_expr("cfg.remove(debug,missing)").unwrap().unwrap();
         let out = apply_remove(&mut v, &fc, DataFormat::Json, false, false).unwrap();
         let got: Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(got.as_array().unwrap().len(), 1);
-        assert_eq!(got[0]["name"], json!("db"));
-        // The document itself was mutated in place.
-        assert_eq!(v["sites"].as_array().unwrap().len(), 1);
+        assert_eq!(got, json!({"host": "x"}));
         // --root prints the whole (mutated) document.
-        let mut v = json!({"sites": [{"name": "x"}, {"name": "y"}]});
-        let fc = parse_function_expr("sites.remove(name==\"x\")").unwrap().unwrap();
+        let mut v = json!({"cfg": {"debug": true, "host": "x"}, "keep": 1});
+        let fc = parse_function_expr("cfg.remove(debug)").unwrap().unwrap();
         let out = apply_remove(&mut v, &fc, DataFormat::Json, false, true).unwrap();
-        assert!(out.contains("\"sites\""), "root output: {out}");
-        assert!(!out.contains("\"x\""), "root output must not contain removed element: {out}");
+        assert!(out.contains("\"keep\"") && !out.contains("\"debug\""), "root output: {out}");
+        // Quoted keys and quoted commas stay a single key.
+        let mut v = json!({"a,b": 1, "c": 2});
+        let fc = parse_function_expr(r#"remove("a,b", c)"#).unwrap().unwrap();
+        let out = apply_remove(&mut v, &fc, DataFormat::Json, false, true).unwrap();
+        assert_eq!(out.trim(), "{}");
+        // A missing path removes nothing and prints the unchanged document.
+        let mut v = json!({"a": 1});
+        let fc = parse_function_expr("nope.remove(a)").unwrap().unwrap();
+        let out = apply_remove(&mut v, &fc, DataFormat::Json, false, true).unwrap();
+        assert_eq!(out.trim(), "{\n  \"a\": 1\n}");
+    }
+
+    #[test]
+    fn remove_rejects_non_objects_and_empty_keys() {
+        // `remove` is for object keys only — arrays are deleted via slices.
+        let mut v = json!([1, 2, 3]);
+        let fc = parse_function_expr("remove(a)").unwrap().unwrap();
+        let err = apply_remove(&mut v, &fc, DataFormat::Json, false, true).unwrap_err();
+        assert!(err.to_string().contains("needs an object"), "{err}");
+        // A path pointing at a non-object errors the same way.
+        let mut v = json!({"list": [1, 2, 3]});
+        let fc = parse_function_expr("list.remove(a)").unwrap().unwrap();
+        let err = apply_remove(&mut v, &fc, DataFormat::Json, false, true).unwrap_err();
+        assert!(err.to_string().contains("needs an object"), "{err}");
+        // An empty key list is rejected up front.
+        assert!(parse_function_expr("remove()").unwrap().is_err());
+        assert!(parse_function_expr("remove( )").unwrap().is_err());
     }
 
     #[test]
@@ -4006,12 +4325,23 @@ mod tests {
             .to_string();
         assert!(err.contains("`12` is a literal value"), "err: {err}");
         assert!(err.contains("PATH = 12"), "err: {err}");
-        // Assignments and paths still pass the literal check.
-        assert!(cmd_data(Some("a = 12"), None, None, None, None, None, false, false, None, None, None, false).is_err());
-        let err = cmd_data(Some("a.b"), None, None, None, Some("json"), None, false, false, None, None, None, false)
+        // Assignments and paths still pass the literal check. Feed them with
+        // `-f` temp files: without -f / -u, cmd_data reads stdin via
+        // io::stdin().read_to_end(), which waits for EOF forever when the
+        // test process inherits an open terminal stdin under `cargo test` —
+        // that used to hang the whole suite.
+        let p = temp_value_path("cmd_data_input.json");
+        std::fs::write(&p, "").unwrap();
+        let err = cmd_data(Some("a = 12"), Some(p.to_str().unwrap()), None, None, None, None, false, false, None, None, None, false)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("matched nothing") || err.contains("empty input"), "err: {err}");
+        assert!(err.contains("empty input"), "err: {err}");
+        std::fs::write(&p, r#"{"a": 1}"#).unwrap();
+        let err = cmd_data(Some("a.b"), Some(p.to_str().unwrap()), None, None, Some("json"), None, false, false, None, None, None, false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("matched nothing"), "err: {err}");
+        std::fs::remove_file(&p).ok();
     }
 
     // ------------------------------------------------------------------
@@ -4278,6 +4608,121 @@ mod tests {
         assert!(apply_bare_projection(&v, "id", DataFormat::Json, false).is_err());
         // 空键列表（仅逗号）同样报错。
         assert!(apply_bare_projection(&v, "{,}", DataFormat::Json, false).is_err());
+    }
+
+    #[test]
+    fn bare_projection_slice_and_wildcard_paths_emit_arrays() {
+        let v = json!({
+            "wallpaper": "w",
+            "sites": [{"id": 1}, {"id": 2}, {"id": 3}, {"id": 4}],
+            "nums": [10, 20, 30, 40],
+        });
+        // `{wallpaper,sites[:3]}`: the slice keeps the first 3 elements
+        // under the `sites` key (multiple matches emit an array).
+        let out = apply_bare_projection(&v, "{wallpaper, sites[:3]}", DataFormat::Json, true).unwrap();
+        assert_eq!(
+            out.trim(),
+            r#"{"wallpaper":"w","sites":[{"id":1},{"id":2},{"id":3}]}"#
+        );
+        // Range and negative slices work the same way.
+        let out = apply_bare_projection(&v, "{sites[1:3]}", DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), r#"{"sites":[{"id":2},{"id":3}]}"#);
+        let out = apply_bare_projection(&v, "{sites[-2:]}", DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), r#"{"sites":[{"id":3},{"id":4}]}"#);
+        // `[*]` inside braces emits every match (the whole array).
+        let out = apply_bare_projection(&v, "{nums[*]}", DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), r#"{"nums":[10,20,30,40]}"#);
+        // An empty slice resolves to no match -> null.
+        let out = apply_bare_projection(&v, "{sites[5:9]}", DataFormat::Json, true).unwrap();
+        assert_eq!(out.trim(), r#"{"sites":null}"#);
+        // Aliased value + function chain on the sliced array.
+        let out = apply_bare_projection(
+            &v,
+            r#"{"top": sites[:2], "s": nums[:3].join("|")}"#,
+            DataFormat::Json,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            out.trim(),
+            r#"{"top":[{"id":1},{"id":2}],"s":"10|20|30"}"#
+        );
+    }
+
+    #[test]
+    fn projection_filter_and_search_value_expressions() {
+        let v = json!({
+            "ads": ["a.com", "b.com"],
+            "sites": [
+                {"key": "csp_A", "name": "站点4k"},
+                {"key": "csp_B", "name": "站点X"},
+                {"key": "csp_C", "name": "网站4k"}
+            ]
+        });
+        // `{ads, sites: sites.filter(...)}`: ads 原样 + 过滤后的 sites 子数组
+        // (jq `{ads, sites: (.sites | map(select(...)))}` 的等价写法)。
+        let out = apply_bare_projection(
+            &v,
+            r#"{ads, sites: sites.filter(name.contains("4k"))}"#,
+            DataFormat::Json,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            out.trim(),
+            r#"{"ads":["a.com","b.com"],"sites":[{"key":"csp_A","name":"站点4k"},{"key":"csp_C","name":"网站4k"}]}"#
+        );
+        // search 变体：在值上递归收集匹配节点。
+        let out = apply_bare_projection(
+            &v,
+            r#"{hits: sites.search(name.contains("4k"))}"#,
+            DataFormat::Json,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            out.trim(),
+            r#"{"hits":[{"key":"csp_A","name":"站点4k"},{"key":"csp_C","name":"网站4k"}]}"#
+        );
+        // 切片 + filter 链：先截取再过滤。
+        let out = apply_bare_projection(
+            &v,
+            r#"{top: sites[:2].filter(name.contains("4k"))}"#,
+            DataFormat::Json,
+            true,
+        )
+        .unwrap();
+        assert_eq!(out.trim(), r#"{"top":[{"key":"csp_A","name":"站点4k"}]}"#);
+        // 裸 filter(...)（无路径）在投影内报错，提示补路径。
+        // 注意：anyhow 的 `{}` Display 只显示最外层上下文，`{:#}` 才是完整
+        // 错误链（main.rs 用户可见报错即用 `{:#}`），断言须用 `{err:#}`。
+        let err = apply_bare_projection(&v, r#"{filter(name.contains("4k"))}"#, DataFormat::Json, false)
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("needs a value expression"),
+            "err: {err:#}"
+        );
+        // 投影在管道左侧给出明确错误（此前被误解析为 `filter` 作用于 null）。
+        let p = temp_value_path("proj_pipe.json");
+        std::fs::write(&p, r#"{"ads":["a.com"],"sites":[]}"#).unwrap();
+        let err = cmd_data(
+            Some(r#"{ads,sites}|sites.filter(name.contains("4k"))"#),
+            Some(p.to_str().unwrap()),
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("projection must be the right side"), "err: {err}");
+        std::fs::remove_file(&p).ok();
     }
 
     // ------------------------------------------------------------------

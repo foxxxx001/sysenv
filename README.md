@@ -952,12 +952,12 @@ type app.log | sys log --level error            # 管道输入（纯文本输出
 ### 10.2 选择器与切片
 
 * **选择器语法**：点路径 `a.b`（前导 `.` 可省略）、数组索引 `list[0]` / `list[-1]`（负数从末尾数）、通配 `list[*]`、引号键 `m["中文键"]`（空格 / 点 / 中文键名）、根数组 `[0]` / `[-1]` / `[*]`（如 `ps | sys data -i table '[0].PID'`）
-* **Python 式列表切片（只读）**：`list[:2]`（前 2 个）/ `list[1:3]` / `list[1:]` / `list[-2:]`（末尾 2 个）/ `list[::2]`（隔一取一）/ `list[::-1]`（反转）；省略边界取默认、负索引从末尾数、步长可负、step 0 报错；越界截断、空区间合法、`[0:99]` 全量。**只读约束**：可用于普通查询、`|count()` 管道（`data[:2]|count()` = 2）与投影左侧（`data[1:3]|{id,name}`）；`PATH=...` 写入与 filter / search / remove 路径明确拒绝
+* **Python 式列表切片（只读，除区间删除外）**：`list[:2]`（前 2 个）/ `list[1:3]` / `list[1:]` / `list[-2:]`（末尾 2 个）/ `list[::2]`（隔一取一）/ `list[::-1]`（反转）；省略边界取默认、负索引从末尾数、步长可负、step 0 报错；越界截断、空区间合法、`[0:99]` 全量。**只读约束**：可用于普通查询、`|count()` 管道（`data[:2]|count()` = 2）与投影左侧（`data[1:3]|{id,name}`）；唯一写例外是**区间删除**——`list[1:3]=null` 删除该区间的元素（列表删除就用它）；filter / search 路径仍明确拒绝
 * 多段组合：`data[1:3][0]` 在切片结果上再取索引
 
 ### 10.3 修改表达式（赋值）
 
-* `PATH = VALUE`：JSON 字面量（数字 / 布尔 / 对象 / 数组）或纯文本；**`= null` 删除**该键 / 元素
+* `PATH = VALUE`：JSON 字面量（数字 / 布尔 / 对象 / 数组）或纯文本；**`= null` 删除**该键 / 元素 / 数组区间（`list[1:3]=null` 删除第 1..3 个元素，负索引 / 步长切片同样可用）
 * **`PATH = @FILE`**：读取文件作为赋值值——扩展名定格式（json / jsonl / yaml / toml / csv / md），未知扩展名按 JSON → YAML → 纯文本兜底，如 `cat 4k.json | sys data 'wallpaper=@file.json' --root`
 * **`PATH = strenv(NAME)`**：读取系统环境变量作为字符串赋值，变量未设置明确报错，如 `cat 4k.json | sys data 'wallpaper=strenv(ROOT)' --root`
 * 算术更新：`PATH += N` / `-=` / `*=` / `/=` 数值运算（`+=` 对字符串做追加）
@@ -965,11 +965,11 @@ type app.log | sys log --level error            # 管道输入（纯文本输出
 
 ### 10.4 函数表达式与谓词
 
-* **`path.filter(谓词)`**：保留数组中满足谓词的元素（只读，输出结果数组）；**`path.remove(谓词)`**：原地删除满足谓词的数组元素（`--root` 打印整份修改后文档，否则输出剩余数组）；**`search(谓词)`**：从根（或指定节点）递归收集所有匹配节点（`$key` 为对象键 / 数组下标）
+* **`path.filter(谓词)`**：保留数组中满足谓词的元素（只读，输出结果数组）；**`remove(k1,k2,...)`**（或 **`path.remove(k1,k2,...)`**）：原地删除对象中指定的键值节点——根对象 `cat 4k.json | sys data 'remove(wallpaper,ads)'` 一次删掉这两个键，路径形式删深层对象的键；缺失键忽略、路径不存在不报错；`--root` 打印整份修改后文档；**列表删除不走 remove，用切片**：`sys data 'list[1:3]=null' --root`；**`search(谓词)`**：从根（或指定节点）递归收集所有匹配节点（`$key` 为对象键 / 数组下标）
 * **字符串 / 键函数**：`name.contains("x")` / `startsWith` / `endsWith` / `indexOf` / `has("k")`（对象键 / 数组下标存在性检查）
 * **`count()` 节点计数**：统计匹配节点数——管道形式 `data|count()` / `data.filter(...)|count()` / `search(...)|count()`（数组计元素数、单值计 1、无匹配计 0）；点式 `data.count()`；裸 `count()` 计整个文档（数组 → 长度）。如 `ps | sys data -i table '[*]|count()'` 数行数
 * **裸谓词自动过滤**：csv / table / jsonl 输入下，**比较表达式与方法谓词不加 `[*].filter` 直接可用**——`ps | sys data -i table 'Id==7360'`、`sys data -f app.log 'level=="error"'`、`'Name.contains("x")'` 等价于 `[*].filter(...)`；对象根文档上方法谓词仍是标量字符串函数
-* **jq 式键投影管道**：`data[*]|{id,name,pricing}`——对每个匹配元素只保留列出的键（缺失键 → null），单匹配输出单个对象、多匹配输出数组；左侧可接 filter / search 结果（数组展开逐元素投影），如 `sys data 'clients.filter(name==''modelscope'')|{id,name}' -f config.yaml`；**裸 `{k1,k2}`（不带路径）直接作用于根文档**——对象根只保留这些键（jq `. | {k1,k2}`，如 `cat 4k.json | sys data '{wallpaper,warningText}'`），数组根逐行投影（同 `[*]`，如 `ps | sys data -i table '{Id,Name}'`）；键列表校验与管道形式共用同一函数，非法键（`{a.b}` 嵌套路径 / `{x: y}` 别名 / 空列表）同样报错；**深层节点尾随投影**：管道可省略——`sites[0]{key,name}` / `sites[0].{key,name}` 等价 `sites[0]|{key,name}`，切片同样可作左侧（`sites[:2]{key,name}`）
+* **jq 式键投影管道**：`data[*]|{id,name,pricing}`——对每个匹配元素只保留列出的键（缺失键 → null），单匹配输出单个对象、多匹配输出数组；左侧可接 filter / search 结果（数组展开逐元素投影），如 `sys data 'clients.filter(name==''modelscope'')|{id,name}' -f config.yaml`；**裸 `{k1,k2}`（不带路径）直接作用于根文档**——对象根只保留这些键（jq `. | {k1,k2}`，如 `cat 4k.json | sys data '{wallpaper,warningText}'`），数组根逐行投影（同 `[*]`，如 `ps | sys data -i table '{Id,Name}'`）；**值路径可带切片 / 通配 / 过滤**——`{wallpaper,sites[:3]}` 输出 wallpaper 与 sites 的前 3 个元素（多匹配聚为数组，空匹配 → null，`{nums[*]}` 输出整个数组）；值路径可再接 filter / search 得到子数组——`{ads, sites: sites.filter(name.contains("4k"))}` 输出根 ads 原样 + 过滤后的站点（等价 jq `{ads, sites: (.sites|map(select(...)))}`，可接切片 `sites[:2].filter(...)`）；键列表校验与管道形式共用同一函数，非法键（`{a.b}` 嵌套路径 / `{x: y}` 别名 / 空列表）同样报错；**深层节点尾随投影**：管道可省略——`sites[0]{key,name}` / `sites[0].{key,name}` 等价 `sites[0]|{key,name}`，切片同样可作左侧（`sites[:2]{key,name}`）
 * **谓词语言**（data 兼容）：`$this` / `$key`、字段路径（`name`、`a.b[0]`、`m["中文键"]`）、字面量（数字 / 单双引号字符串 / true / false / null）、`== != > >= < <= && || !`、函数调用（`contains("x")` / `startsWith` / `endsWith` / `indexOf` / `has("k")`），示例 `sys data 'sites.filter(type==1)'`
 
 ### 10.5 文档级选项
@@ -988,7 +988,9 @@ sys data -i json -o yaml '{}'                          # 格式转换
 sys data -i yaml -o json < in.yaml                     # YAML -> JSON
 sys data -f app.log 'level=="error"'                  # jsonl 裸谓词过滤日志
 sys data 'sites.filter(type==1)'                       # 过滤数组
-sys data 'sites.remove(name.contains("web"))' --root   # 删除元素
+cat 4k.json | sys data 'remove(wallpaper,ads)'          # 删除指定键值节点
+sys data 'cfg.remove(debug)' --root                    # 路径形式删除深层键
+sys data 'list[1:3]=null' --root                       # 切片删除区间元素
 sys data 'search(has("name"))'                         # 递归搜索
 sys data 'name.endsWith("server")'                     # 字符串函数
 sys data 'data[:2]|count()'                            # 切片 + 计数（= 2）
@@ -1001,6 +1003,8 @@ ps | sys data -i table '{Id,Name}'                     # 裸投影：数组根�
 sys data -f 4k.json 'sites[0]{key,name}'               # 深层节点尾随投影（== sites[0]|{key,name}）
 sys data -f 4k.json 'sites[0].{key,name,type}'         # 点式写法等价
 sys data -f 4k.json 'sites[:2]{key,name}'              # 切片 + 尾随投影：前 2 个站点逐元素
+cat 4k.json | sys data '{wallpaper,sites[:3]}'          # 投影值路径切片：输出前 3 个 sites
+cat 4k.json | sys data '{ads, sites: sites.filter(name.contains("4k"))}'  # 根 ads + 过滤后的站点
 cat 4k.json | sys data 'wallpaper=@file.json' --root   # 文件赋值
 cat 4k.json | sys data 'wallpaper=strenv(ROOT)' --root  # 环境变量赋值
 sys data -u https://api.dev/config status              # URL 拉取 + 查询
