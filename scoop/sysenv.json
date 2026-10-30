@@ -1,6 +1,6 @@
 {
     "version": "0.6.42",
-    "description": "Cross-platform (Windows/Ubuntu) system PATH & environment manager with an httpie-compatible HTTP client",
+    "description": "Data query (JSON/YAML/TOML/CSV), AI model info & chat, httpie-style HTTP client, plus system PATH & env manager",
     "homepage": "https://github.com/foxxxx001/sysenv",
     "license": "MIT",
     "architecture": {
