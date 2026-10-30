@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to create (e.g. 0.6.42); a tag will be created if missing"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable, msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Smoke test (pre-UPX)
+        shell: pwsh
+        run: |
+          & "target\release\sys.exe" --version
+
+      - name: UPX compress
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $upxZip = "upx.zip"
+          Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip" -OutFile $upxZip
+          Expand-Archive -LiteralPath $upxZip -DestinationPath "upx" -Force
+          $upx = (Get-ChildItem -LiteralPath "upx" -Recurse -Filter "upx.exe" | Select-Object -First 1).FullName
+          & $upx --best --force -o "target\release\sys-upx.exe" "target\release\sys.exe"
+          Move-Item -Force "target\release\sys-upx.exe" "target\release\sys.exe"
+
+      - name: Smoke test (post-UPX)
+        shell: pwsh
+        run: |
+          & "target\release\sys.exe" --version
+
+      - name: Create release and upload asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $ver = "${{ inputs.version }}"
+          } else {
+            $ver = "${{ github.ref_name }}"
+          }
+          $asset = "target\release\sys.exe"
+          $hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLower()
+          Write-Output "asset sha256: $hash"
+          gh release create $ver --repo $env:GITHUB_REPOSITORY --title "sysenv $ver" --generate-notes 2>&1 | Out-Null
+          gh release upload $ver "$asset#sys-windows-x86_64.exe" --repo $env:GITHUB_REPOSITORY --clobber
+          Write-Output "released: $ver -> sys-windows-x86_64.exe"
