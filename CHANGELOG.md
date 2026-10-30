@@ -2,6 +2,12 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.42（2026-10-30）
+
+### 变更
+- **`sys -V` / `--version` 输出追加项目主页与仓库地址**（src/main.rs）：版本行下方新增两行 `git: https://github.com/foxxxx001/sysenv`、`site: https://sys-cli-toolbox-ln0feciiko6.qoder.zone/`（clap 的 `version` 字段用多行 `concat!`）。`-h` / `--help` 不渲染 version 字段，帮助输出保持不变
+- 版本 0.6.41 -> 0.6.42
+
 ## v0.6.40（2026-10-26）
 
 ### 修复

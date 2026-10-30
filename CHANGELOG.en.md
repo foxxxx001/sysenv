@@ -2,6 +2,12 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.42 (2026-10-30)
+
+### Changed
+- **`sys -V` / `--version` now lists the repository and site URLs** (src/main.rs): two extra lines under the version line — `git: https://github.com/foxxxx001/sysenv` and `site: https://sys-cli-toolbox-ln0feciiko6.qoder.zone/` (clap's `version` field built with a multi-line `concat!`). `-h` / `--help` does not render the version field, so help output is unchanged
+- Version 0.6.41 -> 0.6.42
+
 ## v0.6.40 (2026-10-26)
 
 ### Fixed

@@ -24,7 +24,10 @@ use std::process::ExitCode;
 #[derive(Parser)]
 #[command(
     name = "sys",
-    version = concat!(env!("CARGO_PKG_VERSION"), " (Made by Gary-china)"),
+    version = concat!(
+        env!("CARGO_PKG_VERSION"),
+        " (Made by Gary-china)\ngit: https://github.com/foxxxx001/sysenv\nsite: https://sys-cli-toolbox-ln0feciiko6.qoder.zone/"
+    ),
     about = "System PATH & environment manager + httpie-compatible HTTP client (Windows / Ubuntu)",
     long_about = "sys manages the system PATH and environment variables (persisted and applied to the current environment), imports/exports PATH to the registry, links executables into a PATH directory, queries the DataLearner AI model list and the models.dev database of AI providers, chats with LLM providers configured in ~/.sysenv/config.yaml, probes domains / URLs read from a file or extracts the valid URLs from it (`sys net`, response-time / JSON / plain-text / URL-extraction checks), installs command shims (spath/senv/slink/shttp/sai/stask/sfile), schedules Windows desktop reminders that pop up via msg.exe (sys msg --daily 20:00:02 TEXT, --once, --cron, --list, --delete), and ships an httpie-compatible HTTP client.
 
