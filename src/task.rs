@@ -137,6 +137,12 @@ fn kill_pid(pid: u32, _force: bool) -> Result<()> {
 
 #[cfg(not(windows))]
 fn kill_pid(pid: u32, force: bool) -> Result<()> {
+    // pid_t is a signed 32-bit integer on Linux: any value >= 2^31 wraps to a
+    // negative number, and `kill(-1, sig)` broadcasts the signal to every
+    // process the caller may signal (in CI that includes the runner itself).
+    if pid > i32::MAX as u32 {
+        bail!("pid {pid} is out of range (pid_t maximum is {})", i32::MAX);
+    }
     let sig = if force { "-9" } else { "-15" };
     let status = std::process::Command::new("kill")
         .arg(sig)
@@ -419,7 +425,9 @@ mod tests {
 
     #[test]
     fn kill_by_pid_fails_for_unknown() {
-        // u32::MAX is not a real PID on any supported platform.
+        // u32::MAX is not a real PID on any supported platform; on Linux it
+        // would overflow pid_t to -1 and broadcast the signal to all
+        // processes, so kill_pid must reject it before running `kill`.
         assert!(kill_pid(u32::MAX, false).is_err());
     }
 
