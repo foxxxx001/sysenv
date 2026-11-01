@@ -2,6 +2,13 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.43（2026-11-02）
+
+### 新增
+- **`sys http --http-file FILE` 执行 VS Code REST Client 风格 `.http` 文件**（src/httpie.rs + src/main.rs，用户要求，精简版）：解析单个请求——请求行 `METHOD URL [HTTP/1.1]`、header 行（`Name: Value`）、空行后的原始 body（纯文本或 `@path` 文件引用）；`#` / `###` 注释行、`@name = value` 变量定义行与请求行前的空行自动跳过；解析结果注入现有引擎，`-v/--debug/--offline/--curl/-o/-d` 等全部既有参数照常生效；`--http-file` 与 `--file` / `--raw` / 位置参数互斥（clap 校验）
+- **精简版边界**（按用户选择）：`{{变量}}` 出现在 URL / header 中直接报错（不静默发送字面量）；文件含多个 `###` 请求时 stderr 警告并只执行第一个请求；`--http-file` 路径下不探测 stdin（管道输入不会误当请求体）
+- 版本 0.6.42 -> 0.6.43
+
 ## v0.6.42（2026-10-30）
 
 ### 变更

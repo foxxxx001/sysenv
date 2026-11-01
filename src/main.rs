@@ -1206,6 +1206,9 @@ struct HttpArgs {
     /// Read FILE as the raw request body (like the positional @FILE; cannot be combined with @FILE/stdin)
     #[arg(long, value_name = "FILE", conflicts_with = "raw")]
     file: Option<PathBuf>,
+    /// Execute a VS Code REST Client style .http file (single request: request line + headers + body; simple mode)
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["file", "raw", "args"])]
+    http_file: Option<PathBuf>,
     /// What to print: H (request headers) B (request body) h (response headers) b (response body) m (response metadata)
     #[arg(short = 'p', long, value_name = "WHAT")]
     print: Option<String>,
@@ -1552,6 +1555,7 @@ fn run_http(h: HttpArgs) -> anyhow::Result<i32> {
         multipart: h.multipart,
         raw: h.raw,
         file: h.file,
+        http_file: h.http_file,
         print: h.print,
         headers_only: h.headers,
         body_only: h.body,

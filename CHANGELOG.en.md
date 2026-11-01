@@ -2,6 +2,13 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.43 (2026-11-02)
+
+### Added
+- **`sys http --http-file FILE` executes a VS Code REST Client style `.http` file** (src/httpie.rs + src/main.rs, user request, simple mode): parses a single request — request line `METHOD URL [HTTP/1.1]`, header lines (`Name: Value`), and the raw body after a blank line (plain text or an `@path` file reference); `#` / `###` comment lines, `@name = value` variable definitions and blank lines before the request line are skipped; the parsed request feeds the existing engine, so `-v/--debug/--offline/--curl/-o/-d` and all other flags keep working; `--http-file` conflicts with `--file` / `--raw` / positional args (clap-validated)
+- **Simple-mode boundaries** (per user choice): `{{variables}}` in the URL / headers is an error (no silent literal sends); a file with multiple `###` requests prints a stderr warning and runs only the first request; stdin probing is disabled under `--http-file` (piped input is never mistaken for the body)
+- Version 0.6.42 -> 0.6.43
+
 ## v0.6.42 (2026-10-30)
 
 ### Changed

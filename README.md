@@ -58,7 +58,7 @@ Commands:
 | Windows 定时提醒 | `msg`               | 通过 schtasks + msg.exe 弹窗实现桌面定时提醒：--daily / --once / --cron 三种计划；--name 自定义任务名；--list / --delete 管理；TEXT 提醒内容（GBK 编码）；--music 音乐提醒；任务以 sysmsg- 前缀隔离系统任务，仅 Windows |
 | 文本搜索替换  | `file`               | fd/sd 风格：1 参搜 stdin（带扩展名如 `me.txt` 则显示文件，引号包裹强制搜索）；2 参目录树文本/源码搜索（`-e` / `-i` / `-t` / `-w` / `-c` / `-n` 行号）；3 参 OLD NEW PATH 就地替换；`-l` 统计行数（文件 / stdin / 匹配行）；`-S` 大小 / `--newer` / `--older` 时间 / `-d` 深度筛选，无 PATTERN 时列文件；`-md5 FILE [MD5]` / `-sha FILE [SHA1]` 哈希与比对；`--enc SRC [DST]` 编码转换（gbk/gb2312 ↔ utf-8，默认转 utf-8，`--from` 指定源编码、缺省自动检测，DST 缺省输出 stdout） |
 | 数据查询转换  | `data`               | data 兼容**查询 / 修改 / 转换**结构化数据，七格式互转（JSON / JSONL / YAML / TOML / CSV / MD / TABLE）：选择器（`a.b[0]` / `list[*]` / `m["中文键"]` / 根数组，含 **Python 式切片** `[:2]` `[1:3]` `[-2:]` `[::2]` `[::-1]`）、赋值（`= VALUE` / `= null` 删除 / `= @FILE` / `= strenv(NAME)` / `+= -= *= /=`）、函数（`filter` / `remove` / `search` / 字符串函数 / **`count()` 计数**）、谓词裸过滤（csv/table/jsonl 自动过滤行数组）、**jq 式键投影** `data[*]\|{id,name}`（**裸 `{k1,k2}` 直接投影根文档**：对象根只保留这些键，如 `cat 4k.json \| sys data '{wallpaper,warningText}'`；数组根逐行投影，同 `[*]\|{...}`；**深层节点管道可省**：`sites[0]{key,name}` / `sites[0].{key,name}` 等价 `sites[0]\|{key,name}`）、`--depth` 修剪、`--limit` 取前 N 行、`--header`/`--no-header` 表头控制、`-w` 写回、`-u` URL 拉取、GBK/GB18030 等**非 UTF-8 自动解码**、tab 缩进 YAML 归一、TTY 下 json/yaml jq 式上色；**完整说明与示例见第 10 节** |
-| HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头） |
+| HTTP 客户端  | `http`               | httpie 参数子集对齐；**默认 application/json**（`-f`/`--multipart`/显式头可覆盖）；JSON / 表单 /multipart/ 原始体；嵌套 JSON；下载 / 重定向 / 认证 / 离线模式；`--help` 参数说明与示例；`--debug` 打印实际请求与响应（含头）；`--curl` 导出等价 curl 命令；`--http-file` 执行 VS Code REST Client 风格 `.http` 文件（精简版：单个请求） |
 | 网络探测      | `net`                | 从文件批量读取 http(s) 地址并探测：`-i` 读文件（`#` 注释行跳过、每行多个地址、地址截取到空格/标点）；`-t domain`（默认，连续 3 次 GET 取平均响应时间，全部测完按平均时间升序打印）/ `-t tv`（响应体须为 JSON，支持 `--sort` 统计排序；旧名 `json`）/ `-t tvs`（兼容 tv 与聚合两种 JSON：单仓 `.sites` / 多仓 `.urls` 分组输出）/ `-t file`（响应体须为普通文本）/ `-t test`（只探测可访问性，不可访问的屏幕打印错误并从源文件删除，`-o` 输出清理后的源文件行）/ `-t info`（用 `-n` 域名查 RDAP 注册信息，查不到逐层回退上层域名）；tv/file 模式每测完一个即打印 url/可用性/状态码/响应时间/格式，`-o` 把检测成功的 url 写入文件（一行一个）；`--timeout` 单次请求超时 |
 | 日志查看      | `log`                | 彩色 less 式日志查看器：解析 Nginx / Linux / Windows / Log4j 等常见日志——**时间**（ISO/斜杠/nginx access/syslog/US 多种格式，行首或行中）橙色显示；**级别**（trace→info 渐浅绿、warning→error→fatal 渐深红）渐变着色；**app 标志**与 **IP 地址**（IPv4 / IPv6，含头部与正文任意位置）蓝色、**HTTP 方法**（`GET /pages/ HTTP/1.1` 等请求行动词，含 CONNECT 无版本形式）绿色；`--level` 按级别过滤（warn==warning、err==error）；`--search` 关键字搜索（行号 + 反显，交互下 n/u 循环跳转）；交互界面按 `/` 实时关键字搜索（非 -f 模式，逐字符即时高亮并跳转首个匹配，Esc 取消 / Enter 提交）；`--line N` 从第 N 行后解析（保留原始行号）；`--newer TIME` 只显示该时间之后的日志；`-f` 追踪文件变化滚动展示（150ms 轮询，截断/轮转自动重读）；TTY 下 less 式交互（PageUp/PageDown/↑/↓/Home/End/g/G/q），管道输出纯文本无 ANSI |
 
@@ -703,6 +703,8 @@ sys msg --delete meeting                     # 删除（可省略 sysmsg- 前缀
 
 * stdin 管道直接作为原始请求体；`--raw` 显式指定原始体
 
+* `--http-file FILE`：直接执行 VS Code REST Client 风格 `.http` 文件（精简版，单个请求）——请求行 `METHOD URL [HTTP/1.1]`、header 行、空行后的 body（纯文本或 `@path` 文件引用）；`#` / `###` 注释与 `@name = value` 变量定义自动跳过；`{{变量}}` 出现在 URL / 头中报错；含多个 `###` 请求时警告并只执行第一个；与 `--file` / `--raw` / 位置参数互斥
+
 * 终端美化：默认对 JSON 响应做缩进格式化，`--pretty none` 关闭
 
 ### 示例
@@ -735,6 +737,7 @@ sys http POST pie.dev/post --raw '{"a":1}' # 显式原始体
 sys http pie.dev/post -- -name=foo         # 以 - 开头的字段名需跟在 -- 之后
 echo '{"a":1}' | sys http POST pie.dev/post  # stdin 作为原始体
 sys http --verify no https://self-signed.example  # 跳过证书校验
+sys http --http-file demo.http              # 执行 REST Client 风格 .http 文件（精简版，单个请求）
 ```
 
 ### 请求项语法

@@ -26,6 +26,7 @@ pub struct HttpConfig {
     pub multipart: bool,
     pub raw: Option<String>,
     pub file: Option<PathBuf>,
+    pub http_file: Option<PathBuf>,
     pub print: Option<String>,
     pub headers_only: bool,
     pub body_only: bool,
@@ -489,6 +490,141 @@ fn parse_positionals(args: &[String], default_scheme: &str) -> Result<RequestSpe
     Ok(spec)
 }
 
+/// Parse a VS Code REST Client style `.http` file into a single request spec
+/// (simple mode). Supported: request line `METHOD URL [HTTP/1.1]`, header
+/// lines (`Name: Value`), an optional blank line followed by the raw body
+/// (plain text, or a leading `@path` body-file reference). Comment lines
+/// (`#` / `###`) and variable definitions (`@name = value`) are skipped, as
+/// are blank lines before the request line.
+///
+/// Not supported (simple mode): variables (`{{name}}`) in the URL / headers
+/// are an error; multiple `###`-separated requests produce a warning and only
+/// the first request is executed.
+fn parse_http_text(text: &str, default_scheme: &str) -> Result<RequestSpec> {
+    let mut spec = RequestSpec::default();
+
+    // Head section: locate the request line, skipping BOM, comments,
+    // separators, variable definitions and blank lines.
+    let mut lines = text.trim_start_matches('\u{feff}').lines();
+    let mut request_line: Option<String> = None;
+    let mut head_lines: Vec<String> = Vec::new();
+    for raw in lines.by_ref() {
+        let t = raw.trim_end_matches('\r').trim();
+        if t.is_empty() || t.starts_with('#') || is_var_definition(t) {
+            continue;
+        }
+        request_line = Some(t.to_string());
+        break;
+    }
+    let request_line = request_line.context("http file has no request line")?;
+    for raw in lines {
+        head_lines.push(raw.trim_end_matches('\r').to_string());
+    }
+
+    // Request line: `METHOD URL [HTTP/1.1]`.
+    let parts: Vec<&str> = request_line.split_whitespace().collect();
+    if parts.len() < 2 {
+        bail!(
+            "invalid http file request line `{request_line}` (expected `METHOD URL [HTTP/1.1]`)"
+        );
+    }
+    let method = parts[0].to_ascii_uppercase();
+    if !KNOWN_METHODS.iter().any(|m| m.eq_ignore_ascii_case(&method)) {
+        bail!("invalid http file method `{}`", parts[0]);
+    }
+    if parts.len() > 2 && !parts[2].to_ascii_uppercase().starts_with("HTTP/") {
+        bail!(
+            "invalid http file request line `{request_line}` (unexpected token `{}`)",
+            parts[2]
+        );
+    }
+    spec.method = method;
+    if parts[1].contains("{{") || parts[1].contains("}}") {
+        bail!("variables ({{{{...}}}}) are not supported in http files (simple mode)");
+    }
+    spec.url = normalize_url(parts[1], default_scheme)?;
+
+    // Headers until the first blank line; the rest is the body.
+    let mut body_start: Option<usize> = None;
+    for (i, line) in head_lines.iter().enumerate() {
+        let t = line.trim();
+        if t.is_empty() {
+            body_start = Some(i);
+            break;
+        }
+        if t.starts_with('#') {
+            continue;
+        }
+        if let Some((name, value)) = t.split_once(':') {
+            let name = name.trim();
+            if name.is_empty() {
+                bail!("invalid http file header line `{line}`");
+            }
+            if value.contains("{{") || value.contains("}}") {
+                bail!("variables ({{{{...}}}}) are not supported in http files (simple mode)");
+            }
+            spec.headers.push((name.to_string(), value.trim().to_string()));
+        } else {
+            bail!("invalid http file header line `{line}` (expected `Name: Value`)");
+        }
+    }
+
+    // Body: everything after the first blank line, trimmed. A body of `@path`
+    // reads the file contents (REST Client style body reference).
+    let body = match body_start {
+        Some(i) => head_lines[i + 1..].join("\n"),
+        None => String::new(),
+    };
+    let body = body.trim();
+    if !body.is_empty() {
+        if let Some(rest) = body.strip_prefix('@') {
+            let rest = rest.trim();
+            if rest.is_empty() {
+                bail!("http file body `@` needs a file path");
+            }
+            let bytes = std::fs::read(rest)
+                .with_context(|| format!("cannot read http file body `{rest}`"))?;
+            spec.raw_body = Some(bytes);
+        } else {
+            spec.raw_body = Some(body.as_bytes().to_vec());
+        }
+    }
+
+    // Simple-mode guard: a `###` separator after the body means another
+    // request follows; only the first request is executed.
+    if let Some(i) = body_start {
+        if head_lines[i + 1..]
+            .iter()
+            .any(|l| l.trim_start().starts_with("###"))
+        {
+            eprintln!(
+                "sys: warning: http file contains multiple `###` requests; \
+                 only the first request is executed (simple mode)"
+            );
+        }
+    }
+    Ok(spec)
+}
+
+/// Is this head-section line a REST Client variable definition (`@name = value`)?
+/// Such lines are skipped in simple mode (variables are not supported).
+fn is_var_definition(t: &str) -> bool {
+    if let Some(rest) = t.strip_prefix('@') {
+        if let Some(eq) = rest.find('=') {
+            let name = rest[..eq].trim();
+            return !name.is_empty() && name.chars().all(|c| !c.is_whitespace());
+        }
+    }
+    false
+}
+
+/// Read and parse a `.http` file (simple mode, single request).
+fn parse_http_file(path: &Path, default_scheme: &str) -> Result<RequestSpec> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read http file `{}`", path.display()))?;
+    parse_http_text(&text, default_scheme)
+}
+
 /// Probe stdin without hanging: spawn a reader thread and wait up to `timeout`
 /// for EOF. Returns None when no data arrives in time (e.g. an interactive
 /// session that merely reports a non-tty stdin, like PowerShell piping).
@@ -771,6 +907,7 @@ Usage: sys http [flags] [METHOD] URL [ITEM...]
       --multipart         强制 multipart/form-data
       --raw DATA          显式原始请求体
       --file FILE         读取本地文件内容作为原始请求体（等价 @FILE，不可与 @FILE/stdin 同用）
+      --http-file FILE    执行 VS Code REST Client 风格 .http 文件（单个请求：请求行 + header + body；跳过 #/### 注释与 @var 定义；不支持 {{变量}} 与多请求）
   -p, --print WHAT        打印内容 H B h b m 任意组合（请求头/体、响应头/体、状态行）
   -h, --headers           只打印响应头
   -b, --body              只打印响应体
@@ -805,6 +942,8 @@ Usage: sys http [flags] [METHOD] URL [ITEM...]
   sys http -d pie.dev/image.png
   sys http POST pie.dev/post @data.json
   sys http POST pie.dev/post --file data.json
+  sys http --http-file demo.http
+  sys http --http-file demo.http -v
   sys http pie.dev/post cv@resume.pdf
   sys http -a user:pass pie.dev/anything
   sys http -A bearer -a TOKEN pie.dev/anything
@@ -1009,7 +1148,13 @@ fn build_curl_command(
 pub fn run(cfg: &HttpConfig) -> Result<i32> {
     let stdout_tty = std::io::stdout().is_terminal();
 
-    let mut spec = parse_positionals(&cfg.args, &cfg.default_scheme)?;
+    // --http-file FILE: parse a VS Code REST Client style .http file (single
+    // request) instead of the positional METHOD URL ITEM... syntax.
+    let mut spec = if let Some(fp) = &cfg.http_file {
+        parse_http_file(fp, &cfg.default_scheme)?
+    } else {
+        parse_positionals(&cfg.args, &cfg.default_scheme)?
+    };
 
     // --file FILE: use the file contents as the raw request body. Mutually
     // exclusive with a positional @FILE body; stdin probing is skipped because
@@ -1029,6 +1174,7 @@ pub fn run(cfg: &HttpConfig) -> Result<i32> {
         && !std::io::stdin().is_terminal()
         && spec.raw_body.is_none()
         && cfg.raw.is_none()
+        && cfg.http_file.is_none()
         && spec.data.is_empty()
         && spec.uploads.is_empty()
     {
@@ -1393,6 +1539,7 @@ mod tests {
             multipart: false,
             raw: None,
             file: None,
+            http_file: None,
             print: None,
             headers_only: false,
             body_only: false,
@@ -1627,6 +1774,126 @@ mod tests {
         assert_eq!(spec.method, "POST");
         assert_eq!(spec.url, "https://api.example.com/v1/models");
         assert!(spec.headers.iter().any(|(n, _)| n == "Authorization"));
+    }
+
+    // ------------------------------------------------------------------
+    // --http-file: VS Code REST Client 风格 .http 文件解析（精简版）
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn http_file_parses_request_headers_body() {
+        let text = "GET https://api.example.com/users/1 HTTP/1.1\r\n\
+                    Authorization: Bearer abc123\r\n\
+                    Accept: application/json\r\n\
+                    \r\n\
+                    {\r\n  \"name\": \"John\",\r\n  \"age\": 30\r\n}\r\n";
+        let spec = parse_http_text(text, "https").unwrap();
+        assert_eq!(spec.method, "GET");
+        assert_eq!(spec.url, "https://api.example.com/users/1");
+        assert_eq!(
+            spec.headers,
+            vec![
+                ("Authorization".to_string(), "Bearer abc123".to_string()),
+                ("Accept".to_string(), "application/json".to_string()),
+            ]
+        );
+        let body = String::from_utf8(spec.raw_body.unwrap()).unwrap();
+        assert!(body.starts_with('{'), "body: {body}");
+        assert!(body.contains("\"name\": \"John\""), "body: {body}");
+    }
+
+    #[test]
+    fn http_file_no_body_http_version_and_default_scheme() {
+        // 无 body、带 HTTP/1.1 后缀、缺省协议补全
+        let spec = parse_http_text("GET api.example.com/users HTTP/1.1", "http").unwrap();
+        assert_eq!(spec.method, "GET");
+        assert_eq!(spec.url, "http://api.example.com/users");
+        assert!(spec.raw_body.is_none());
+    }
+
+    #[test]
+    fn http_file_variables_rejected() {
+        let text = "\
+# @name getUser
+@baseUrl = https://api.example.com
+###
+@token = abc123
+
+GET {{baseUrl}}/users/1 HTTP/1.1
+Authorization: Bearer {{token}}
+";
+        // 精简版不支持 {{变量}}：URL / 头中出现即报错
+        let err = parse_http_text(text, "https").err().unwrap();
+        assert!(err.to_string().contains("variables"), "err: {err}");
+    }
+
+    #[test]
+    fn http_file_skips_comments_and_blanks_before_request() {
+        let text = "# comment line\n\n###\n\nGET https://api.example.com/ping\n";
+        let spec = parse_http_text(text, "https").unwrap();
+        assert_eq!(spec.method, "GET");
+        assert_eq!(spec.url, "https://api.example.com/ping");
+        assert!(spec.raw_body.is_none());
+    }
+
+    #[test]
+    fn http_file_plain_body_and_empty_header_value() {
+        let text = "POST https://api.example.com/echo\nX-Empty:\n\nhello world\nsecond line\n";
+        let spec = parse_http_text(text, "https").unwrap();
+        assert_eq!(spec.method, "POST");
+        assert!(spec.headers.iter().any(|(n, v)| n == "X-Empty" && v.is_empty()));
+        let body = String::from_utf8(spec.raw_body.unwrap()).unwrap();
+        assert_eq!(body, "hello world\nsecond line");
+    }
+
+    #[test]
+    fn http_file_body_file_reference() {
+        let tmp = std::env::temp_dir().join("sys-httpfile-body.json");
+        std::fs::write(&tmp, b"{\"a\":1}").unwrap();
+        let text = format!("POST https://api.example.com/up\nContent-Type: application/json\n\n@{}\n", tmp.display());
+        let spec = parse_http_text(&text, "https").unwrap();
+        assert_eq!(spec.raw_body.as_deref(), Some(&b"{\"a\":1}"[..]));
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn http_file_invalid_lines_error() {
+        // 非方法开头
+        let err = parse_http_text("FETCH https://api.example.com/x", "https").err().unwrap();
+        assert!(err.to_string().contains("method"), "err: {err}");
+        // 请求行只有方法
+        let err = parse_http_text("GET", "https").err().unwrap();
+        assert!(err.to_string().contains("request line"), "err: {err}");
+        // 头部行无冒号
+        let err = parse_http_text("GET https://x.io\nBadHeaderLine\n", "https").err().unwrap();
+        assert!(err.to_string().contains("header"), "err: {err}");
+        // 空文件
+        assert!(parse_http_text("   \n# nothing\n", "https").is_err());
+    }
+
+    #[test]
+    fn http_file_lowercase_method_and_bom() {
+        let text = "\u{feff}post https://api.example.com/x HTTP/1.1\n\n";
+        let spec = parse_http_text(text, "https").unwrap();
+        assert_eq!(spec.method, "POST");
+    }
+
+    #[test]
+    fn http_file_multiple_requests_keeps_first() {
+        let text = "GET https://api.example.com/1 HTTP/1.1\n\n{\"a\":1}\n\n### second\nPOST https://api.example.com/2\n";
+        let spec = parse_http_text(text, "https").unwrap();
+        assert_eq!(spec.method, "GET");
+        assert_eq!(spec.url, "https://api.example.com/1");
+        let body = String::from_utf8(spec.raw_body.unwrap()).unwrap();
+        assert!(body.starts_with("{\"a\":1}"), "body: {body}");
+    }
+
+    #[test]
+    fn http_file_body_file_reference_missing_errors() {
+        let err = parse_http_text("GET https://x.io\n\n@C:\\no\\such\\file.json\n", "https")
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("cannot read http file body"), "err: {err}");
     }
 
     #[test]
