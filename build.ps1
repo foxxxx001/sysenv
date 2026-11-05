@@ -1,12 +1,13 @@
 # build.ps1 - Windows one-shot release script
-# Steps: cargo build --release (sccache-cached) -> UPX compress to dist (platform+version name)
+# Steps: cargo build --release (sccache-cached) -> UPX compress to dist (platform+version name) -> cargo clean
 #
 # Usage: powershell -File build.ps1
 #
 # Note: this machine keeps its Rust toolchain in D:\rust (RUSTUP_HOME / CARGO_HOME);
 # adjust the lines below when building on another machine.
-# Compile intermediates are cached by sccache under SCCACHE_DIR, so target/ is
-# intentionally kept between builds (rebuilds hit the sccache cache).
+# Compile intermediates live in the sccache store under SCCACHE_DIR, so the release
+# ends with `cargo clean`: target/ is disposable and the next build still hits the
+# sccache cache. Without this, dev/test incremental caches pile up (seen at 21 GB).
 
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -35,3 +36,7 @@ Write-Host "== smoke test =="
 & $out --version
 
 Write-Host "OK: $out ($((Get-Item $out).Length) bytes)"
+
+Write-Host "== cargo clean =="
+cargo clean
+Write-Host "target/ removed (sccache store kept at $env:SCCACHE_DIR)"
