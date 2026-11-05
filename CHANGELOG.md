@@ -2,6 +2,27 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.45（2026-11-06）
+
+### 修复
+- **`sys file --help` 补显 `--word2md` / `--md2word`**（src/main.rs + src/file.rs，用户报告）：两个转换模式标记走 ARGS 重扫描（同 `--enc`），clap 自动参数列表不含它们，`--help` 与无参 usage 报错里都看不到。修复：FileArgs.args 的 long_help 模式清单加入 `--word2md / --md2word` 并新增两段完整模式说明（参数形式 / 支持内容 / 图片处理 / DST 规则 / 别名）；file.rs 头部 Usage 注释与 Options 列表、无参 usage 报错的命令行与 options 行同步补全。版本 0.6.44 -> 0.6.45
+
+---
+
+## v0.6.44（2026-11-06）
+
+### 新增
+- **`sys file --word2md SRC.docx [DST.md]`**（Word → Markdown）：解析 docx（zip + word/document.xml）提取标题（Heading1-6 / Title → `#`-`######`）、段落（run 级粗体 `**` / 斜体 `*`）、项目符号列表（ListParagraph / numPr → `- `）、表格（`<w:tbl>` → markdown 管道表，单元格内多段落以 `<br>` 连接、`|` 转义）、超链接（`[文本](#锚点)`）、换行 `<w:br/>`（行尾两空格）与 `<w:tab/>`；**内嵌图片自动抽取到 DST 同目录 `media/`**，在 md 中以 `![文件名](media/文件名)` 相对路径引用；DST 缺省输出 stdout（图片仍抽取到 SRC 同目录 media/）
+- **`sys file --md2word SRC.md DST.docx`**（Markdown → Word）：块级解析标题 / 段落 / 无序有序列表 / 引用（左边框缩进样式）/ 围栏代码（Consolas 灰底）/ 管道表格（首行加粗 + 全边框）/ 分隔线（段落底边框）/ 图片；行内 `**粗**`、`*斜*`、`` `码` ``（Consolas 灰底）渲染为对应 Word run；**图片本地路径（相对 md 所在目录）或 http(s) URL（30s 超时）自动嵌入 `word/media/`**，magic bytes 嗅探 png/jpg/gif/webp/bmp，PNG/JPG/GIF/BMP 头解析原始像素尺寸换算 EMU，超宽等比缩到 6 英寸内（未知格式回退 4×3 英寸）；生成 styles.xml 内置 Heading1-6 / ListParagraph / Normal 样式（Word 中标题正确显示且导航窗格可用，python-docx 验证 style 解析为 Heading 1）
+- 别名：`--docx2md` / `--doc2md`（→md）、`--md2docx` / `--md2doc`（→docx）；两种模式与 `--enc` / `-md5` / `-sha` 同级优先（在 cmd_file 内先于它们扫描 ARGS，可出现在任意位置）；DST 必须不同于 SRC（不允许原地覆盖）
+- 零外部命令：不依赖 pandoc / Word / python-docx；仅新增 `zip` crate（flate2 / crc32fast 已在依赖树内）
+- 新增 14 项 `wordmd::tests` 单测：XML 实体反转义（含 `&#20013;` 数字引用）、属性提取、.rels 解析、skip_tag 嵌套/自闭合/未知标签、图片 token（含 title 剥离与非图行排除）、markdown 块解析（10 类块全覆盖）、行内 run（含未闭合标记字面保留）、png/gif/bmp 尺寸嗅探与 EMU 换算、参数扫描（别名/重复报错/无标记 None）、XML 转义、表格行解析、table_xml 结构、docx 构建→读回 round-trip（标题/粗体/列表/表格全链路）
+
+### 测试
+- `cargo test --bin sys wordmd::` 14/14 全绿；真实二进制端到端：md→docx（python-docx 校验 Heading 1 / List Paragraph / 表格 / inline_shapes 图片字节一致）、真实 python-docx 生成的 docx→md（标题/粗体/表格/图片抽取完整）、远程 URL 图片嵌入（baidu logo 15 KB 实网下载）；`--word2md` 对 .md 输入明确报错、SRC/DST 相同报错、文件缺失报错
+
+---
+
 ## v0.6.43（2026-11-02）
 
 ### 新增

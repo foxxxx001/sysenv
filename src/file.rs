@@ -19,6 +19,19 @@
 //!                                    fixes the source instead of auto-detecting,
 //!                                    `--to ENC` sets the target; DST omitted
 //!                                    -> stdout; DST must differ from SRC)
+//!   sys file --word2md SRC.docx [DST.md]
+//!                                    convert Word to Markdown (headings, lists,
+//!                                    tables, bold/italic; embedded images are
+//!                                    extracted to a media/ dir next to DST and
+//!                                    referenced by relative path; DST omitted
+//!                                    -> stdout; aliases --docx2md / --doc2md)
+//!   sys file --md2word SRC.md DST.docx
+//!                                    convert Markdown to Word (headings, lists,
+//!                                    quotes, fenced code, tables; images — local
+//!                                    paths relative to SRC or http(s) URLs — are
+//!                                    embedded into the docx; DST required and
+//!                                    must differ from SRC; aliases --md2docx /
+//!                                    --md2doc)
 //!
 //! A single argument is a stdin search unless it is quoted ("me.txt" -> search
 //! the string) or carries an extension (me.txt -> display that file); with `-l`
@@ -52,6 +65,16 @@
 //!                -> stdout, DST must differ from SRC. Scanned from the ARGS list
 //!                (`--enc` with aliases `--encode` / `--convert`; `-f ENC` is
 //!                an alias for `--from ENC`), so they may appear at any position
+//!   --word2md    Word -> Markdown mode: `--word2md SRC.docx [DST.md]`; headings,
+//!                bold/italic, lists, tables, hyperlinks; embedded images are
+//!                extracted to a media/ dir next to DST and referenced by
+//!                relative path; DST omitted -> stdout. Scanned from the ARGS
+//!                list (aliases --docx2md / --doc2md), any position
+//!   --md2word    Markdown -> Word mode: `--md2word SRC.md DST.docx`; headings,
+//!                lists, quotes, fenced code, tables; images (local paths
+//!                relative to SRC, or http(s) URLs) are embedded into the
+//!                docx; DST required and must differ from SRC. Scanned from
+//!                the ARGS list (aliases --md2docx / --md2doc), any position
 //!   -S SIZE      only files at least SIZE bytes (plain number = bytes;
 //!                2k/2m/2g/2t = 1024-based KiB/MiB/GiB/TiB)
 //!   --newer TIME only files modified at/after TIME (YYYY-MM-DD [HH:MM[:SS]])
@@ -1294,6 +1317,12 @@ pub fn cmd_file(
         line_count,
         line_numbers,
     };
+    // Word <-> Markdown conversion mode (`--word2md` / `--md2word` markers)
+    // takes precedence like `--enc`: `sys file --word2md SRC.docx [DST.md]`,
+    // `sys file --md2word SRC.md DST.docx`.
+    if let Some(wm) = crate::wordmd::split_wordmd_args(args)? {
+        return crate::wordmd::run_wordmd(wm);
+    }
     // Encoding-convert mode (`--enc` / `--encode` / `--convert` markers)
     // takes precedence over every other mode: `sys file --enc SRC [DST]
     // [--from ENC] [--to ENC]`.
@@ -1373,7 +1402,7 @@ pub fn cmd_file(
         0 if has_filter => list_files(".", &opts),
         1 if has_filter => list_files(&args[0], &opts),
         0 => bail!(
-            "usage:\n  sys file PATTERN             search PATTERN in stdin (piped)\n  sys file PATTERN PATH        search PATTERN in PATH\n  sys file OLD NEW PATH        replace OLD with NEW in PATH\n  sys file NAME.EXT            display a file (e.g. file me.txt)\n  sys file -l FILE             count the lines of FILE\n  sys file -l PATTERN [PATH]   count the matching lines\n  sys file -md5 FILE [MD5]     print MD5 of FILE (compare when MD5 given)\n  sys file -sha FILE [SHA1]    print SHA1 of FILE (compare when SHA1 given)\n  sys file --enc SRC [DST]     convert encoding: gbk/gb2312 <-> utf-8\n                               (default to utf-8; --from ENC to set source,\n                               DST omitted -> stdout; DST must differ from SRC)\n  sys file -S SIZE [PATH]      list files by size (e.g. -S 2m)\n  sys file --newer TIME [PATH] list files by mtime\noptions: -e EXT (repeatable) -i -t -w -c NUM -n -l -md5 -sha --enc -S SIZE --newer TIME --older TIME -d NUM"
+            "usage:\n  sys file PATTERN             search PATTERN in stdin (piped)\n  sys file PATTERN PATH        search PATTERN in PATH\n  sys file OLD NEW PATH        replace OLD with NEW in PATH\n  sys file NAME.EXT            display a file (e.g. file me.txt)\n  sys file -l FILE             count the lines of FILE\n  sys file -l PATTERN [PATH]   count the matching lines\n  sys file -md5 FILE [MD5]     print MD5 of FILE (compare when MD5 given)\n  sys file -sha FILE [SHA1]    print SHA1 of FILE (compare when SHA1 given)\n  sys file --enc SRC [DST]     convert encoding: gbk/gb2312 <-> utf-8\n                               (default to utf-8; --from ENC to set source,\n                               DST omitted -> stdout; DST must differ from SRC)\n  sys file --word2md SRC.docx [DST.md]\n                               convert Word to Markdown (images extracted\n                               to media/; DST omitted -> stdout)\n  sys file --md2word SRC.md DST.docx\n                               convert Markdown to Word (local/URL images\n                               embedded; DST required)\n  sys file -S SIZE [PATH]      list files by size (e.g. -S 2m)\n  sys file --newer TIME [PATH] list files by mtime\noptions: -e EXT (repeatable) -i -t -w -c NUM -n -l -md5 -sha --enc --word2md --md2word -S SIZE --newer TIME --older TIME -d NUM"
         ),
         1 => {
             if let Some(inner) = strip_quotes(&args[0]) {

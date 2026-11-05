@@ -16,6 +16,7 @@ mod path;
 mod server;
 mod store;
 mod task;
+mod wordmd;
 
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -1066,9 +1067,9 @@ struct FileArgs {
         value_name = "ARGS",
         allow_hyphen_values = true,
         long_help = r#"The mode is chosen by how many arguments are given. Flag-like tokens
-(-md5 / -sha / --enc / -l / -n / -S / --newer / --older / -d / -e / -i / -t
-/ -w / -c) are absorbed into ARGS and re-scanned, so they may appear at any
-position:
+(-md5 / -sha / --enc / --word2md / --md2word / -l / -n / -S / --newer / --older
+/ -d / -e / -i / -t / -w / -c) are absorbed into ARGS and re-scanned, so they
+may appear at any position:
 
   1 arg   `sys file PATTERN`          search PATTERN in stdin (piped); a quoted
           string ("me.txt") forces the search meaning, a bare token with an
@@ -1082,6 +1083,14 @@ position:
           encoding between utf-8 / gbk / gb2312 (default target utf-8; --from /
           -f ENC fixes the source, omit = auto-detect; DST omitted = stdout,
           DST must differ from SRC; aliases --encode / --convert)
+  --word2md `sys file --word2md SRC.docx [DST.md]` convert Word to Markdown
+          (headings / bold-italic / lists / tables / hyperlinks; embedded
+          images extracted to a media/ dir next to DST; DST omitted = stdout;
+          aliases --docx2md / --doc2md)
+  --md2word `sys file --md2word SRC.md DST.docx` convert Markdown to Word
+          (headings / lists / quotes / fenced code / tables / rules; images —
+          local paths relative to SRC or http(s) URLs — are embedded; built-in
+          Heading1-6 styles; aliases --md2docx / --md2doc)
   -md5/-sha `sys file -md5/-sha FILE [EXPECTED]` print or verify a file hash
   -l      `sys file -l [PATTERN [PATH]]` count lines (stdin / a file / matches)
   filters `-S SIZE` / `--newer TIME` / `--older TIME` / `-d N` with no PATTERN

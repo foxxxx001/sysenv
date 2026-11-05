@@ -2,7 +2,24 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
-## v0.6.43 (2026-11-02)
+## v0.6.45 (2026-11-06)
+
+### Fixed
+- **`sys file --help` now shows `--word2md` / `--md2word`** (src/main.rs + src/file.rs, user report): the two conversion-mode markers are re-scanned from ARGS (like `--enc`), so clap's automatic flag list did not include them and neither `--help` nor the no-arg usage error mentioned them. Fixed: the long_help mode list in FileArgs.args now names `--word2md / --md2word` plus two full mode descriptions (argument form / supported content / image handling / DST rules / aliases); the file.rs header Usage comment and Options list, and the no-arg usage error's command lines and options line, are updated in sync. Version 0.6.44 -> 0.6.45
+
+---
+
+## v0.6.44 (2026-11-06)
+
+### Added
+- **`sys file --word2md SRC.docx [DST.md]`** (Word -> Markdown): parses a docx (zip + word/document.xml) extracting headings (Heading1-6 / Title -> `#`..`######`), paragraphs (run-level bold `**` / italic `*`), bullet lists (ListParagraph / numPr -> `- `), tables (`<w:tbl>` -> markdown pipe tables, multi-paragraph cells joined with `<br>`, `|` escaped), hyperlinks, `<w:br/>` line breaks (two trailing spaces) and `<w:tab/>`; **embedded images are extracted to a `media/` directory next to DST** and referenced as `![name](media/name)`; DST omitted -> stdout
+- **`sys file --md2word SRC.md DST.docx`** (Markdown -> Word): block-level parsing of headings / paragraphs / bullet & ordered lists / quotes (left-border indent style) / fenced code (Consolas, grey shading) / pipe tables (bold header row + full borders) / horizontal rules (bottom-border paragraph) / images; inline `**bold**`, `*italic*`, `` `code` `` render as matching Word runs; **images — local paths (relative to the md) or http(s) URLs (30s timeout) — are embedded into `word/media/`**, format sniffed by magic bytes (png/jpg/gif/webp/bmp), pixel dimensions parsed from PNG/JPG/GIF/BMP headers and converted to EMU, over-wide images scaled proportionally to 6 inches; a generated styles.xml defines Heading1-6 / ListParagraph / Normal (python-docx resolves Heading 1 correctly)
+- Aliases `--docx2md` / `--doc2md` (-> md) and `--md2docx` / `--md2doc` (-> docx); both modes are scanned from ARGS in cmd_file alongside `--enc` / `-md5` / `-sha` and may appear anywhere; DST must differ from SRC (no in-place overwrite)
+- Zero external commands: no pandoc / Word / python-docx; the only new dependency is the `zip` crate (flate2 / crc32fast already in the tree)
+- 14 new `wordmd::tests` unit tests
+
+---
+
 
 ### Added
 - **`sys http --http-file FILE` executes a VS Code REST Client style `.http` file** (src/httpie.rs + src/main.rs, user request, simple mode): parses a single request — request line `METHOD URL [HTTP/1.1]`, header lines (`Name: Value`), and the raw body after a blank line (plain text or an `@path` file reference); `#` / `###` comment lines, `@name = value` variable definitions and blank lines before the request line are skipped; the parsed request feeds the existing engine, so `-v/--debug/--offline/--curl/-o/-d` and all other flags keep working; `--http-file` conflicts with `--file` / `--raw` / positional args (clap-validated)

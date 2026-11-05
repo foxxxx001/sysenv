@@ -1,6 +1,6 @@
 [package]
 name = "sys"
-version = "0.6.43"
+version = "0.6.45"
 edition = "2021"
 description = "Cross-platform (Windows/Ubuntu) system PATH & environment manager with an httpie-compatible HTTP client"
 license = "MIT"
@@ -22,6 +22,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 encoding_rs = "0.8"
 sha2 = "0.10"
 hmac = "0.12"
+zip = "2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
