@@ -11,6 +11,9 @@
 //!   sys file -l FILE                 count the lines of FILE
 //!   sys file -l                      count the lines of stdin (piped input)
 //!   sys file -l PATTERN [PATH]       count the matching lines (stdin or tree)
+//!   sys file -C FILE                 count all characters of FILE
+//!   sys file -C DIR                  per-file character counts (+ total)
+//!   sys file -C                      count all characters of stdin
 //!   sys file -md5 FILE [MD5]         hash FILE with MD5; compare when MD5 given
 //!   sys file -sha FILE [SHA1]        hash FILE with SHA-1; compare when SHA1 given
 //!   sys file --enc SRC [DST] [--from ENC] [--to ENC]
@@ -54,6 +57,26 @@
 //!                matching lines (stdin: `N`; tree: `path: N` per file). May
 //!                appear at any position (`sys file PATTERN -l` works too;
 //!                re-scanned from the ARGS list like `-md5`/`-sha`)
+//!   -C           count visible characters instead of printing: whitespace is
+//!                never counted and, for `.md` / `.markdown`, the syntax a
+//!                renderer hides is stripped first (leading YAML front matter
+//!                — only when its lines really look like `key: value`, so a
+//!                document that merely opens with a `---` rule keeps its body;
+//!                `#` headings and setext underlines, list bullets and numbers,
+//!                `>` quotes, `---`/`===` rules, ``` fences, table pipes and
+//!                separator rows, `**`/`__`/`*`/`` ` ``/`~~`, the `(url)` part
+//!                of `[text](url)`, image sources, `[label]: url` reference
+//!                definitions, `<!-- -->` comments (also across lines),
+//!                `<…>` HTML tags, `[^1]` footnote refs). txt and code files
+//!                are counted as they are; binary or undecodable input is
+//!                refused (a gbk file is decoded first, like `--enc`).
+//!                `sys file -C FILE` prints one number, `sys file -C DIR`
+//!                prints `path: N` per file plus `total: N` when it measured
+//!                more than one (and a `(skipped N …)` note when it did not
+//!                read some), `sys file -C` counts stdin as plain text. Like
+//!                `-l`, it is re-scanned from the ARGS list so it works at any
+//!                position, but it takes at most one PATH and cannot be
+//!                combined with `-l`.
 //!   -md5/-sha    hash mode: `-md5 FILE [EXPECTED]` prints the MD5 hex digest
 //!                (or `match:` / `mismatch` when EXPECTED is given); `-sha` is
 //!                the same for SHA-1. Single-dash multi-letter, parsed from the
@@ -89,7 +112,7 @@ use chrono::NaiveDate;
 use chrono::{Local, NaiveDateTime, TimeZone};
 use std::collections::HashSet;
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -170,6 +193,9 @@ pub struct FileOpts {
     /// `-l` count lines instead of printing them (file/stdin total count, or
     /// matching-line count when a PATTERN is given).
     pub line_count: bool,
+    /// `-C` count the visible characters of a file (whitespace excluded, and
+    /// Markdown syntax markers excluded for `.md` / `.markdown`).
+    pub char_count: bool,
     /// `-n` prepend the line number to every printed line (stdin search; the
     /// directory search output already contains the line number).
     pub line_numbers: bool,
@@ -841,6 +867,96 @@ fn count_path(needle: &str, path: &str, opts: &FileOpts) -> Result<()> {
     Ok(())
 }
 
+/// Count every character in the text, including whitespace and markdown syntax.
+fn visible_chars(text: &str) -> usize {
+    text.chars().count()
+}
+
+
+/// Text view of a file's bytes for counting: None when the input is not text.
+/// NUL in the first 8 KiB is the usual signal; a decodable but control-char
+/// filled run (a random-byte blob read back as GBK) is rejected the same way.
+/// Non-UTF-8 text is decoded with the same GBK heuristic as `--enc`, so a gbk
+/// `.md` counts the same as a utf-8 one.
+fn countable_text(bytes: &[u8]) -> Option<String> {
+    let head: usize = bytes.len().min(8192);
+    let nul = bytes[..head].contains(&0);
+    let controls = bytes[..head]
+        .iter()
+        .filter(|b| **b < 0x20 && !matches!(**b, 0x09 | 0x0a | 0x0c | 0x0d))
+        .count();
+    if nul || controls * 20 > head {
+        return None;
+    }
+    let body = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    let enc = detect_enc_name(body).ok()?;
+    Some(enc.decode(body).0.into_owned())
+}
+
+/// `sys file -C FILE` — count every character in the file, including whitespace
+/// and markdown syntax.
+fn count_file_chars(name: &str) -> Result<usize> {
+    let p = Path::new(name);
+    if !p.is_file() {
+        bail!("`{name}` is not a file (no such file?)");
+    }
+    let bytes = fs::read(p).with_context(|| format!("cannot read {}", p.display()))?;
+    let Some(text) = countable_text(&bytes) else {
+        bail!("`{name}` is not a text file (binary or undecodable bytes)")
+    };
+    Ok(visible_chars(&text))
+}
+
+/// `sys file -C` with no argument — count stdin (read as plain text, there is
+/// no extension to tell Markdown from anything else).
+fn count_chars_stdin() -> Result<()> {
+    let mut text = String::new();
+    io::stdin()
+        .lock()
+        .read_to_string(&mut text)
+        .context("stdin read error")?;
+    println!("{}", visible_chars(&text));
+    Ok(())
+}
+
+/// `sys file -C DIR` — per-file counts for the subtree, honoring the same
+/// `-e` / `-t` / `-S` / `--newer` / `--older` / `-d` filters as the other tree
+/// modes, then a `total:` line when more than one file was measured.
+fn count_chars_path(path: &str, opts: &FileOpts) -> Result<()> {
+    let files = collect_files(path, opts)?;
+    let mut total = 0usize;
+    let mut measured = 0usize;
+    let mut skipped = 0usize;
+    for f in &files {
+        if !passes_attrs(f, opts) {
+            continue;
+        }
+        let Ok(bytes) = fs::read(f) else {
+            skipped += 1;
+            continue;
+        };
+        let Some(content) = countable_text(&bytes) else {
+            skipped += 1;
+            continue;
+        };
+        let c = visible_chars(&content);
+        total += c;
+        measured += 1;
+        println!("{}: {}", f.display(), c);
+    }
+    if measured == 0 {
+        println!("(no text files in {} entries)", files.len());
+    } else {
+        if measured > 1 {
+            println!("total: {total}");
+        }
+        if skipped > 0 {
+            println!("(skipped {} binary or undecodable files)", skipped);
+        }
+    }
+    Ok(())
+}
+
 /// `sys file OLD NEW PATH` — replace OLD with NEW in place.
 ///
 /// Each file is read, matched and (when changed) written in parallel, with
@@ -917,20 +1033,28 @@ fn split_hash_args(args: &[String]) -> Result<Option<(HashAlgo, Vec<&str>)>> {
 /// `sys file PATTERN -l` / `PATTERN -n` never set their flags and the tokens
 /// were misread as a path or replacement string). Returns the effective flags
 /// and the remaining arguments.
-fn split_output_flag_args(args: &[String], line_count: bool, line_numbers: bool) -> (bool, bool, Vec<&str>) {
+fn split_output_flag_args(
+    args: &[String],
+    line_count: bool,
+    char_count: bool,
+    line_numbers: bool,
+) -> (bool, bool, bool, Vec<&str>) {
     let mut count = line_count;
+    let mut chars = char_count;
     let mut numbers = line_numbers;
     let mut rest: Vec<&str> = Vec::new();
     for a in args {
         if a == "-l" || a == "--line-count" {
             count = true;
+        } else if a == "-C" || a == "--char-count" {
+            chars = true;
         } else if a == "-n" || a == "--line-numbers" {
             numbers = true;
         } else {
             rest.push(a.as_str());
         }
     }
-    (count, numbers, rest)
+    (count, chars, numbers, rest)
 }
 
 /// Re-scan ARGS for the option tokens that clap's `allow_hyphen_values` swallows
@@ -1117,7 +1241,7 @@ fn run_hash(algo: HashAlgo, rest: &[&str]) -> Result<()> {
 /// Resolve an encoding name to the codec used for `-enc`. `gb2312` maps to the
 /// GBK codec: GB2312 is a subset of GBK, so the GBK decoder/encoder handles
 /// GB2312 files and emits GB2312-compatible output for in-range characters.
-fn parse_enc_name(name: &str) -> Result<&'static encoding_rs::Encoding> {
+pub(crate) fn parse_enc_name(name: &str) -> Result<&'static encoding_rs::Encoding> {
     match name.trim().to_ascii_lowercase().as_str() {
         "utf-8" | "utf8" => Ok(encoding_rs::UTF_8),
         "gbk" | "gb2312" => Ok(encoding_rs::GBK),
@@ -1131,7 +1255,7 @@ fn parse_enc_name(name: &str) -> Result<&'static encoding_rs::Encoding> {
 /// against GBK (legacy GBK byte pairs are often *also* valid UTF-8, so GBK wins
 /// when it cleanly decodes to real CJK while the UTF-8 view has none); then
 /// clean GBK; neither clean -> error, never a silent wrong guess.
-fn detect_enc_name(bytes: &[u8]) -> Result<&'static encoding_rs::Encoding> {
+pub(crate) fn detect_enc_name(bytes: &[u8]) -> Result<&'static encoding_rs::Encoding> {
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         return Ok(encoding_rs::UTF_8);
     }
@@ -1293,8 +1417,19 @@ pub fn cmd_file(
     older: Option<String>,
     max_depth: Option<usize>,
     line_count: bool,
+    char_count: bool,
     line_numbers: bool,
 ) -> Result<()> {
+    // `-V` / `--version` prints the version like `sys -V` and exits. Without
+    // this the token would fall through to the stdin search mode ("V" as the
+    // PATTERN) and block forever waiting on a TTY stdin.
+    if args.iter().any(|a| a == "-V" || a == "--version") {
+        println!(
+            "sys {} (Made by Gary-china)",
+            env!("CARGO_PKG_VERSION")
+        );
+        return Ok(());
+    }
     let opts = FileOpts {
         exts: exts.to_vec(),
         ignore_case,
@@ -1315,6 +1450,7 @@ pub fn cmd_file(
         },
         max_depth,
         line_count,
+        char_count,
         line_numbers,
     };
     // Word <-> Markdown conversion mode (`--word2md` / `--md2word` markers)
@@ -1339,8 +1475,8 @@ pub fn cmd_file(
     // Re-scan ARGS for them (like `-md5`/`-sha`) so they work in any position:
     // clap's `allow_hyphen_values` swallows a trailing `-l`/`-n` into ARGS,
     // which would otherwise be misread as a path or replacement string.
-    let (line_count, line_numbers, args) =
-        split_output_flag_args(args, opts.line_count, opts.line_numbers);
+    let (line_count, char_count, line_numbers, args) =
+        split_output_flag_args(args, opts.line_count, opts.char_count, opts.line_numbers);
     // `-e` / `-i` / `-t` / `-w` / `-c` are real clap options, but once positional
     // values have begun `allow_hyphen_values` swallows a trailing occurrence into
     // ARGS too (`sys file Scrcpy . -e md -e txt`). Re-scan them so they work in
@@ -1356,6 +1492,7 @@ pub fn cmd_file(
     )?;
     let mut opts = opts;
     opts.line_count = line_count;
+    opts.char_count = char_count;
     opts.line_numbers = line_numbers;
     opts.exts = exts;
     opts.ignore_case = ignore_case;
@@ -1377,6 +1514,31 @@ pub fn cmd_file(
         || opts.newer.is_some()
         || opts.older.is_some()
         || opts.max_depth.is_some();
+    if char_count {
+        if line_count {
+            bail!("-l (count lines) and -C (count characters) cannot be combined");
+        }
+        return match args.len() {
+            0 => count_chars_stdin(),
+            1 => {
+                let p = strip_quotes(args[0]).unwrap_or(args[0]);
+                if Path::new(p).is_file() {
+                    println!("{}", count_file_chars(p)?);
+                    Ok(())
+                } else if Path::new(p).is_dir() {
+                    count_chars_path(p, &opts)
+                } else {
+                    bail!("no such file or directory: {p}")
+                }
+            }
+            _ => bail!(
+                "-C (count characters) takes one PATH:\n  \
+                 sys file -C FILE   count one file\n  \
+                 sys file -C DIR    count every file in the tree\n  \
+                 sys file -C        count the piped stdin (plain text)"
+            ),
+        };
+    }
     if line_count {
         return match args.len() {
             0 => count_stdin(None, &opts),
@@ -1402,7 +1564,7 @@ pub fn cmd_file(
         0 if has_filter => list_files(".", &opts),
         1 if has_filter => list_files(&args[0], &opts),
         0 => bail!(
-            "usage:\n  sys file PATTERN             search PATTERN in stdin (piped)\n  sys file PATTERN PATH        search PATTERN in PATH\n  sys file OLD NEW PATH        replace OLD with NEW in PATH\n  sys file NAME.EXT            display a file (e.g. file me.txt)\n  sys file -l FILE             count the lines of FILE\n  sys file -l PATTERN [PATH]   count the matching lines\n  sys file -md5 FILE [MD5]     print MD5 of FILE (compare when MD5 given)\n  sys file -sha FILE [SHA1]    print SHA1 of FILE (compare when SHA1 given)\n  sys file --enc SRC [DST]     convert encoding: gbk/gb2312 <-> utf-8\n                               (default to utf-8; --from ENC to set source,\n                               DST omitted -> stdout; DST must differ from SRC)\n  sys file --word2md SRC.docx [DST.md]\n                               convert Word to Markdown (images extracted\n                               to media/; DST omitted -> stdout)\n  sys file --md2word SRC.md DST.docx\n                               convert Markdown to Word (local/URL images\n                               embedded; DST required)\n  sys file -S SIZE [PATH]      list files by size (e.g. -S 2m)\n  sys file --newer TIME [PATH] list files by mtime\noptions: -e EXT (repeatable) -i -t -w -c NUM -n -l -md5 -sha --enc --word2md --md2word -S SIZE --newer TIME --older TIME -d NUM"
+            "usage:\n  sys file PATTERN             search PATTERN in stdin (piped)\n  sys file PATTERN PATH        search PATTERN in PATH\n  sys file OLD NEW PATH        replace OLD with NEW in PATH\n  sys file NAME.EXT            display a file (e.g. file me.txt)\n  sys file -l FILE             count the lines of FILE\n  sys file -l PATTERN [PATH]   count the matching lines\n  sys file -C FILE             count the visible characters (md markers excluded)\n  sys file -C DIR              per-file character counts + total\n  sys file -C                  count the visible characters of stdin\n  sys file -md5 FILE [MD5]     print MD5 of FILE (compare when MD5 given)\n  sys file -sha FILE [SHA1]    print SHA1 of FILE (compare when SHA1 given)\n  sys file --enc SRC [DST]     convert encoding: gbk/gb2312 <-> utf-8\n                               (default to utf-8; --from ENC to set source,\n                               DST omitted -> stdout; DST must differ from SRC)\n  sys file --word2md SRC.docx [DST.md]\n                               convert Word to Markdown (images extracted\n                               to media/; DST omitted -> stdout)\n  sys file --md2word SRC.md DST.docx\n                               convert Markdown to Word (local/URL images\n                               embedded; DST required)\n  sys file -S SIZE [PATH]      list files by size (e.g. -S 2m)\n  sys file --newer TIME [PATH] list files by mtime\noptions: -e EXT (repeatable) -i -t -w -c NUM -n -l -C -md5 -sha --enc --word2md --md2word -S SIZE --newer TIME --older TIME -d NUM"
         ),
         1 => {
             if let Some(inner) = strip_quotes(&args[0]) {
@@ -1592,6 +1754,53 @@ mod tests {
     }
 
     #[test]
+    fn visible_chars_ignores_whitespace() {
+        // 所有字符都计数，包括空白；每个码点算 1 个字符，中文同英文
+        assert_eq!(visible_chars("a b\tc\nd 中 文 \u{3000}"), 13);
+        assert_eq!(visible_chars(""), 0);
+        assert_eq!(visible_chars("   \n\t "), 6);
+        assert_eq!(visible_chars("你好，世界"), 5);
+    }
+
+    #[test]
+    fn count_file_chars_counts_all_characters() {
+        let base = std::env::temp_dir().join(format!("sys_ccount_{}", std::process::id()));
+        fs::create_dir_all(&base).unwrap();
+        let md = base.join("t.md");
+        fs::write(&md, "# 你好\n\n世界\n").unwrap();
+        // 所有字符都计数，包括 markdown 语法和空白
+        assert_eq!(count_file_chars(md.to_str().unwrap()).unwrap(), 9);
+        // 纯文本与代码文件同样计数所有字符
+        let txt = base.join("t.txt");
+        fs::write(&txt, "# 你好\n").unwrap();
+        assert_eq!(count_file_chars(txt.to_str().unwrap()).unwrap(), 5);
+        let rs = base.join("t.rs");
+        fs::write(&rs, "let x = 1;\n").unwrap();
+        assert_eq!(count_file_chars(rs.to_str().unwrap()).unwrap(), 11);
+        assert!(count_file_chars(base.join("nope.md").to_str().unwrap()).is_err());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn count_file_chars_rejects_binary_and_decodes_gbk() {
+        let base = std::env::temp_dir().join(format!("sys_ccount_enc_{}", std::process::id()));
+        fs::create_dir_all(&base).unwrap();
+        // 含 NUL 的二进制文件：明确报错，不是一堆乱码计数
+        let bin = base.join("b.md");
+        fs::write(&bin, [0u8, 1, 2, 3, b'#', b' ', b'a']).unwrap();
+        assert!(count_file_chars(bin.to_str().unwrap()).is_err());
+        // 没有 NUL 但全是控制字符的字节流同样拒收
+        let blob = base.join("blob.md");
+        fs::write(&blob, (1u8..=255).cycle().take(4096).collect::<Vec<u8>>()).unwrap();
+        assert!(count_file_chars(blob.to_str().unwrap()).is_err());
+        // GBK 编码的 md：按 GBK 解码后计数所有字符（包括语法）
+        let gbk = base.join("g.md");
+        fs::write(&gbk, encoding_rs::GBK.encode("# 中文日志\n").0.as_ref()).unwrap();
+        assert_eq!(count_file_chars(gbk.to_str().unwrap()).unwrap(), 7);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn split_hash_args_detects_markers() {
         // -md5/-sha 与 --md5/--sha 均识别；标记位置任意；其余参数按原序保留
         let v = vec!["-md5".to_string(), "me.txt".to_string()];
@@ -1775,57 +1984,85 @@ mod tests {
 
     #[test]
     fn split_output_flag_args_any_position() {
-        // 尾部 -l / -n（clap allow_hyphen_values 吞进 ARGS 的形态）→ 识别并剥离
+        // 尾部 -l / -C / -n（clap allow_hyphen_values 吞进 ARGS 的形态）→ 识别并剥离
         let v = vec!["动漫".to_string(), "-l".to_string()];
-        let (lc, ln, rest) = split_output_flag_args(&v, false, false);
+        let (lc, cc, ln, rest) = split_output_flag_args(&v, false, false, false);
         assert!(lc);
+        assert!(!cc);
         assert!(!ln);
         assert_eq!(rest, vec!["动漫"]);
 
+        let v = vec!["动漫".to_string(), "-C".to_string()];
+        let (lc, cc, ln, rest) = split_output_flag_args(&v, false, false, false);
+        assert!(!lc);
+        assert!(cc);
+        assert!(!ln);
+        assert_eq!(rest, vec!["动漫"]);
+
+        let v = vec!["README.md".to_string(), "--char-count".to_string()];
+        let (lc, cc, ln, rest) = split_output_flag_args(&v, false, false, false);
+        assert!(!lc);
+        assert!(cc);
+        assert!(!ln);
+        assert_eq!(rest, vec!["README.md"]);
+
         let v = vec!["动漫".to_string(), "-n".to_string()];
-        let (lc, ln, rest) = split_output_flag_args(&v, false, false);
+        let (lc, _cc, ln, rest) = split_output_flag_args(&v, false, false, false);
         assert!(!lc);
         assert!(ln);
         assert_eq!(rest, vec!["动漫"]);
 
-        // 前部 -l / -n（clap 已解析为 flag，不在 ARGS 中）→ 保持原状
+        // 前部 -l / -C / -n（clap 已解析为 flag，不在 ARGS 中）→ 保持原状
         let v = vec!["动漫".to_string()];
-        let (lc, ln, rest) = split_output_flag_args(&v, true, true);
+        let (lc, cc, ln, rest) = split_output_flag_args(&v, true, true, true);
         assert!(lc);
+        assert!(cc);
         assert!(ln);
         assert_eq!(rest, vec!["动漫"]);
 
         // 中间位置 + 长旗标 --line-count / --line-numbers 同样识别
         let v = vec!["a".to_string(), "--line-numbers".to_string(), "b".to_string()];
-        let (lc, ln, rest) = split_output_flag_args(&v, false, false);
+        let (lc, _cc, ln, rest) = split_output_flag_args(&v, false, false, false);
         assert!(!lc);
         assert!(ln);
         assert_eq!(rest, vec!["a", "b"]);
 
-        // 两个旗标同现（-l 优先分支外的组合也正确）
-        let v = vec!["-l".to_string(), "a".to_string(), "-n".to_string()];
-        let (lc, ln, rest) = split_output_flag_args(&v, false, false);
+        // 三个旗标同现，顺序任意
+        let v = vec!["-C".to_string(), "a".to_string(), "-l".to_string(), "-n".to_string()];
+        let (lc, cc, ln, rest) = split_output_flag_args(&v, false, false, false);
         assert!(lc);
+        assert!(cc);
         assert!(ln);
         assert_eq!(rest, vec!["a"]);
 
         // 无旗标：原样保留；已有标志不因扫描丢失
         let v = vec!["动漫".to_string(), "D:\\x".to_string()];
-        let (lc, ln, rest) = split_output_flag_args(&v, false, false);
+        let (lc, cc, ln, rest) = split_output_flag_args(&v, false, false, false);
         assert!(!lc);
+        assert!(!cc);
         assert!(!ln);
         assert_eq!(rest, vec!["动漫", "D:\\x"]);
 
-        // 相似但不相同的 token 不误认（-lfoo / --l / -nfoo / --n）
-        let v = vec!["-lfoo".to_string(), "--l".to_string(), "-nfoo".to_string(), "--n".to_string()];
-        let (lc, ln, rest) = split_output_flag_args(&v, false, false);
+        // 相似但不相同的 token 不误认（-lfoo / --l / -nfoo / --n / 小写 -c 是
+        // context 旗标，绝不会被当成 -C）
+        let v = vec![
+            "-lfoo".to_string(),
+            "--l".to_string(),
+            "-nfoo".to_string(),
+            "--n".to_string(),
+            "-c".to_string(),
+            "-Cfoo".to_string(),
+        ];
+        let (lc, cc, ln, rest) = split_output_flag_args(&v, false, false, false);
         assert!(!lc);
+        assert!(!cc);
         assert!(!ln);
-        assert_eq!(rest, vec!["-lfoo", "--l", "-nfoo", "--n"]);
+        assert_eq!(rest, vec!["-lfoo", "--l", "-nfoo", "--n", "-c", "-Cfoo"]);
 
         // 空输入：仅保留已置位的标志
-        let (lc, ln, rest) = split_output_flag_args(&[], true, true);
+        let (lc, cc, ln, rest) = split_output_flag_args(&[], true, true, true);
         assert!(lc);
+        assert!(cc);
         assert!(ln);
         assert!(rest.is_empty());
     }
@@ -2072,6 +2309,7 @@ mod tests {
             older: None,
             max_depth: None,
             line_count: false,
+            char_count: false,
             line_numbers: false,
         }
     }

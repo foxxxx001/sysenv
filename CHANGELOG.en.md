@@ -2,6 +2,152 @@
 
 Versioned record of new features / fixes / release conventions. Artifact naming: `sys-<platform>-<arch>_v<version>`, release binaries compressed with UPX (see README "Build & Release").
 
+## v0.6.58 (2026-11-25)
+
+### Added
+- **`sys convert`: document conversion** across `md` / `html` / `docx` / `txt` / `epub` / `pdf` / `mobi`·`azw3`, built as an N×M matrix around a Markdown hub, pure Rust with zero external commands. The destination format comes from DST's extension; `pdf` and `mobi`/`azw3` are sources only (PDF text layer only — scanned pages are not supported).
+- Images travel through the whole conversion: `docx` / `epub` / `mobi` images are read into memory, embedded directly for `pdf` / `docx` / `epub`, and materialized into a `media/` folder next to DST (referenced as `media/<name>`) for `md` / `html`; `docx` / `pdf` download http(s) images referenced from Markdown.
+- EPUB output is a single-chapter EPUB 2/3 (`mimetype` + `container.xml` + OPF + XHTML) and packs only the images the chapter actually references.
+- Encoding flags: `--from ENC` decodes a text source (`utf-8|gbk|gb2312`, auto-detected by default); `--to ENC` encodes **text output** (`md`/`html`/`txt`, UTF-8 by default); `--enc` is a pure encoding conversion (no document semantics, extensions ignored).
+
+### Changed
+- `--to ENC` no longer implies "switch to pure encoding mode": it only sets the output encoding while the document conversion proceeds (`md -> txt --to gbk` yields GBK-encoded plain text). Passing `--to` with a binary destination (docx/epub/pdf) is now an error that points at `--enc`, instead of being silently ignored.
+
+### Fixed
+- **Same-directory md → md/html copied the whole source directory into `media/`**, and when the source and destination `media` folders were the same, `fs::copy` truncated the image to 0 bytes (data loss). `base_dir` (image resolution root) and the `media/` folder are now separate concerns, and same-directory copies are skipped.
+- **EPUB output had every image broken**: in-memory media names carry a `media/` prefix, so OPF hrefs came out as `media/media/x` and no longer matched the chapter's `img src`. Names are now flattened to `media/<name>` (deduplicated with a numeric suffix), and unrelated files from the source directory are no longer packed into the archive.
+- **EPUB reading missed images addressed as `../Images/a.png`**: an image `src` resolves against the *chapter* document, but the code resolved it against the OPF directory. It now resolves against the chapter directory, normalizing `.`/`..` and stripping `#fragment`/`?query`.
+- **Images in PDFs were only 75% of their intended size**: printpdf already converts px→pt from `dpi`, and the code multiplied by 72/96 a second time. Sizing now follows "1px = 1/96 inch", with a regression test asserting the content stream's `cm` matrix.
+- **html / txt sources had no base directory**: relative images resolved against the current working directory, so html → pdf/docx lost local images. The source file's directory is now used.
+- **Inline images leaked as literal text**: `![alt](src)` inside a paragraph was written out as Markdown text in `txt` output, and `sys file --md2word` did not embed it at all. md → txt/html/pdf/docx writers now lift inline images first (table rows excepted, to keep tables intact), and `--md2word` embeds them.
+- `sys http --help` got its `-p, --print` line back.
+- `sys ai agent --list-mcp` no longer reports an installed-but-idle agent as `not installed` (it says `not running`), and MCP server totals are deduplicated by name instead of counting the same server twice (cache + config).
+- `sys file --md2word` and `sys convert` now share one md → docx renderer instead of two drifting copies.
+
+---
+
+## v0.6.57 (2026-11-09)
+
+### Fixed
+- **`sys ai info --help` layout**: the FIELD documentation used to be crammed into one run-on paragraph, so a value such as `list-model` never got its own line. `provider` / `model` / `sale-price` / `list-model` (plus `models`) / `balance` now each form their own paragraph and line with a description, wrapping to the terminal width; the duplicated inline `Options:` text was removed.
+- Added a blank line before `Examples:` in every `ai` subcommand (model / cn-model / provider / balance / price / server / chat / image / agent / config) so it stands alone, matching the paragraph style of `sys file` / `sys data`.
+- New unit test: renders `sys ai info --help` and asserts every FIELD value starts its own line.
+
+---
+
+## v0.6.56 (2026-11-09)
+
+### Added
+- **`sys server --ai`**: mounts the `sys ai server` OpenAI-compatible API on the same listener — `GET /v1/models` and `POST /v1/chat/completions` (plus their non-`/v1` aliases) — reusing the normal `sys ai` config (`~/.sysenv/config.yaml`). These paths are answered before proxy rules and static files, work standalone (`sys server --ai` serves only the API), and combine with `--root` / `--proxy`.
+- Startup prints `sys: AI API mounted: GET /v1/models, POST /v1/chat/completions` alongside the static/proxy lines.
+- The `sys ai server` request handling is now a reusable entry point (`serve_shared`) with the API path check factored into `is_api_path`, covered by unit tests.
+
+### Changed
+- The `sys server` "nothing to serve" check now accepts any of `--root`, `--from/--to`, or `--ai`.
+- Both READMEs document the `--ai` flag, examples, and routing precedence.
+
+---
+
+## v0.6.55 (2026-11-09)
+
+### Changed
+- **`sys server` now listens on `0.0.0.0:8080` by default**: omitting `--listen` binds all interfaces (no longer `127.0.0.1:10000`), and a bare IP keeps the new default port 8080. Help text and both READMEs updated.
+- **Default port conflict falls back to a random port**: when the default listen address is taken, the server binds a random free port on the same host and prints the final address; an explicit `--listen` conflict still fails with a clear error and never swaps silently. Fallback only applies when no proxy rule shares that address, so rules are never stranded on a dead port.
+
+### Added
+- **Startup prints directly usable addresses**: a wildcard bind lists the loopback URL `http://127.0.0.1:<port>` plus every non-loopback IPv4 of the machine (`http://<ip>:<port>`); a specific bind prints just that address and port. Local IPv4 addresses are parsed from the system `ipconfig` (Windows) / `ip -4 -o addr show` (Unix-like) output — no new dependency — and degrade to the loopback address with an explanatory line when none are found. All startup lines go to stderr, so `--access-log -` request logs (stdout) stay clearly separated.
+- 2 new unit tests: random-port fallback on a taken default port (and explicit listeners never falling back), plus `ipconfig` (English/Chinese) and Linux `ip` output parsing.
+
+---
+
+## v0.6.54 (2026-11-09)
+
+### Added
+- **`sys server`: static hosting + reverse proxy**
+  - Static site: `sys server --root ./site`, listening on `0.0.0.0:8080` by default. `-listen` accepts `IP:PORT`, a bare port `8080` or `:8080` (both bind all interfaces), or a bare IP (keeps the default port).
+  - Reverse proxy: `sys server -proxy --from :8080 --to 127.0.0.1:3000`; `--from` may carry a path prefix (e.g. `:8080/api`) and `--from`/`--to` can be repeated in pairs for multiple rules.
+  - One instance can host a directory and mount proxies at the same time: rules match by **longest path prefix**, and the matched prefix is **stripped** before forwarding (like caddy's `handle_path`). Unmatched requests fall back to that address's static root, or 404 if there is none.
+  - Common flags: `--browse`, `--index`, `--spa`, `--gzip`, `--access-log` (`-` for stdout), `--cors` (no value means `*`), `--timeout`, `--cache`.
+  - The `server` subcommand accepts both single-dash and double-dash spellings (`-listen` and `--listen`).
+  - 10 new unit tests: address normalization, `--from` prefix parsing, segment-boundary prefix matching, longest-prefix routing, path-traversal protection, URL decoding, upstream URL joining, MIME types, single-dash argument normalization.
+
+---
+
+## v0.6.53 (2026-11-07)
+
+### Fixed
+- **`sys ai agent --list` / `--list-mcp` falsely reported Pi as running**: process detection used substring matching, so the 2-char `pi` matched unrelated processes (e.g. Windows `SnippingTool`). Short process names (≤3 chars) now require an exact match (the `pi.exe` stem `pi` still matches); longer names keep substring matching for variants like `trae` → `trae-cn`. 1 new unit test.
+
+---
+
+## v0.6.52 (2026-11-07)
+
+### Added
+- **`sys ai agent --list-mcp`**: lists only **currently running** agents and shows their active MCP info — reads the agent's on-disk MCP cache (e.g. TRAE's `~/.trae-cn/mcps/<ws>/solo_agent/<server>/`) via `SERVER_METADATA.json` + `tools/*.json`, printing each MCP server's tool names and descriptions (truncated to 140 chars); also shows MCP servers declared in config files. **Spawns no MCP process** — relies on process detection + cache/config reads only. Same-named servers across workspaces are de-duplicated keeping the one with the most tools. New `mcp_cache_dirs` field on `AgentSpec`, `scan_mcp_cache_dirs` / `parse_mcp_cache_server` parsers, and 1 unit test.
+
+### Changed
+- **Dependency cleanup**: removed the unused `gzip` feature from `reqwest`; switched `zip` to `default-features = false` with only `deflate` enabled (the source only uses `CompressionMethod::Deflated`); removed the zero-reference `Win32_System_ProcessStatus` feature from `windows-sys`. This dropped 4 transitive crates (`time`, `zstd`, `zstd-safe`, `zstd-sys`), reducing Cargo.lock from ~235 to 229 packages.
+
+---
+
+## v0.6.51 (2026-11-07)
+
+### Added
+- **`sys ai agent --list` now includes layer 1 & 2 MCP info**: each installed agent also shows `running` (matched by process name), `mcp cfg` (discovered MCP config files), `mcp srv` (configured MCP servers with launch command / url), and `mcp tools` (agent-side cached tool list, e.g. WorkBuddy's `mcp-tool-list.json`).
+  - Supported config shapes: JSON `mcpServers` / `mcp.servers` / `mcp_servers` / `servers`, and TOML (Codex) `mcp_servers` / `mcp.servers`; `command` / `args` accept both string and array;
+  - Tool cache supports WorkBuddy's `entries.<hash>=[{name,description}]` and the generic `tools:[{name,description}]`;
+  - The total line adds `MCP: N server(s), M cached tool(s)`. 4 new unit tests (JSON/TOML parsing, cached tools, process matching).
+
+---
+
+## v0.6.50 (2026-11-06)
+
+### Added
+- **`sys ai agent`: detect installed AI agents and their skills** (international: Claude Code / Codex / OpenCode / Kilo Code / OpenClaw / Cursor / Pi / hermes-agent; domestic: TRAE / CodeBuddy / WorkBuddy / Kimi Coder / QCoder / MiMo Coder / ZCode / Qoder).
+  - `--list [AGENT...]`: grouped by agent, shows the install directories (all locations), skills directories, skill count and the disk space used by skills (recursive, following symlinks / junctions with cycle protection);
+  - `--list-skill [AGENT...]`: grouped by agent, lists each installed skill with its size;
+  - AGENT is optional and accepts ids / names / aliases (case-, space- and hyphen-insensitive, comma-separated); unknown agents fail with the supported list, requested-but-not-installed agents are reported explicitly;
+  - a skill is a subdirectory containing `SKILL.md` (case-insensitive) or a top-level `.md` file (`README.md` excluded); symlinks / junctions always count (a missing target is shown as a broken link with 0 B); with no flag, `--list` is assumed. 4 new unit tests.
+
+---
+
+## v0.6.49 (2026-11-06)
+
+### Fixed
+- **`sys file -V` hangs** (user report): `-V` is swallowed into ARGS by allow_hyphen_values and falls through to the stdin search mode as PATTERN "V", blocking forever on a TTY. Fixed: cmd_file recognizes `-V` / `--version` up front, prints `sys <version> (Made by Gary-china)` and exits (same as `sys -V`).
+- **`sys file --help`'s Arguments block was hand-wrapped and did not fill the screen**: the long_help used a raw string with hard newlines, which clap prints verbatim as preformatted text. Rewritten as plain paragraphs (blank-line separated) so clap wrap_help wraps them to the terminal width; blank lines keep the structure. Fills the width without overflowing at COLUMNS=60/100/200. 492 tests green. Version 0.6.48 -> 0.6.49
+
+---
+
+## v0.6.48 (2026-11-06)
+
+### Fixed
+- **`--help` wrapping is now automatic to the terminal width, not a hard-coded width** (user correction: v0.6.47 should not hand-wrap to 60 columns):
+  1. reverted the v0.6.47 manual wrapping of `sys http`'s help and `sys data`'s long_help back to natural long text;
+  2. `sys http`'s hand-written help now auto-wraps with display-width awareness (CJK/fullwidth = 2 columns): when COLUMNS is known and >= 40, lines wrap to the terminal width with continuation aligned to each entry's description column (`-j, --json` etc.); when COLUMNS is unknown / not a TTY the raw single-line text is preserved; wide terminals (160) keep the original one-line layout;
+  3. `sys data`'s long_help only splits two backtick example commands that exceeded wrap_help's handling; content unchanged.
+  All subcommands stay within the terminal width under COLUMNS=60/100/200. 492 tests green. Version 0.6.47 -> 0.6.48
+
+---
+
+## v0.6.47 (2026-11-06)
+
+### Fixed
+- **Overwide `--help` lines** (user report: [ARGS] block wraps fine but Options: runs full width):
+  1. Cargo.toml adds clap's `wrap_help` feature — all clap-rendered Options / long about text now wraps to COLUMNS (the main root cause);
+  2. `sys http` hand-written help reflowed: --json / --http-file / METHOD / --file / --curl / --debug long lines manually wrapped to <=60 display columns (CJK = 2 cols), restoring the lost alignment spaces after `-j, --json` and the literal `{{变量}}`;
+  3. two overwide example command lines in `sys data`'s long_help wrapped.
+  Every subcommand's --help now has max line width = terminal width under COLUMNS=60/100. 492 tests green. Version 0.6.46 -> 0.6.47
+
+---
+
+## v0.6.46 (2026-11-06)
+
+### Fixed
+- **MD table parsing honors escaped pipes `\|`** (src/wordmd.rs, user report: this project's README overview table converted 3 columns to 7): `` `data[*]\|{id,name}` `` inside a cell had its `\|` split as a plain `|`, adding 4 empty columns. `parse_md_row` rewritten as an escape-aware scanner: `\|` is restored to a literal `|` inside the cell (real pipe shown in Word), a trailing lone `\` is kept; the word2md side already escapes `\|` on output, so md->docx->md round-trips. 2 new unit tests (escaped pipe / trailing backslash). Version 0.6.45 -> 0.6.46
+
+---
+
 ## v0.6.45 (2026-11-06)
 
 ### Fixed

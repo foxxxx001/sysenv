@@ -6,9 +6,10 @@
 //!   sys file --md2word SRC.md [DST.docx]     markdown -> docx (DST required)
 //!
 //! Images:
-//!   docx -> md:  embedded images are extracted to `<DST-dir>/media/` (or
-//!                `<SRC-dir>/media/` when DST is stdout) and referenced with
-//!                relative paths `![alt](media/image1.png)`
+//!   docx -> md:  embedded images are held in memory (`Doc.media`); binary
+//!                outputs (pdf/docx) embed them directly with no files written,
+//!                while md/html flush them to `<DST-dir>/media/` and reference
+//!                them with relative paths `![alt](media/image1.png)`
 //!   md  -> docx: local paths and http(s) URLs are embedded into the docx
 //!                (`word/media/`), magic-byte sniffed (png/jpg/gif/webp/bmp)
 
@@ -37,9 +38,15 @@ struct DocxImage {
 
 /// Read `word/document.xml` + relationships + media from a .docx.
 fn read_docx(path: &Path) -> Result<(String, Vec<DocxImage>)> {
-    let f = std::fs::File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
-    let mut zip = zip::ZipArchive::new(f)
-        .with_context(|| format!("{} is not a valid docx (zip) file", path.display()))?;
+    let bytes = std::fs::read(path).with_context(|| format!("cannot open {}", path.display()))?;
+    read_docx_bytes(&bytes)
+}
+
+/// Read `word/document.xml` + relationships + media from in-memory .docx bytes.
+fn read_docx_bytes(bytes: &[u8]) -> Result<(String, Vec<DocxImage>)> {
+    let cursor = std::io::Cursor::new(bytes);
+    let mut zip = zip::ZipArchive::new(cursor)
+        .with_context(|| "input is not a valid docx (zip) file")?;
     let mut xml = String::new();
     for i in 0..zip.len() {
         let mut e = zip.by_index(i)?;
@@ -48,7 +55,7 @@ fn read_docx(path: &Path) -> Result<(String, Vec<DocxImage>)> {
         }
     }
     if xml.is_empty() {
-        bail!("{} has no word/document.xml (not a Word document?)", path.display());
+        bail!("input has no word/document.xml (not a Word document?)");
     }
     // relationship id -> target part
     let mut rels: Vec<(String, String)> = Vec::new();
@@ -101,7 +108,7 @@ fn parse_relationships(xml: &str) -> Vec<(String, String)> {
 }
 
 /// Extract an XML attribute value from a single tag string.
-fn xml_attr(tag: &str, name: &str) -> Option<String> {
+pub(crate) fn xml_attr(tag: &str, name: &str) -> Option<String> {
     for pat in [format!("{name}=\""), format!("{name}='")] {
         if let Some(i) = tag.find(&pat) {
             let after = &tag[i + pat.len()..];
@@ -750,7 +757,7 @@ fn jpg_size(b: &[u8]) -> Option<(i64, i64)> {
 }
 
 /// A parsed markdown block ready for docx rendering.
-enum Block {
+pub(crate) enum Block {
     Heading(u8, String),
     Para(String),
     Bullet(String),
@@ -760,16 +767,19 @@ enum Block {
     Table(Vec<Vec<String>>),
     Image(String, String), // path-or-url, alt
     Rule,
+    /// Chapter/anchor marker emitted by the EPUB reader (`<!--sys:anchor=...-->`).
+    /// Carries no visible content; the PDF writer records which page it lands on.
+    Anchor(String),
 }
 
 /// Parse markdown text into blocks (block-level only; inline kept as markdown
 /// text — bold/italic/code spans are rendered as styled runs).
-fn parse_markdown(text: &str) -> Vec<Block> {
+pub(crate) fn parse_markdown(text: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
     let mut i = 0usize;
     let mut para: Vec<String> = Vec::new();
-    let mut flush = |para: &mut Vec<String>, blocks: &mut Vec<Block>| {
+    let flush = |para: &mut Vec<String>, blocks: &mut Vec<Block>| {
         if !para.is_empty() {
             blocks.push(Block::Para(para.join(" ")));
             para.clear();
@@ -796,6 +806,12 @@ fn parse_markdown(text: &str) -> Vec<Block> {
         if t == "---" || t == "***" || t == "___" {
             flush(&mut para, &mut blocks);
             blocks.push(Block::Rule);
+            i += 1;
+            continue;
+        }
+        if let Some(name) = t.strip_prefix("<!--sys:anchor=").and_then(|s| s.strip_suffix("-->")) {
+            flush(&mut para, &mut blocks);
+            blocks.push(Block::Anchor(name.trim().to_string()));
             i += 1;
             continue;
         }
@@ -910,32 +926,98 @@ fn parse_md_row(line: &str) -> Vec<String> {
     let l = line.trim();
     let l = l.strip_prefix('|').unwrap_or(l);
     let l = l.strip_suffix('|').unwrap_or(l);
-    l.split('|')
-        .map(|c| c.trim().to_string())
+    // split on '|' but honor backslash escapes: \| is a literal pipe
+    let mut cells = Vec::new();
+    let mut cur = String::new();
+    let mut esc = false;
+    for ch in l.chars() {
+        if esc {
+            if ch != '|' {
+                cur.push('\\');
+            }
+            cur.push(ch);
+            esc = false;
+        } else if ch == '\\' {
+            esc = true;
+        } else if ch == '|' {
+            cells.push(cur.trim().to_string());
+            cur = String::new();
+        } else {
+            cur.push(ch);
+        }
+    }
+    if esc {
+        cur.push('\\');
+    }
+    cells.push(cur.trim().to_string());
+    cells
+}
+
+/// One inline run: visible text plus formatting and an optional link target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InlineRun {
+    pub text: String,
+    pub bold: bool,
+    pub italic: bool,
+    pub code: bool,
+    pub link: Option<String>,
+}
+
+/// Inline markdown -> runs of (text, bold, italic, code); link targets are
+/// dropped (callers that render links use `parse_inline_runs`).
+pub(crate) fn parse_inline(t: &str) -> Vec<(String, bool, bool, bool)> {
+    parse_inline_runs(t)
+        .into_iter()
+        .map(|r| (r.text, r.bold, r.italic, r.code))
         .collect()
 }
 
-/// Inline markdown -> runs of (text, bold, italic, code).
-fn parse_inline(t: &str) -> Vec<(String, bool, bool, bool)> {
+/// Inline markdown -> runs, keeping `[text](url)` destinations.
+pub(crate) fn parse_inline_runs(t: &str) -> Vec<InlineRun> {
     let c: Vec<char> = t.chars().collect();
-    let mut runs = Vec::new();
+    let mut runs: Vec<InlineRun> = Vec::new();
     let mut buf = String::new();
     let mut i = 0;
     macro_rules! flush {
         () => {
             if !buf.is_empty() {
-                runs.push((std::mem::take(&mut buf), false, false, false));
+                runs.push(InlineRun {
+                    text: std::mem::take(&mut buf),
+                    bold: false,
+                    italic: false,
+                    code: false,
+                    link: None,
+                });
+            }
+        };
+    }
+    macro_rules! push {
+        ($text:expr, $bold:expr, $italic:expr, $code:expr, $link:expr) => {
+            if !$text.is_empty() {
+                runs.push(InlineRun {
+                    text: $text,
+                    bold: $bold,
+                    italic: $italic,
+                    code: $code,
+                    link: $link,
+                });
             }
         };
     }
     while i < c.len() {
+        if c[i] == '[' && (i == 0 || c[i - 1] != '!') {
+            if let Some((text, url, next)) = parse_inline_link(&c, i) {
+                flush!();
+                push!(text, false, false, false, Some(url));
+                i = next;
+                continue;
+            }
+        }
         if c[i] == '*' && i + 1 < c.len() && c[i + 1] == '*' {
             if let Some(j) = find_seq(&c, i + 2, &['*', '*']) {
                 flush!();
                 let inner: String = c[i + 2..j].iter().collect();
-                if !inner.is_empty() {
-                    runs.push((inner, true, false, false));
-                }
+                push!(inner, true, false, false, None);
                 i = j + 2;
                 continue;
             }
@@ -944,9 +1026,7 @@ fn parse_inline(t: &str) -> Vec<(String, bool, bool, bool)> {
             if let Some(j) = c[i + 1..].iter().position(|&x| x == '*').map(|p| p + i + 1) {
                 flush!();
                 let inner: String = c[i + 1..j].iter().collect();
-                if !inner.is_empty() {
-                    runs.push((inner, false, true, false));
-                }
+                push!(inner, false, true, false, None);
                 i = j + 1;
                 continue;
             }
@@ -955,9 +1035,7 @@ fn parse_inline(t: &str) -> Vec<(String, bool, bool, bool)> {
             if let Some(j) = c[i + 1..].iter().position(|&x| x == '`').map(|p| p + i + 1) {
                 flush!();
                 let inner: String = c[i + 1..j].iter().collect();
-                if !inner.is_empty() {
-                    runs.push((inner, false, false, true));
-                }
+                push!(inner, false, false, true, None);
                 i = j + 1;
                 continue;
             }
@@ -966,9 +1044,7 @@ fn parse_inline(t: &str) -> Vec<(String, bool, bool, bool)> {
             if let Some(j) = find_seq(&c, i + 2, &['_', '_']) {
                 flush!();
                 let inner: String = c[i + 2..j].iter().collect();
-                if !inner.is_empty() {
-                    runs.push((inner, true, false, false));
-                }
+                push!(inner, true, false, false, None);
                 i = j + 2;
                 continue;
             }
@@ -978,6 +1054,36 @@ fn parse_inline(t: &str) -> Vec<(String, bool, bool, bool)> {
     }
     flush!();
     runs
+}
+
+/// Parse `[text](url)` starting at `start` -> (text, url, index after `)`).
+/// Honors one level of parentheses inside the destination.
+fn parse_inline_link(c: &[char], start: usize) -> Option<(String, String, usize)> {
+    let close = c[start + 1..].iter().position(|&x| x == ']').map(|p| p + start + 1)?;
+    if c.get(close + 1) != Some(&'(') {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut j = close + 2;
+    while j < c.len() {
+        match c[j] {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    if depth != 0 {
+        return None;
+    }
+    let text: String = c[start + 1..close].iter().collect();
+    let url: String = c[close + 2..j].iter().collect::<String>().trim().to_string();
+    Some((text, url, j + 1))
 }
 
 fn find_seq(hay: &[char], from: usize, seq: &[char]) -> Option<usize> {
@@ -993,18 +1099,91 @@ fn find_seq(hay: &[char], from: usize, seq: &[char]) -> Option<usize> {
 
 /// markdown -> docx.
 fn md2word(src: &Path, dst: &Path) -> Result<()> {
-    let mut text = std::fs::read_to_string(src).with_context(|| format!("cannot read {}", src.display()))?;
-    if text.starts_with('\u{feff}') {
-        text.remove(0);
+    let text = std::fs::read_to_string(src).with_context(|| format!("cannot read {}", src.display()))?;
+    let src_dir = src.parent().unwrap_or(Path::new("."));
+    // one shared engine for `sys file --md2word` and `sys convert`
+    let bytes = md_to_docx_bytes(&text, src_dir)?;
+    let body = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    let body = crate::docconv::split_inline_images(body);
+    let image_count = parse_markdown(&body)
+        .iter()
+        .filter(|b| matches!(b, Block::Image(_, _)))
+        .count();
+
+    // pack
+    if dst.exists() {
+        std::fs::remove_file(dst).with_context(|| format!("cannot overwrite {}", dst.display()))?;
     }
+    std::fs::write(dst, &bytes).with_context(|| format!("cannot create {}", dst.display()))?;
+    eprintln!(
+        "sys: md2word: {} -> {} ({} images)",
+        src.display(),
+        dst.display(),
+        image_count
+    );
+    Ok(())
+}
+
+/// Convert Word (.docx) bytes to Markdown. Writes embedded images into
+/// `media_dir` (when present) and returns the Markdown text. Shared engine for
+/// `sys file --word2md` and `sys convert`.
+pub(crate) fn docx_to_md_bytes(bytes: &[u8], media_dir: Option<&Path>) -> Result<String> {
+    let (xml, images) = read_docx_bytes(bytes)?;
+    // Only materialize images to disk when the caller actually wants files on
+    // disk (md/html/epub output). For binary outputs (pdf/docx) the caller keeps
+    // them in memory via `Doc.media` and passes media_dir = None.
+    if let Some(dir) = media_dir {
+        if !images.is_empty() {
+            std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+            for img in &images {
+                let fname = Path::new(&img.part)
+                    .file_name()
+                    .and_then(|x| x.to_str())
+                    .unwrap_or("image.bin");
+                std::fs::write(dir.join(fname), &img.bytes)
+                    .with_context(|| format!("cannot write {fname}"))?;
+            }
+        }
+    }
+    render_body(&xml, &images, "media")
+}
+
+/// Extract docx images to an in-memory map keyed by `media/<name>` (the exact
+/// paths referenced from the produced markdown). No files are written.
+pub(crate) fn docx_media_map(bytes: &[u8]) -> Result<std::collections::HashMap<String, Vec<u8>>> {
+    let (_xml, images) = read_docx_bytes(bytes)?;
+    let mut map = std::collections::HashMap::new();
+    for img in &images {
+        let fname = Path::new(&img.part)
+            .file_name()
+            .and_then(|x| x.to_str())
+            .unwrap_or("image.bin")
+            .to_string();
+        map.insert(format!("media/{fname}"), img.bytes.clone());
+    }
+    Ok(map)
+}
+
+/// Convert Markdown text to .docx bytes. `base_dir` resolves relative image
+/// paths; images (local or http(s)) are embedded into the docx. Shared engine
+/// for `sys file --md2word` and `sys convert`.
+pub(crate) fn md_to_docx_bytes(text: &str, base_dir: &Path) -> Result<Vec<u8>> {
+    md_to_docx_bytes_mapped(text, base_dir, &Default::default())
+}
+
+/// Same as `md_to_docx_bytes`, but resolving images through an in-memory map
+/// first (docx/epub sources keep their images there, not on disk).
+pub(crate) fn md_to_docx_bytes_mapped(text: &str, base_dir: &Path, media: &std::collections::HashMap<String, Vec<u8>>) -> Result<Vec<u8>> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    // `![alt](src)` written inline inside a paragraph is block-level content in
+    // Word, so lift it out before parsing (otherwise it stays literal text).
+    let text = crate::docconv::split_inline_images(text);
     let blocks = parse_markdown(&text);
 
-    // collect images
     let mut images: Vec<DocImage> = Vec::new();
-    let src_dir = src.parent().unwrap_or(Path::new("."));
     for b in &blocks {
         if let Block::Image(path, _alt) = b {
-            let bytes = load_image_bytes(path, src_dir)?;
+            let bytes = load_image_bytes_mapped(path, base_dir, media)?;
             let ext = sniff_img_ext(&bytes)
                 .map(|e| e.to_string())
                 .unwrap_or_else(|| {
@@ -1020,21 +1199,12 @@ fn md2word(src: &Path, dst: &Path) -> Result<()> {
         }
     }
 
-    // build document.xml
     let mut body = String::new();
     let mut img_idx = 0usize;
     for b in &blocks {
         match b {
             Block::Heading(level, t) => {
-                body.push_str(&para_xml(
-                    &[(
-                        &escape_xml(t),
-                        false,
-                        false,
-                        false,
-                    )],
-                    &format!("Heading{level}"),
-                ));
+                body.push_str(&para_xml(&[(&escape_xml(t), false, false, false)], &format!("Heading{level}")));
             }
             Block::Para(t) => {
                 let runs: Vec<(String, bool, bool, bool)> =
@@ -1060,7 +1230,6 @@ fn md2word(src: &Path, dst: &Path) -> Result<()> {
                 for line in t.lines() {
                     body.push_str(&code_para_xml(&escape_xml(line)));
                 }
-                // trailing empty code para looks odd; keep it simple
             }
             Block::Rule => {
                 body.push_str(r#"<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="auto"/></w:pBdr></w:pPr></w:p>"#);
@@ -1073,9 +1242,15 @@ fn md2word(src: &Path, dst: &Path) -> Result<()> {
                 body.push_str(&image_para_xml(img_idx + 1, img, alt));
                 img_idx += 1;
             }
+            Block::Anchor(_) => {}
         }
     }
+    build_docx(&body, &images)
+}
 
+/// Assemble a .docx zip from a document body XML and its images. Returns the
+/// .docx bytes. Shared engine for `sys file --md2word` and `sys convert`.
+fn build_docx(body: &str, images: &[DocImage]) -> Result<Vec<u8>> {
     let document = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><w:body>{body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1800" w:bottom="1440" w:left="1800" w:header="851" w:footer="992" w:gutter="0"/></w:sectPr></w:body></w:document>"#
@@ -1114,11 +1289,8 @@ fn md2word(src: &Path, dst: &Path) -> Result<()> {
     }
 
     // pack
-    if dst.exists() {
-        std::fs::remove_file(dst).with_context(|| format!("cannot overwrite {}", dst.display()))?;
-    }
-    let f = std::fs::File::create(dst).with_context(|| format!("cannot create {}", dst.display()))?;
-    let mut zip = zip::ZipWriter::new(f);
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let mut zip = zip::ZipWriter::new(&mut cursor);
     let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
     zip.start_file("[Content_Types].xml", opts)?;
@@ -1131,22 +1303,32 @@ fn md2word(src: &Path, dst: &Path) -> Result<()> {
     zip.write_all(rels.as_bytes())?;
     zip.start_file("word/styles.xml", opts)?;
     zip.write_all(STYLES_XML.as_bytes())?;
-    for img in &images {
+    for img in images {
         zip.start_file(format!("word/media/{}", img.name), opts)?;
         zip.write_all(&img.bytes)?;
     }
     zip.finish()?;
-    eprintln!(
-        "sys: md2word: {} -> {} ({} images)",
-        src.display(),
-        dst.display(),
-        images.len()
-    );
-    Ok(())
+    Ok(cursor.into_inner())
 }
 
 /// Load an image from a local path (relative to the md file) or an http(s) URL.
-fn load_image_bytes(path: &str, base_dir: &Path) -> Result<Vec<u8>> {
+/// Load an image as raw bytes. Resolution order:
+/// 1. in-memory `media` map (keyed by the `media/<name>` path) — populated by
+///    the docx/epub readers so binary outputs embed images without touching disk
+/// 2. http(s) URL — fetched
+/// 3. filesystem path resolved against `base_dir`
+pub(crate) fn load_image_bytes_mapped(
+    path: &str,
+    base_dir: &Path,
+    media: &std::collections::HashMap<String, Vec<u8>>,
+) -> Result<Vec<u8>> {
+    if let Some(bytes) = media.get(path) {
+        return Ok(bytes.clone());
+    }
+    load_image_bytes(path, base_dir)
+}
+
+pub(crate) fn load_image_bytes(path: &str, base_dir: &Path) -> Result<Vec<u8>> {
     if path.starts_with("http://") || path.starts_with("https://") {
         let url = url::Url::parse(path).context("invalid image URL")?;
         let resp = reqwest::blocking::Client::builder()
@@ -1395,6 +1577,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_inline_runs_keeps_link_targets() {
+        let runs = parse_inline_runs("见[第1章](text00008.html#nav_point_16)，**重点**");
+        assert_eq!(runs[0].text, "见");
+        assert_eq!(runs[0].link, None);
+        assert_eq!(runs[1].text, "第1章");
+        assert_eq!(runs[1].link.as_deref(), Some("text00008.html#nav_point_16"));
+        assert!(runs.iter().any(|r| r.text.contains("重点") && r.bold));
+        // the tuple API used by the DOCX writer drops link targets but keeps text
+        let plain = parse_inline("见[第1章](text00008.html#nav_point_16)");
+        assert_eq!(plain.iter().map(|r| r.0.as_str()).collect::<String>(), "见第1章");
+    }
+
+    #[test]
+    fn parse_markdown_emits_anchor_blocks() {
+        let blocks = parse_markdown("<!--sys:anchor=text00008.html-->\n\n# 标题\n\n正文");
+        assert!(matches!(&blocks[0], Block::Anchor(a) if a == "text00008.html"));
+        assert!(matches!(&blocks[1], Block::Heading(1, t) if t == "标题"));
+    }
+
+    #[test]
     fn xml_unescape_basics() {
         assert_eq!(xml_unescape("a&lt;b&gt;c&amp;d"), "a<b>c&d");
         assert_eq!(xml_unescape("&#20013;&#25991;"), "中文");
@@ -1486,6 +1688,7 @@ mod tests {
                 }
                 Block::Rule => rule = true,
                 Block::Quote(_) => quote = true,
+                Block::Anchor(_) => {}
                 Block::Para(_) => {}
             }
         }
@@ -1576,6 +1779,14 @@ mod tests {
         assert_eq!(parse_md_row("| a | b |"), vec!["a", "b"]);
         assert_eq!(parse_md_row("a | b"), vec!["a", "b"]);
         assert_eq!(parse_md_row("| 含|竖线 |"), vec!["含", "竖线"]);
+        assert_eq!(
+            parse_md_row("| a | b\\|c | d |"),
+            vec!["a", "b|c", "d"]
+        );
+        assert_eq!(
+            parse_md_row("| x | 尾反斜杠\\ |"),
+            vec!["x", "尾反斜杠\\"]
+        );
     }
 
     #[test]

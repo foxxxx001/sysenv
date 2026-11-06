@@ -2428,6 +2428,22 @@ fn fmt_created(raw: &str) -> String {
     raw.to_string()
 }
 
+/// Sort key for a model's `created` value: unix seconds on OpenAI-compatible
+/// APIs, RFC 3339 on Anthropic `created_at`. Missing / unparseable values
+/// yield `None`.
+fn created_sort_key(raw: &str) -> Option<i64> {
+    if let Ok(ts) = raw.parse::<i64>() {
+        return Some(ts);
+    }
+    chrono::DateTime::parse_from_rfc3339(raw).ok().map(|dt| dt.timestamp())
+}
+
+/// Order rows by creation date, newest first — the models API order is not
+/// guaranteed across providers and pages. Rows without a date go last.
+fn sort_model_rows_by_created(rows: &mut [ModelListRow]) {
+    rows.sort_by(|a, b| created_sort_key(&b.created).cmp(&created_sort_key(&a.created)));
+}
+
 /// `sys ai info list-model PROVIDER` — fetch the provider's model list from
 /// its own models API and print it.
 fn info_model_list(cfg: &chat::Config, keyword: &str, fmt: Option<OutFormat>) -> Result<()> {
@@ -2477,6 +2493,7 @@ fn info_model_list(cfg: &chat::Config, keyword: &str, fmt: Option<OutFormat>) ->
             _ => break,
         }
     }
+    sort_model_rows_by_created(&mut rows);
     match fmt {
         Some(OutFormat::Json) => {
             let arr: Vec<Value> = rows
@@ -5289,8 +5306,1043 @@ fn backup_file(path: &Path) -> Result<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// `sys ai agent` — detect installed AI coding agents and their skills.
 // ---------------------------------------------------------------------------
+
+/// One install location of an agent: `root` marks the agent as installed,
+/// `skills` lists the skill directories it reads, relative to `root`.
+struct AgentInstall {
+    root: &'static str,
+    skills: &'static [&'static str],
+}
+
+struct AgentSpec {
+    id: &'static str,
+    name: &'static str,
+    aliases: &'static [&'static str],
+    installs: &'static [AgentInstall],
+    /// Process-name substrings (case-insensitive) used to detect a running
+    /// instance of the agent.
+    procs: &'static [&'static str],
+    /// Home-relative paths to MCP configuration files (JSON / TOML).
+    mcp_configs: &'static [&'static str],
+    /// Home-relative directories that cache an agent's active MCP servers and
+    /// their tools (e.g. Trae's `~/.trae-cn/mcps`).
+    mcp_cache_dirs: &'static [&'static str],
+}
+
+/// One MCP server declared in an agent's config.
+struct McpServer {
+    name: String,
+    command: Option<String>,
+    args: Option<String>,
+    transport: Option<String>,
+    url: Option<String>,
+}
+
+/// A tool surfaced by an MCP server (read from an agent-side cache when
+/// available, e.g. WorkBuddy's mcp-tool-list.json).
+struct McpTool {
+    name: String,
+    description: Option<String>,
+}
+
+/// An MCP server discovered from an agent's on-disk cache (e.g. Trae's
+/// `~/.trae-cn/mcps/<ws>/solo_agent/<server>/`), together with its cached
+/// tool list.
+struct McpServerCache {
+    name: String,
+    tools: Vec<McpTool>,
+}
+
+/// Layer 1 (running?) + layer 2 (configured MCP servers & cached tools) info.
+struct AgentMcpInfo {
+    running: bool,
+    config_files: Vec<PathBuf>,
+    servers: Vec<McpServer>,
+    tools: Vec<McpTool>,
+    cached_servers: Vec<McpServerCache>,
+}
+
+/// Registry of the supported agents, in the order they are displayed.
+const AGENT_SPECS: &[AgentSpec] = &[
+    AgentSpec {
+        id: "claude-code",
+        name: "Claude Code",
+        aliases: &["claude"],
+        installs: &[AgentInstall { root: ".claude", skills: &["skills"] }],
+        procs: &["claude", "claude-code"],
+        mcp_configs: &[".claude.json"],
+        mcp_cache_dirs: &[],
+    },
+    AgentSpec {
+        id: "codex",
+        name: "Codex",
+        aliases: &["openai-codex"],
+        installs: &[AgentInstall { root: ".codex", skills: &["skills"] }],
+        procs: &["codex"],
+        mcp_configs: &[".codex/config.toml"],
+        mcp_cache_dirs: &[],
+    },
+    AgentSpec {
+        id: "opencode",
+        name: "OpenCode",
+        aliases: &["open-code"],
+        installs: &[
+            AgentInstall { root: ".config/opencode", skills: &["skills", "skill"] },
+            AgentInstall { root: ".opencode", skills: &["skills", "skill"] },
+        ],
+        procs: &["opencode"],
+        mcp_configs: &[
+            ".config/opencode/opencode.json",
+            ".config/opencode/mcp.json",
+            ".opencode/opencode.json",
+            ".opencode/mcp.json",
+        ],
+        mcp_cache_dirs: &[],
+    },
+    AgentSpec {
+        id: "kilocode",
+        name: "Kilo Code",
+        aliases: &["kilo", "kilo-code"],
+        installs: &[
+            AgentInstall { root: ".kilocode", skills: &["skills"] },
+            AgentInstall { root: ".config/kilo", skills: &["skills"] },
+        ],
+        procs: &["kilocode", "kilo"],
+        mcp_configs: &[".kilocode/mcp.json", ".config/kilo/mcp.json"],
+        mcp_cache_dirs: &[],
+    },
+    AgentSpec {
+        id: "openclaw",
+        name: "OpenClaw",
+        aliases: &["claw"],
+        installs: &[AgentInstall { root: ".openclaw", skills: &["skills"] }],
+        procs: &["openclaw", "claw"],
+        mcp_configs: &[".openclaw/config.json", ".openclaw/mcp.json"],
+        mcp_cache_dirs: &[],
+    },
+    AgentSpec {
+        id: "cursor",
+        name: "Cursor",
+        aliases: &[],
+        installs: &[AgentInstall { root: ".cursor", skills: &["skills"] }],
+        procs: &["cursor"],
+        mcp_configs: &[".cursor/mcp.json"],
+        mcp_cache_dirs: &[],
+    },
+    AgentSpec {
+        id: "pi",
+        name: "Pi",
+        aliases: &["oh-my-pi"],
+        installs: &[
+            AgentInstall { root: ".pi", skills: &["skills", "agent/skills"] },
+            AgentInstall { root: ".oh-my-pi", skills: &["skills"] },
+        ],
+        procs: &["pi"],
+        mcp_configs: &[".pi/mcp.json", ".oh-my-pi/mcp.json"],
+        mcp_cache_dirs: &[],
+    },
+    AgentSpec {
+        id: "hermes-agent",
+        name: "hermes-agent",
+        aliases: &["hermes", "nousresearch"],
+        installs: &[
+            AgentInstall { root: ".hermes", skills: &["skills"] },
+            AgentInstall { root: ".hermes-agent", skills: &["skills"] },
+        ],
+        procs: &["hermes-agent", "hermes"],
+        mcp_configs: &[".hermes/config.json", ".hermes-agent/config.json"],
+        mcp_cache_dirs: &[],
+    },
+    AgentSpec {
+        id: "trae",
+        name: "TRAE",
+        aliases: &[],
+        installs: &[
+            AgentInstall { root: ".trae", skills: &["skills"] },
+            AgentInstall { root: ".trae-cn", skills: &["skills"] },
+        ],
+        procs: &["trae"],
+        mcp_configs: &[".trae-cn/mcp.json", ".trae/mcp.json"],
+        mcp_cache_dirs: &[".trae-cn/mcps", ".trae/mcps"],
+    },
+    AgentSpec {
+        id: "codebuddy",
+        name: "CodeBuddy",
+        aliases: &[],
+        installs: &[AgentInstall { root: ".codebuddy", skills: &["skills"] }],
+        procs: &["codebuddy"],
+        mcp_configs: &[".codebuddy/mcp.json", ".codebuddy/config.json"],
+        mcp_cache_dirs: &[],
+    },
+    AgentSpec {
+        id: "workbuddy",
+        name: "WorkBuddy",
+        aliases: &["work-buddy", "wb"],
+        installs: &[AgentInstall { root: ".workbuddy", skills: &["skills"] }],
+        procs: &["workbuddy"],
+        mcp_configs: &[".workbuddy/mcp-tool-list.json", ".workbuddy/mcp-approvals.json"],
+        mcp_cache_dirs: &[],
+    },
+    AgentSpec {
+        id: "kimi-coder",
+        name: "Kimi Coder",
+        aliases: &["kimi"],
+        installs: &[
+            AgentInstall { root: ".kimi", skills: &["skills"] },
+            AgentInstall { root: ".kimi-code", skills: &["skills"] },
+        ],
+        procs: &["kimi"],
+        mcp_configs: &[".kimi/mcp.json", ".kimi-code/mcp.json"],
+        mcp_cache_dirs: &[],
+    },
+    AgentSpec {
+        id: "qcoder",
+        name: "QCoder",
+        aliases: &[],
+        installs: &[AgentInstall { root: ".qcoder", skills: &["skills"] }],
+        procs: &["qcoder"],
+        mcp_configs: &[".qcoder/mcp.json", ".qcoder/config.json"],
+        mcp_cache_dirs: &[],
+    },
+    AgentSpec {
+        id: "mimo-coder",
+        name: "MiMo Coder",
+        aliases: &["mimo", "mimo-coder"],
+        installs: &[
+            AgentInstall { root: ".mimo", skills: &["skills"] },
+            AgentInstall { root: ".mimo-coder", skills: &["skills"] },
+        ],
+        procs: &["mimo"],
+        mcp_configs: &[".mimo/mcp.json", ".mimo-coder/mcp.json"],
+        mcp_cache_dirs: &[],
+    },
+    AgentSpec {
+        id: "zcode",
+        name: "ZCode",
+        aliases: &["zcoder"],
+        installs: &[AgentInstall { root: ".zcode", skills: &["skills", "cli/skills"] }],
+        procs: &["zcode", "zcoder"],
+        mcp_configs: &[".zcode/config.json", ".zcode/mcp.json"],
+        mcp_cache_dirs: &[],
+    },
+    AgentSpec {
+        id: "qoder",
+        name: "Qoder",
+        aliases: &[],
+        installs: &[
+            AgentInstall { root: ".qoder", skills: &["skills"] },
+            AgentInstall { root: ".qoder-cn", skills: &["skills"] },
+        ],
+        procs: &["qoder"],
+        mcp_configs: &[".qoder-cn/mcp.json", ".qoder/mcp.json"],
+        mcp_cache_dirs: &[],
+    },
+];
+
+struct SkillEntry {
+    name: String,
+    size: u64,
+    /// A symlink / junction whose target is missing: still an installed
+    /// entry, but nothing to measure.
+    broken: bool,
+}
+
+struct AgentReport<'a> {
+    spec: &'a AgentSpec,
+    roots: Vec<PathBuf>,
+    skill_dirs: Vec<PathBuf>,
+    skills: Vec<SkillEntry>,
+    mcp: AgentMcpInfo,
+}
+
+impl AgentReport<'_> {
+    fn size(&self) -> u64 {
+        self.skills.iter().map(|s| s.size).sum()
+    }
+}
+
+/// Home directory of the current user (Windows: USERPROFILE, then HOME;
+/// Unix: HOME).
+fn agent_home() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("USERPROFILE") {
+        if !p.is_empty() {
+            return Some(PathBuf::from(p));
+        }
+    }
+    if let Some(p) = std::env::var_os("HOME") {
+        if !p.is_empty() {
+            return Some(PathBuf::from(p));
+        }
+    }
+    None
+}
+
+/// Join a home-relative path written with `/` separators.
+fn agent_path(home: &Path, rel: &str) -> PathBuf {
+    let mut p = home.to_path_buf();
+    for part in rel.split('/').filter(|s| !s.is_empty()) {
+        p.push(part);
+    }
+    p
+}
+
+/// Normalize an id / name / alias for case- and separator-insensitive matching
+/// (`Claude Code`, `claude-code` and `claude_code` all become `claudecode`).
+fn norm_agent(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
+}
+
+fn agent_matches(spec: &AgentSpec, term: &str) -> bool {
+    let t = norm_agent(term);
+    if t.is_empty() {
+        return false;
+    }
+    std::iter::once(spec.id)
+        .chain(std::iter::once(spec.name))
+        .chain(spec.aliases.iter().copied())
+        .any(|c| norm_agent(c) == t)
+}
+
+fn supported_agent_ids() -> String {
+    AGENT_SPECS.iter().map(|s| s.id).collect::<Vec<_>>().join(", ")
+}
+
+fn select_agent_specs(terms: &[String]) -> Result<Vec<&'static AgentSpec>> {
+    if terms.iter().all(|t| t.trim().is_empty()) {
+        return Ok(AGENT_SPECS.iter().collect());
+    }
+    let mut ids: Vec<&'static str> = Vec::new();
+    for term in terms {
+        if term.trim().is_empty() {
+            continue;
+        }
+        match AGENT_SPECS.iter().find(|s| agent_matches(s, term)) {
+            Some(spec) => {
+                if !ids.contains(&spec.id) {
+                    ids.push(spec.id);
+                }
+            }
+            None => bail!("unknown agent `{}` (supported: {})", term.trim(), supported_agent_ids()),
+        }
+    }
+    // Keep the registry order regardless of the order the filters were given.
+    Ok(AGENT_SPECS.iter().filter(|s| ids.contains(&s.id)).collect())
+}
+
+/// True when a skill directory contains a `SKILL.md` (any case).
+fn has_skill_md(dir: &Path) -> bool {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    rd.flatten()
+        .any(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case("SKILL.md"))
+}
+
+fn is_skill_markdown(path: &Path, name: &str) -> bool {
+    if name.eq_ignore_ascii_case("README.md") {
+        return false;
+    }
+    path.extension()
+        .map(|e| e.to_string_lossy().eq_ignore_ascii_case("md"))
+        .unwrap_or(false)
+}
+
+/// Canonical key for deduplication; falls back to the path itself.
+fn dedupe_key(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// A skill is a subdirectory with `SKILL.md` (following symlinks), a
+/// top-level `.md` file (README.md excluded), or a symlinked entry (kept even
+/// when its target is missing, e.g. a stale junction).
+fn discover_skills(dirs: &[PathBuf]) -> Vec<SkillEntry> {
+    let mut out: Vec<SkillEntry> = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    for dir in dirs {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            let is_link = std::fs::symlink_metadata(&path)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
+            let broken = is_link && !path.exists();
+            let is_skill = if broken {
+                true
+            } else if path.is_dir() {
+                has_skill_md(&path)
+            } else {
+                is_skill_markdown(&path, &name)
+            };
+            if !is_skill || !seen.insert(dedupe_key(&path)) {
+                continue;
+            }
+            let size = if broken {
+                0
+            } else if path.is_dir() {
+                dir_size(&path)
+            } else {
+                std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+            };
+            out.push(SkillEntry { name, size, broken });
+        }
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
+}
+
+fn dir_size(path: &Path) -> u64 {
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    dir_size_inner(path, &mut seen)
+}
+
+/// Recursive size in bytes, following symlinks / junctions and skipping
+/// already visited directories (guards against link cycles).
+fn dir_size_inner(path: &Path, seen: &mut HashSet<PathBuf>) -> u64 {
+    if !seen.insert(dedupe_key(path)) {
+        return 0;
+    }
+    let Ok(rd) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    let mut total: u64 = 0;
+    for entry in rd.flatten() {
+        // DirEntry::metadata follows symlinks, unlike fs::symlink_metadata.
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_dir() {
+            total = total.saturating_add(dir_size_inner(&entry.path(), seen));
+        } else {
+            total = total.saturating_add(meta.len());
+        }
+    }
+    total
+}
+
+fn fmt_agent_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+// --- Process detection (layer 1) -----------------------------------------
+
+/// Names of currently running processes, lower-cased. Spawns `tasklist`
+/// (Windows) or `ps` (Unix); returns an empty set on failure.
+fn running_processes() -> HashSet<String> {
+    let mut names: HashSet<String> = HashSet::new();
+    #[cfg(windows)]
+    {
+        if let Ok(o) = std::process::Command::new("tasklist").args(["/FO", "CSV", "/NH"]).output() {
+            let text = String::from_utf8_lossy(&o.stdout);
+            for line in text.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                // First CSV column is the quoted image name, e.g. "claude.exe".
+                let rest = line.trim_start_matches('"');
+                let name = rest.split('"').next().unwrap_or("");
+                // Strip the .exe suffix so substrings match either form.
+                let stem = name.trim_end_matches(".exe").trim_end_matches(".EXE");
+                if !stem.is_empty() {
+                    names.insert(stem.to_ascii_lowercase());
+                }
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(o) = std::process::Command::new("ps").args(["-e", "-o", "comm="]).output() {
+            let text = String::from_utf8_lossy(&o.stdout);
+            for line in text.lines() {
+                let name = line.trim();
+                if !name.is_empty() {
+                    names.insert(name.to_ascii_lowercase());
+                }
+            }
+        }
+    }
+    names
+}
+
+fn agent_is_running(spec: &AgentSpec, procs: &HashSet<String>) -> bool {
+    spec.procs.iter().any(|p| {
+        let needle = p.to_ascii_lowercase();
+        if needle.len() <= 3 {
+            // Very short names must match exactly, otherwise e.g. "pi" would
+            // match the unrelated "SnippingTool" process.
+            procs.iter().any(|n| n == &needle)
+        } else {
+            procs.iter().any(|n| n.contains(&needle))
+        }
+    })
+}
+
+// --- MCP config parsing (layer 2) ----------------------------------------
+
+fn mcp_server_from_value(name: &str, v: &Value) -> McpServer {
+    let command = v.get("command").and_then(str_or_array);
+    let args = v.get("args").and_then(str_or_array);
+    let transport = v.get("transport").and_then(|x| x.as_str()).map(|s| s.to_string());
+    let url = v.get("url").and_then(|x| x.as_str()).map(|s| s.to_string());
+    McpServer { name: name.to_string(), command, args, transport, url }
+}
+
+/// `command` / `args` can be a string or an array of strings; join arrays
+/// with spaces.
+fn str_or_array(v: &Value) -> Option<String> {
+    if let Some(s) = v.as_str() {
+        return Some(s.to_string());
+    }
+    if let Some(a) = v.as_array() {
+        let parts: Vec<&str> = a.iter().filter_map(|x| x.as_str()).collect();
+        if parts.is_empty() {
+            return None;
+        }
+        return Some(parts.join(" "));
+    }
+    None
+}
+
+/// Extract MCP servers from the common JSON shapes: `mcpServers`,
+/// `mcp.servers`, `mcp_servers`, `servers` (each a name -> config object).
+fn extract_servers_from_json(v: &Value) -> Vec<McpServer> {
+    let mut servers = Vec::new();
+    let containers: Vec<&Value> = [
+        v.get("mcpServers"),
+        v.get("mcp").and_then(|m| m.get("servers")),
+        v.get("mcp_servers"),
+        v.get("servers"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    for c in containers {
+        if let Some(obj) = c.as_object() {
+            for (name, cfg) in obj {
+                servers.push(mcp_server_from_value(name, cfg));
+            }
+        }
+    }
+    servers
+}
+
+/// Extract cached tool lists. WorkBuddy stores them as
+/// `entries.<hash> = [{ name, description }, ...]`; some agents use a flat
+/// `tools: [...]` array.
+fn extract_tools_from_json(v: &Value) -> Vec<McpTool> {
+    let mut tools = Vec::new();
+    if let Some(entries) = v.get("entries").and_then(|e| e.as_object()) {
+        for (_k, arr) in entries {
+            if let Some(list) = arr.as_array() {
+                for item in list {
+                    if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
+                        let desc =
+                            item.get("description").and_then(|d| d.as_str()).map(|s| s.to_string());
+                        tools.push(McpTool { name: name.to_string(), description: desc });
+                    }
+                }
+            }
+        }
+    }
+    if let Some(list) = v.get("tools").and_then(|t| t.as_array()) {
+        for item in list {
+            if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
+                let desc = item.get("description").and_then(|d| d.as_str()).map(|s| s.to_string());
+                tools.push(McpTool { name: name.to_string(), description: desc });
+            }
+        }
+    }
+    tools
+}
+
+/// Extract MCP servers from TOML (Codex: `[mcp_servers.<name>]` with
+/// `command` / `args` / `env`, or `mcp.servers`).
+fn extract_servers_from_toml(text: &str) -> Vec<McpServer> {
+    let mut servers = Vec::new();
+    let Ok(v) = toml::from_str::<toml::Value>(text) else {
+        return servers;
+    };
+    let candidates = [v.get("mcp_servers"), v.get("mcp").and_then(|m| m.get("servers"))];
+    for c in candidates.into_iter().flatten() {
+        if let Some(table) = c.as_table() {
+            for (name, cfg) in table {
+                let command = cfg.get("command").and_then(toml_str_or_array);
+                let args = cfg.get("args").and_then(toml_str_or_array);
+                let transport = cfg.get("transport").and_then(|x| x.as_str()).map(|s| s.to_string());
+                let url = cfg.get("url").and_then(|x| x.as_str()).map(|s| s.to_string());
+                servers.push(McpServer { name: name.clone(), command, args, transport, url });
+            }
+        }
+    }
+    servers
+}
+
+/// TOML equivalent of `str_or_array` for `command` / `args`.
+fn toml_str_or_array(v: &toml::Value) -> Option<String> {
+    if let Some(s) = v.as_str() {
+        return Some(s.to_string());
+    }
+    if let Some(a) = v.as_array() {
+        let parts: Vec<&str> = a.iter().filter_map(|x| x.as_str()).collect();
+        if parts.is_empty() {
+            return None;
+        }
+        return Some(parts.join(" "));
+    }
+    None
+}
+
+/// Read each agent's MCP config files and return the found config files, the
+/// declared servers, and any cached tools. Servers and tools are de-duplicated
+/// by name (first occurrence wins).
+fn parse_mcp_configs(rel_paths: &[&str], home: &Path) -> (Vec<PathBuf>, Vec<McpServer>, Vec<McpTool>) {
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut servers: Vec<McpServer> = Vec::new();
+    let mut tools: Vec<McpTool> = Vec::new();
+    let mut seen_servers: HashSet<String> = HashSet::new();
+    let mut seen_tools: HashSet<String> = HashSet::new();
+    for rel in rel_paths {
+        let path = agent_path(home, rel);
+        if !path.exists() {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        files.push(path.clone());
+        let is_toml = path
+            .extension()
+            .map(|e| e.eq_ignore_ascii_case("toml"))
+            .unwrap_or(false);
+        if is_toml {
+            for s in extract_servers_from_toml(&text) {
+                if seen_servers.insert(s.name.clone()) {
+                    servers.push(s);
+                }
+            }
+        } else {
+            let Ok(v) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+            for s in extract_servers_from_json(&v) {
+                if seen_servers.insert(s.name.clone()) {
+                    servers.push(s);
+                }
+            }
+            for t in extract_tools_from_json(&v) {
+                if seen_tools.insert(t.name.clone()) {
+                    tools.push(t);
+                }
+            }
+        }
+    }
+    (files, servers, tools)
+}
+
+/// Scan an agent's MCP cache directories for active MCP servers and their
+/// cached tool lists. Layout recognised:
+///   <cache_dir>/<...>/<server>/SERVER_METADATA.json  {"server_name": "..."}
+///   <cache_dir>/<...>/<server>/tools/<tool>.json     {name, description, arguments}
+/// Any directory containing a `SERVER_METADATA.json` is treated as a server
+/// root; its sibling `tools/` directory (if present) supplies the tools.
+fn scan_mcp_cache_dirs(rel_dirs: &[&str], home: &Path) -> Vec<McpServerCache> {
+    let mut servers: Vec<McpServerCache> = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for rel in rel_dirs {
+        let base = agent_path(home, rel);
+        if !base.is_dir() {
+            continue;
+        }
+        // Walk the tree looking for SERVER_METADATA.json files.
+        let mut stack: Vec<PathBuf> = vec![base.clone()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.file_name().map(|n| n == "SERVER_METADATA.json").unwrap_or(false) {
+                    if let Some(server) = parse_mcp_cache_server(&path) {
+                        match seen.get(&server.name) {
+                            Some(&idx) if servers[idx].tools.len() >= server.tools.len() => {}
+                            Some(&idx) => {
+                                servers[idx] = server;
+                            }
+                            None => {
+                                seen.insert(server.name.clone(), servers.len());
+                                servers.push(server);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    servers
+}
+
+/// Parse one MCP server cache root (the directory containing
+/// `SERVER_METADATA.json`) into a `McpServerCache` with its tools.
+fn parse_mcp_cache_server(metadata_path: &Path) -> Option<McpServerCache> {
+    let server_dir = metadata_path.parent()?;
+    let meta_text = std::fs::read_to_string(metadata_path).ok()?;
+    let meta: Value = serde_json::from_str(&meta_text).ok()?;
+    let name = meta
+        .get("server_name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| server_dir.file_name().map(|n| n.to_string_lossy().into_owned()))?;
+
+    let mut tools: Vec<McpTool> = Vec::new();
+    let tools_dir = server_dir.join("tools");
+    if tools_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&tools_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map(|e| e == "json").unwrap_or(false) {
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                            if let Some(tname) = v.get("name").and_then(|n| n.as_str()) {
+                                let desc = v
+                                    .get("description")
+                                    .and_then(|d| d.as_str())
+                                    .map(|s| s.to_string());
+                                tools.push(McpTool { name: tname.to_string(), description: desc });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    tools.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Some(McpServerCache { name, tools })
+}
+
+fn scan_agent(home: &Path, spec: &'static AgentSpec, procs: &HashSet<String>) -> AgentReport<'static> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    let mut skill_dirs: Vec<PathBuf> = Vec::new();
+    let mut seen_roots: HashSet<PathBuf> = HashSet::new();
+    let mut seen_dirs: HashSet<PathBuf> = HashSet::new();
+    for install in spec.installs {
+        let root = agent_path(home, install.root);
+        if root.exists() && seen_roots.insert(dedupe_key(&root)) {
+            roots.push(root.clone());
+        }
+        for rel in install.skills {
+            let dir = agent_path(&root, rel);
+            if dir.is_dir() && seen_dirs.insert(dedupe_key(&dir)) {
+                skill_dirs.push(dir);
+            }
+        }
+    }
+    let skills = discover_skills(&skill_dirs);
+    let (config_files, servers, tools) = parse_mcp_configs(spec.mcp_configs, home);
+    let cached_servers = scan_mcp_cache_dirs(spec.mcp_cache_dirs, home);
+    let mcp = AgentMcpInfo {
+        running: agent_is_running(spec, procs),
+        config_files,
+        servers,
+        tools,
+        cached_servers,
+    };
+    AgentReport { spec, roots, skill_dirs, skills, mcp }
+}
+
+pub fn cmd_agent(list: bool, list_skill: bool, list_mcp: bool, agents: &[String]) -> Result<()> {
+    let flags = [list, list_skill, list_mcp];
+    if flags.iter().filter(|&&f| f).count() > 1 {
+        bail!("--list, --list-skill and --list-mcp cannot be used together");
+    }
+    let skills_mode = list_skill;
+    let mcp_mode = list_mcp;
+    let home = agent_home().context("cannot locate the user home directory")?;
+    let procs = running_processes();
+    let specs = select_agent_specs(agents)?;
+    let reports: Vec<AgentReport> = specs
+        .iter()
+        .map(|s| scan_agent(&home, s, &procs))
+        .filter(|r| {
+            // --list-mcp only shows agents that are currently running; the
+            // other modes show every installed agent.
+            if mcp_mode {
+                r.mcp.running
+            } else {
+                !r.roots.is_empty()
+            }
+        })
+        .collect();
+
+    if reports.is_empty() {
+        if mcp_mode {
+            if agents.is_empty() {
+                println!("No supported AI agent is currently running.");
+            } else {
+                println!("None of the requested agents is currently running.");
+            }
+        } else if agents.is_empty() {
+            println!("No supported AI agents detected under {}.", home.display());
+        } else {
+            println!("None of the requested agents is installed under {}.", home.display());
+        }
+    } else if skills_mode {
+        print_agent_skills(&reports);
+    } else if mcp_mode {
+        print_agent_mcp(&reports);
+    } else {
+        print_agent_list(&reports);
+    }
+
+    // Requested but not shown: report it explicitly instead of silently
+    // showing nothing (only when the caller filtered on agents).
+    if !agents.is_empty() {
+        for spec in &specs {
+            if !reports.iter().any(|r| r.spec.id == spec.id) {
+                if mcp_mode {
+                    // --list-mcp filters on running, not installed: an installed
+                    // but idle agent must not be reported as missing.
+                    println!("not running: {} ({})", spec.name, spec.id);
+                } else {
+                    println!("not installed: {} ({})", spec.name, spec.id);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_agent_list(reports: &[AgentReport]) {
+    let mut total_size: u64 = 0;
+    let mut total_skills: usize = 0;
+    let mut total_servers: usize = 0;
+    let mut total_tools: usize = 0;
+    for (i, r) in reports.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        println!("{} ({})", r.spec.name, r.spec.id);
+        for root in &r.roots {
+            println!("  {:<11}{}", "dir:", root.display());
+        }
+        if r.skill_dirs.is_empty() {
+            println!("  {:<11}-", "skill dir:");
+        } else {
+            for dir in &r.skill_dirs {
+                println!("  {:<11}{}", "skill dir:", dir.display());
+            }
+        }
+        println!("  {:<11}{}", "skills:", r.skills.len());
+        println!("  {:<11}{}", "size:", fmt_agent_size(r.size()));
+        println!(
+            "  {:<11}{}",
+            "running:",
+            if r.mcp.running { "yes" } else { "no" }
+        );
+        if r.mcp.config_files.is_empty() {
+            println!("  {:<11}-", "mcp cfg:");
+        } else {
+            for f in &r.mcp.config_files {
+                println!("  {:<11}{}", "mcp cfg:", f.display());
+            }
+        }
+        if r.mcp.servers.is_empty() {
+            println!("  {:<11}{}", "mcp srv:", "(none)");
+        } else {
+            println!("  {:<11}{}", "mcp srv:", r.mcp.servers.len());
+            for s in &r.mcp.servers {
+                println!("    - {:<24} {}", s.name, mcp_detail(s));
+            }
+        }
+        if !r.mcp.tools.is_empty() {
+            println!("  {:<11}{}", "mcp tools:", r.mcp.tools.len());
+            print_tool_names(&r.mcp.tools);
+        }
+        total_size = total_size.saturating_add(r.size());
+        total_skills += r.skills.len();
+        total_servers += unique_server_count(r);
+        total_tools += r.mcp.tools.len();
+    }
+    println!();
+    println!(
+        "Total: {} agent(s), {} skill(s), {}",
+        reports.len(),
+        total_skills,
+        fmt_agent_size(total_size)
+    );
+    if total_servers > 0 || total_tools > 0 {
+        println!("MCP: {} server(s), {} cached tool(s)", total_servers, total_tools);
+    }
+}
+
+/// Print cached MCP tool names, one per line (sorted), skipping descriptions
+/// to keep the list view compact.
+fn print_tool_names(tools: &[McpTool]) {
+    let mut names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    for n in names {
+        println!("    · {}", n);
+    }
+}
+
+/// `--list-mcp` output: for each *running* agent, list the MCP servers
+/// discovered from its on-disk cache (with tools) and any MCP servers
+/// declared in its config files. No MCP server process is spawned.
+fn print_agent_mcp(reports: &[AgentReport]) {
+    let mut total_servers: usize = 0;
+    let mut total_tools: usize = 0;
+    for (i, r) in reports.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        println!("{} ({})", r.spec.name, r.spec.id);
+        println!("  {:<12}{}", "running:", "yes");
+
+        // Cached MCP servers (e.g. Trae's ~/.trae-cn/mcps) — richest source.
+        if r.mcp.cached_servers.is_empty() {
+            println!("  {:<12}(none)", "cached mcp:");
+        } else {
+            println!("  {:<12}{}", "cached mcp:", r.mcp.cached_servers.len());
+            for s in &r.mcp.cached_servers {
+                println!("    ▸ {} ({} tool(s))", s.name, s.tools.len());
+                for t in &s.tools {
+                    let desc = t
+                        .description
+                        .as_deref()
+                        .map(|d| {
+                            let one: String = d.split_whitespace().collect::<Vec<_>>().join(" ");
+                            if one.chars().count() > 140 {
+                                format!("{}…", one.chars().take(140).collect::<String>())
+                            } else {
+                                one
+                            }
+                        })
+                        .unwrap_or_default();
+                    println!("        · {}  {}", t.name, desc);
+                }
+                total_tools += s.tools.len();
+            }
+        }
+
+        // Servers declared in config files (layer 2).
+        if !r.mcp.servers.is_empty() {
+            println!("  {:<12}{}", "config mcp:", r.mcp.servers.len());
+            for s in &r.mcp.servers {
+                println!("    · {:<24} {}", s.name, mcp_detail(s));
+            }
+        }
+
+        // Tools from a flat cache (e.g. WorkBuddy's mcp-tool-list.json).
+        if !r.mcp.tools.is_empty() && r.mcp.cached_servers.is_empty() {
+            println!("  {:<12}{}", "cached tools:", r.mcp.tools.len());
+            print_tool_names(&r.mcp.tools);
+            total_tools += r.mcp.tools.len();
+        }
+        // Count each server once: the same server often shows up both in the
+        // agent's cache and in its config.
+        total_servers += unique_server_count(r);
+    }
+    println!();
+    println!("Total: {} running agent(s), {} MCP server(s), {} tool(s)", reports.len(), total_servers, total_tools);
+}
+
+/// What to show after an MCP server's name: its command line, or (for remote
+/// servers) the transport and URL.
+fn mcp_detail(s: &McpServer) -> String {
+    let mut detail = String::new();
+    if let Some(cmd) = &s.command {
+        detail.push_str(cmd);
+        if let Some(args) = &s.args {
+            if !args.is_empty() {
+                detail.push(' ');
+                detail.push_str(args);
+            }
+        }
+    } else if let Some(url) = &s.url {
+        if let Some(t) = &s.transport {
+            detail.push('(');
+            detail.push_str(t);
+            detail.push_str(") ");
+        }
+        detail.push_str(url);
+    }
+    detail
+}
+
+/// Number of distinct MCP server names an agent knows about (cache ∪ config).
+fn unique_server_count(r: &AgentReport) -> usize {
+    let mut names: Vec<&str> = r
+        .mcp
+        .cached_servers
+        .iter()
+        .map(|s| s.name.as_str())
+        .chain(r.mcp.servers.iter().map(|s| s.name.as_str()))
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names.len()
+}
+
+fn print_agent_skills(reports: &[AgentReport]) {
+    let mut total_size: u64 = 0;
+    let mut total_skills: usize = 0;
+    for (i, r) in reports.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        println!("{} ({})", r.spec.name, r.spec.id);
+        if r.skill_dirs.is_empty() {
+            println!("  {:<11}-", "skill dir:");
+        } else {
+            for dir in &r.skill_dirs {
+                println!("  {:<11}{}", "skill dir:", dir.display());
+            }
+        }
+        if r.skills.is_empty() {
+            println!("  (no skills installed)");
+            continue;
+        }
+        let width = r.skills.iter().map(|s| s.name.chars().count()).max().unwrap_or(0).max(16);
+        println!("  skills ({}):", r.skills.len());
+        for s in &r.skills {
+            let marker = if s.broken { "  (broken link)" } else { "" };
+            println!("    {:<width$}  {:>10}{}", s.name, fmt_agent_size(s.size), marker, width = width);
+        }
+        total_size = total_size.saturating_add(r.size());
+        total_skills += r.skills.len();
+    }
+    println!();
+    println!(
+        "Total: {} agent(s), {} skill(s), {}",
+        reports.len(),
+        total_skills,
+        fmt_agent_size(total_size)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -6204,6 +7256,31 @@ mod tests {
         assert_eq!(fmt_created("n/a"), "n/a");
         // Out-of-range unix values (e.g. 99999999999999) fall back to raw.
         assert_eq!(fmt_created("99999999999999"), "99999999999999");
+    }
+
+    #[test]
+    fn created_sort_key_handles_unix_rfc3339_and_missing() {
+        assert_eq!(created_sort_key("1734567890"), Some(1734567890));
+        assert_eq!(created_sort_key("2024-10-22T00:00:00Z"), Some(1729555200));
+        assert_eq!(created_sort_key("2024-10-22T08:00:00+08:00"), Some(1729555200));
+        assert_eq!(created_sort_key(""), None);
+        assert_eq!(created_sort_key("n/a"), None);
+    }
+
+    #[test]
+    fn model_list_rows_sort_by_created_desc() {
+        let v = serde_json::json!({
+            "data": [
+                {"id": "old", "created": 1700000000, "owned_by": "x"},
+                {"id": "no-date"},
+                {"id": "new", "created": 1760000000, "owned_by": "x"},
+                {"id": "mid", "created_at": "2024-10-22T00:00:00Z"}
+            ]
+        });
+        let mut rows = model_list_rows(&v);
+        sort_model_rows_by_created(&mut rows);
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["new", "mid", "old", "no-date"]);
     }
 
     #[test]
@@ -7405,5 +8482,184 @@ mod tests {
         assert!(cmd_config_import("codex", None, None, None).is_err());
         assert!(cmd_config_import("trae", None, None, None).is_err());
         assert!(cmd_config_import("litellm", None, None, None).is_err());
+    }
+
+    fn agent_temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sysenv-agent-{}-{}", name, std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn agent_specs_match_aliases() {
+        assert!(AGENT_SPECS.iter().any(|s| agent_matches(s, "claude")));
+        assert!(AGENT_SPECS.iter().any(|s| agent_matches(s, "Claude Code")));
+        assert!(AGENT_SPECS.iter().any(|s| agent_matches(s, "CLAUDE_CODE")));
+        assert!(AGENT_SPECS.iter().any(|s| agent_matches(s, "kimi")));
+        assert!(AGENT_SPECS.iter().any(|s| agent_matches(s, "zcoder")));
+        assert!(AGENT_SPECS.iter().any(|s| agent_matches(s, "hermes-agent")));
+        assert!(AGENT_SPECS.iter().any(|s| agent_matches(s, "wb")));
+        assert!(AGENT_SPECS.iter().any(|s| agent_matches(s, "WorkBuddy")));
+        assert!(!AGENT_SPECS.iter().any(|s| agent_matches(s, "no-such-agent")));
+        // the requested filter keeps the registry order and deduplicates ids
+        let picked = select_agent_specs(&["Qoder".into(), "claude".into(), "qoder".into()]).unwrap();
+        assert_eq!(picked.len(), 2);
+        assert_eq!(picked[0].id, "claude-code");
+        assert_eq!(picked[1].id, "qoder");
+    }
+
+    #[test]
+    fn agent_skill_discovery_counts_dirs_and_markdown() {
+        let dir = agent_temp_dir("skills");
+        let skills = dir.join("skills");
+        std::fs::create_dir_all(skills.join("alpha")).unwrap();
+        std::fs::write(skills.join("alpha").join("SKILL.md"), "alpha skill\n").unwrap();
+        std::fs::create_dir_all(skills.join("beta")).unwrap();
+        std::fs::write(skills.join("beta").join("notes.txt"), "not a skill").unwrap();
+        std::fs::create_dir_all(skills.join("gamma")).unwrap();
+        std::fs::write(skills.join("gamma").join("skill.md"), "lower-case entry\n").unwrap();
+        std::fs::create_dir_all(skills.join(".hidden")).unwrap();
+        std::fs::write(skills.join(".hidden").join("SKILL.md"), "hidden\n").unwrap();
+        std::fs::write(skills.join("flat.md"), "flat skill\n").unwrap();
+        std::fs::write(skills.join("README.md"), "readme\n").unwrap();
+
+        let found = discover_skills(&[skills.clone()]);
+        let names: Vec<&str> = found.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "flat.md", "gamma"]);
+        assert!(found.iter().all(|s| s.size > 0));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn agent_scan_detects_roots_and_skills() {
+        let home = agent_temp_dir("scan");
+        let trae_skills = home.join(".trae-cn").join("skills");
+        std::fs::create_dir_all(trae_skills.join("demo")).unwrap();
+        std::fs::write(trae_skills.join("demo").join("SKILL.md"), "demo\n").unwrap();
+        let spec = AGENT_SPECS.iter().find(|s| s.id == "trae").unwrap();
+        let procs: HashSet<String> = HashSet::new();
+        let report = scan_agent(&home, spec, &procs);
+        assert_eq!(report.roots.len(), 1);
+        assert!(report.roots[0].ends_with(".trae-cn"));
+        assert_eq!(report.skills.len(), 1);
+        assert_eq!(report.skills[0].name, "demo");
+        assert!(report.size() > 0);
+        // an agent whose install directory is absent is not reported as installed
+        let codex = AGENT_SPECS.iter().find(|s| s.id == "codex").unwrap();
+        assert!(scan_agent(&home, codex, &procs).roots.is_empty());
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn agent_mcp_extracts_servers_from_json_shapes() {
+        // mcpServers (Claude style), string command
+        let v: Value = serde_json::from_str(
+            r#"{"mcpServers":{"files":{"command":"npx","args":["@modelcontextprotocol/server-filesystem","/tmp"]}}}"#,
+        )
+        .unwrap();
+        let s = extract_servers_from_json(&v);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].name, "files");
+        assert_eq!(s[0].command.as_deref(), Some("npx"));
+        assert_eq!(s[0].args.as_deref(), Some("@modelcontextprotocol/server-filesystem /tmp"));
+
+        // mcp.servers (OpenCode style), array command + url transport
+        let v: Value = serde_json::from_str(
+            r#"{"mcp":{"servers":{"graph":{"command":["codegraph","serve","--mcp"]},"remote":{"transport":"sse","url":"http://x/mcp"}}}}"#,
+        )
+        .unwrap();
+        let s = extract_servers_from_json(&v);
+        assert_eq!(s.len(), 2);
+        let g = s.iter().find(|x| x.name == "graph").unwrap();
+        assert_eq!(g.command.as_deref(), Some("codegraph serve --mcp"));
+        let r = s.iter().find(|x| x.name == "remote").unwrap();
+        assert_eq!(r.transport.as_deref(), Some("sse"));
+        assert_eq!(r.url.as_deref(), Some("http://x/mcp"));
+    }
+
+    #[test]
+    fn agent_mcp_extracts_cached_tools() {
+        let v: Value = serde_json::from_str(
+            r#"{"entries":{"abc":[{"name":"tool_a","description":"does a"},{"name":"tool_b"}]}}"#,
+        )
+        .unwrap();
+        let tools = extract_tools_from_json(&v);
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].name, "tool_a");
+        assert_eq!(tools[0].description.as_deref(), Some("does a"));
+        assert_eq!(tools[1].description, None);
+    }
+
+    #[test]
+    fn agent_mcp_extracts_servers_from_toml() {
+        let text = "[mcp_servers.files]\ncommand = \"npx\"\nargs = [\"@mcp/fs\", \"/tmp\"]\n";
+        let s = extract_servers_from_toml(text);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].name, "files");
+        assert_eq!(s[0].command.as_deref(), Some("npx"));
+        assert_eq!(s[0].args.as_deref(), Some("@mcp/fs /tmp"));
+    }
+
+    #[test]
+    fn agent_is_running_matches_proc_substrings() {
+        let mut procs: HashSet<String> = HashSet::new();
+        procs.insert("opencode".to_string());
+        procs.insert("code.exe".to_string());
+        let opencode = AGENT_SPECS.iter().find(|s| s.id == "opencode").unwrap();
+        assert!(agent_is_running(opencode, &procs));
+        let trae = AGENT_SPECS.iter().find(|s| s.id == "trae").unwrap();
+        assert!(!agent_is_running(trae, &procs));
+    }
+
+    #[test]
+    fn agent_is_running_short_name_requires_exact_match() {
+        let pi = AGENT_SPECS.iter().find(|s| s.id == "pi").unwrap();
+        // "SnippingTool" contains "pi" but must not count as Pi running.
+        let mut procs: HashSet<String> = HashSet::new();
+        procs.insert("snippingtool".to_string());
+        assert!(!agent_is_running(pi, &procs));
+        // Exact "pi" (from pi.exe) still matches.
+        let mut procs: HashSet<String> = HashSet::new();
+        procs.insert("pi".to_string());
+        assert!(agent_is_running(pi, &procs));
+    }
+
+    #[test]
+    fn agent_mcp_cache_scan_finds_servers_and_tools() {
+        let home = agent_temp_dir("mcpcache");
+        // mimic Trae layout: <cache>/<ws>/solo_agent/<server>/...
+        let srv = home.join("mcps").join("ws1").join("solo_agent").join("mysrv");
+        std::fs::create_dir_all(srv.join("tools")).unwrap();
+        std::fs::write(srv.join("SERVER_METADATA.json"), r#"{"server_name":"mysrv"}"#).unwrap();
+        std::fs::write(
+            srv.join("tools").join("t1.json"),
+            r#"{"name":"t1","description":"tool one"}"#,
+        )
+        .unwrap();
+        std::fs::write(srv.join("tools").join("t2.json"), r#"{"name":"t2"}"#).unwrap();
+
+        // second workspace with same server name but fewer tools — must be ignored
+        let srv2 = home.join("mcps").join("ws2").join("solo_agent").join("mysrv");
+        std::fs::create_dir_all(srv2.join("tools")).unwrap();
+        std::fs::write(srv2.join("SERVER_METADATA.json"), r#"{"server_name":"mysrv"}"#).unwrap();
+        std::fs::write(srv2.join("tools").join("t1.json"), r#"{"name":"t1"}"#).unwrap();
+
+        let servers = scan_mcp_cache_dirs(&["mcps"], &home);
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].name, "mysrv");
+        assert_eq!(servers[0].tools.len(), 2);
+        assert_eq!(servers[0].tools[0].name, "t1");
+        assert_eq!(servers[0].tools[0].description.as_deref(), Some("tool one"));
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn agent_size_is_human_readable() {
+        assert_eq!(fmt_agent_size(0), "0 B");
+        assert_eq!(fmt_agent_size(1023), "1023 B");
+        assert_eq!(fmt_agent_size(1024), "1.0 KB");
+        assert_eq!(fmt_agent_size(1536), "1.5 KB");
+        assert_eq!(fmt_agent_size(3 * 1024 * 1024), "3.0 MB");
     }
 }

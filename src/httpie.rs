@@ -882,8 +882,7 @@ fn guess_download_name(headers: &HeaderMap, url: &str) -> String {
 
 /// Print the `sys http --help` text (parameter descriptions + examples).
 pub fn print_help() {
-    println!(
-        r#"sys http - httpie-compatible HTTP client
+    let raw: &str = r#"sys http - httpie-compatible HTTP client
 
 Usage: sys http [flags] [METHOD] URL [ITEM...]
 
@@ -951,8 +950,159 @@ Usage: sys http [flags] [METHOD] URL [ITEM...]
   sys http --offline pie.dev/post a=1
   sys http --debug pie.dev/get
   echo '{{"a":1}}' | sys http POST pie.dev/post
-"#
-    );
+"#;
+    // Wrap to the terminal width when the width is known; pass through
+    // unchanged when not a TTY / unknown width (raw long lines preserved).
+    let width = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .or_else(|| {
+            #[cfg(target_family = "unix")]
+            {
+                console_width_fallback()
+            }
+            #[cfg(not(target_family = "unix"))]
+            {
+                None
+            }
+        });
+    match width {
+        Some(w) if w >= 40 => {
+            for line in wrap_display(raw, w) {
+                println!("{}", line);
+            }
+        }
+        _ => println!("{}", raw),
+    }
+}
+
+/// Display width of a char: CJK / fullwidth count as 2.
+fn char_width(c: char) -> usize {
+    let u = c as u32;
+    if (0x1100..=0x115F).contains(&u)
+        || (0x2E80..=0xA4CF).contains(&u)
+        || (0xAC00..=0xD7A3).contains(&u)
+        || (0xF900..=0xFAFF).contains(&u)
+        || (0xFE30..=0xFE4F).contains(&u)
+        || (0xFF00..=0xFF60).contains(&u)
+        || (0xFFE0..=0xFFE6).contains(&u)
+        || (0x3000..=0x303E).contains(&u)
+    {
+        2
+    } else {
+        1
+    }
+}
+
+fn str_width(s: &str) -> usize {
+    s.chars().map(char_width).sum()
+}
+
+/// Find the description column of a help entry line: the position right
+/// after the run of 2+ spaces that follows the label (e.g. `  -j, --json  `).
+fn find_desc_col(line: &str) -> Option<usize> {
+    let b = line.as_bytes();
+    let mut i = 0;
+    let n = b.len();
+    // skip label: up to first run of 2+ spaces
+    while i < n {
+        if b[i] == b' ' && i + 1 < n && b[i + 1] == b' ' {
+            break;
+        }
+        i += 1;
+    }
+    if i == 0 || i >= n {
+        return None;
+    }
+    let start = i;
+    while i < n && b[i] == b' ' {
+        i += 1;
+    }
+    if i - start >= 2 && i < n {
+        Some(i)
+    } else {
+        None
+    }
+}
+
+/// Word-wrap text to a display width, honoring per-line leading indents.
+/// Lines shorter than the width pass through unchanged (preserves tables).
+fn wrap_display(text: &str, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if str_width(line) <= width {
+            out.push(line.to_string());
+            continue;
+        }
+        // Find the description column: two+ spaces after the label part.
+        // Wrap only the description; the label column is preserved.
+        let desc_col = find_desc_col(line);
+        if let Some(dc) = desc_col {
+            if dc < width {
+                let (label, desc) = line.split_at(dc);
+                let mut outl = Vec::new();
+                let mut cur = String::new();
+                let mut cur_w = 0usize;
+                let avail = width - dc;
+                for word in desc.trim().split(' ') {
+                    let ww = str_width(word);
+                    let sep_w = if cur_w > 0 { 1 } else { 0 };
+                    if cur_w + sep_w + ww > avail && !cur.is_empty() {
+                        outl.push(cur.clone());
+                        cur = word.to_string();
+                        cur_w = ww;
+                    } else {
+                        if cur_w > 0 {
+                            cur.push(' ');
+                        }
+                        cur.push_str(word);
+                        cur_w += sep_w + ww;
+                    }
+                }
+                if !cur.is_empty() {
+                    outl.push(cur);
+                }
+                out.push(format!("{}{}", label, outl[0]));
+                let cont = " ".repeat(dc);
+                for extra in &outl[1..] {
+                    out.push(format!("{}{}", cont, extra));
+                }
+                continue;
+            }
+        }
+        // Generic wrap for prose lines (no label column).
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        let cont = " ".repeat(indent);
+        let mut cur = String::new();
+        let mut cur_w = 0usize;
+        for word in trimmed.split(' ') {
+            let ww = str_width(word);
+            let sep_w = if cur_w > 0 { 1 } else { 0 };
+            if cur_w + sep_w + ww > width.saturating_sub(indent) && !cur.is_empty() {
+                out.push(format!("{}{}", cont, cur));
+                cur = word.to_string();
+                cur_w = ww;
+            } else {
+                if cur_w > 0 {
+                    cur.push(' ');
+                }
+                cur.push_str(word);
+                cur_w += sep_w + ww;
+            }
+        }
+        if !cur.is_empty() {
+            out.push(format!("{}{}", cont, cur));
+        }
+    }
+    out
+}
+
+#[cfg(target_family = "unix")]
+fn console_width_fallback() -> Option<usize> {
+    // Best effort: query the terminal size via libc-free ioctl is not
+    // available; fall back to None so raw text is printed.
+    None
 }
 
 /// Dump the actual request (method, URL with query, headers, body) to stderr.

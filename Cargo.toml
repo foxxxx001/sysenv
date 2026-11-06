@@ -1,18 +1,18 @@
 [package]
 name = "sys"
-version = "0.6.45"
+version = "0.6.58"
 edition = "2021"
 description = "Cross-platform (Windows/Ubuntu) system PATH & environment manager with an httpie-compatible HTTP client"
 license = "MIT"
 readme = "README.md"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "wrap_help"] }
 crossterm = "0.28"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 anyhow = "1"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "multipart", "gzip"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "multipart"] }
 base64 = "0.22"
 serde_yaml = "0.9"
 toml = "0.9"
@@ -22,11 +22,23 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 encoding_rs = "0.8"
 sha2 = "0.10"
 hmac = "0.12"
-zip = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+pdf-extract = "0.12.1"
+mobi = "0.8.0"
+printpdf = { version = "0.12.9", default-features = false, features = ["text_layout", "images", "png", "jpeg", "gif", "bmp", "webp"] }
+htmd = "0.5.6"
+
+# Vendored `mobi` 0.8.0 (third-party/mobi): strips MOBI per-record extra data
+# (extra_record_data_flags) before PalmDoc decompression. The published crate
+# skips this step, so extra-data books decode to a fraction of their text with
+# garbled bytes. Also makes extra_record_data_flags public.
+[patch.crates-io]
+mobi = { path = "third-party/mobi" }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_RestartManager", "Win32_Storage_FileSystem", "Win32_Security"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_System_RestartManager", "Win32_Storage_FileSystem"] }
 
 [profile.release]
 lto = "thin"

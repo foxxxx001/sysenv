@@ -1,6 +1,7 @@
 mod ai;
 mod chat;
 mod convert;
+mod docconv;
 mod dasel;
 mod env;
 mod file;
@@ -13,10 +14,12 @@ mod log;
 mod msg;
 mod net;
 mod path;
+mod pdfout;
 mod server;
 mod store;
 mod task;
 mod wordmd;
+mod webserver;
 
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -110,9 +113,46 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     /// filters and search; -f tails the file (`sys log --file app.log [--level
     /// LEVEL] [--search KW] [--line N] [--newer TIME] [-f]`)
     Log(LogArgs),
+    /// Serve a directory as a static site and/or reverse-proxy to upstreams
+    ///
+    /// Static hosting:
+    ///   sys server --root ./site [-listen :8080]
+    ///
+    /// Reverse proxy:
+    ///   sys server -proxy --from :8080 --to 127.0.0.1:3000
+    ///
+    /// Both at once:
+    ///   sys server --root ./site --listen :8080
+    ///              --proxy --from :8080/api --to 127.0.0.1:3000
+    ///
+    /// AI API on the same listener:
+    ///   sys server --root ./site --ai
+    ///   Mounts the `sys ai server` OpenAI-compatible endpoints
+    ///   (GET /v1/models, POST /v1/chat/completions) on every listen address,
+    ///   using the normal `sys ai` config. These paths are answered before
+    ///   proxy rules and static files.
+    ///
+    /// Listen addresses accept IP:PORT, a bare port (8080) or :PORT — both of
+    /// these listen on all interfaces — or a bare IP (default port 8080).
+    /// When -listen is omitted the default is 0.0.0.0:8080. If that default
+    /// port is already taken, a random free port is used instead and the
+    /// actual address is printed; an explicit -listen conflict stays an error.
+    /// Startup prints the loopback URL plus every LAN IPv4 URL.
+    ///
+    /// Routing (caddy-like): every listen address has its own route table.
+    /// Proxy rules on one address match by longest path prefix (`/api` matches
+    /// `/api` and `/api/x`, not `/apix`) and the matched prefix is stripped
+    /// before forwarding. Unmatched requests fall back to the static root on
+    /// that address, or 404 when there is none. --spa returns the root index
+    /// file for any missing GET/HEAD path.
+    ///
+    /// Single-dash spellings (-root, -listen, -proxy, -from, -to, -browse,
+    /// -index, -spa, -gzip, -access-log, -cors) are accepted too.
+    Server(WebArgs),
     /// fd/sd-style text tool: 1 arg = search stdin, 2 args = search a file /
     /// directory tree, 3 args = in-place replace, --enc = encoding conversion
-    /// (gbk/gb2312 <-> utf-8), -md5/-sha = hash, -l = line counts
+    /// (gbk/gb2312 <-> utf-8), -md5/-sha = hash, -l = line counts, -C = character
+    /// counts (all characters including whitespace and syntax)
     File(FileArgs),
     /// Windows scheduled reminders via msg.exe popups: `--daily 20:00:02`
     /// (every day), `--once 20:00:02` (one shot, next occurrence), or a crontab
@@ -180,6 +220,30 @@ Use `sys help http` for help (in http subcommand, -h means response headers)."
     /// yaml output is colorized jq-style (key blue, value green).
     #[command(alias = "dasel")]
     Data(DataArgs),
+    /// Convert documents & text encodings: md / html / docx / txt / epub / pdf / mobi(azw3) <-> each other (read-only for mobi/azw3; pdf output needs a system CJK font), utf-8 <-> gb2312/gbk
+    Convert(ConvertArgs),
+}
+
+#[derive(Args)]
+struct ConvertArgs {
+    /// Source file (format by extension: md, html, docx, txt, epub, pdf;
+    /// mobi/azw3 as source only). Any file with --enc.
+    src: String,
+    /// Destination file (format by extension). Must differ from SRC.
+    dst: String,
+    /// Source text encoding for text formats: utf-8 | gbk | gb2312
+    /// (default: auto-detect). Same as `sys file --enc --from`.
+    #[arg(long = "from", value_name = "ENC")]
+    from: Option<String>,
+    /// Output text encoding for text destinations (md / html / txt; default
+    /// utf-8). Rejected for docx / epub / pdf destinations — use `--enc` for a
+    /// pure encoding conversion.
+    #[arg(long = "to", value_name = "ENC")]
+    to: Option<String>,
+    /// Pure encoding conversion instead of a document conversion: re-encode the
+    /// bytes (`--from` -> `--to`, default UTF-8 output) and ignore extensions.
+    #[arg(long)]
+    enc: bool,
 }
 
 #[derive(Args)]
@@ -206,14 +270,18 @@ struct DataArgs {
     ///
     /// 3. FUNCTIONS — `path.filter(pred)` keeps the matching array elements
     ///    (in place, so `-w` writes back the filtered document),
+    ///    `path.sort(field)` / `sort(field)` orders array elements by a field
+    ///    (ascending; `sort(field, desc)` for the reverse; missing fields stay
+    ///    last, numbers and numeric strings compare numerically; in place, so
+    ///    `-w` writes back the sorted document),
     ///    `remove(k1,k2)` / `path.remove(k1,k2)` deletes the named keys from
     ///    an object, `search(pred)` recursively
     ///    collects every node matching pred, string / key functions
     ///    `name.contains("x")` / `startsWith` / `endsWith` / `indexOf` /
     ///    `has("k")`, and `count()` node counting: `path|count()`,
-    ///    `filter(...)|count()`, `search(...)|count()`, `path.count()` or
-    ///    bare `count()` (array = element count, single value = 1, no match
-    ///    = 0).
+    ///    `filter(...)|count()`, `sort(...)|count()`, `search(...)|count()`,
+    ///    `path.count()` or bare `count()` (array = element count, single
+    ///    value = 1, no match = 0).
     ///
     /// 4. PREDICATE — a bare comparison / method predicate on csv / table /
     ///    jsonl input auto-filters the root row array, e.g. `Id==7360` or
@@ -222,7 +290,8 @@ struct DataArgs {
     ///
     /// 5. PROJECTION — `path|{k1,k2}` keeps only the listed keys of every
     ///    matched node (missing keys -> null); the left side may also be a
-    ///    filter / search call, whose array result is spread element-wise.
+    ///    filter / sort / search call, whose array result is spread
+    ///    element-wise.
     ///    A bare `{k1,k2}` (no left side) projects the root document itself:
     ///    an object root keeps only those keys (jq `. | {k1,k2}`, e.g.
     ///    `cat 4k.json | sys data '{wallpaper,warningText}'`), an array root
@@ -246,7 +315,8 @@ struct DataArgs {
     ///    filtered / searched sub-array), e.g.
     ///    `{ads, sites: sites.filter(name.contains("4k"))}`. Works bare,
     ///    after a pipe and as a trailing projection, e.g.
-    ///    `cat f.json | sys data '{"name":"Mike",key1,key2.child1,"country":key3.key2}'`.
+    ///    `cat f.json | sys data '{"name":"Mike",key1,
+    ///    key2.child1,"country":key3.key2}'`.
     ///
     /// 7. VALUE FUNCTIONS — any value expression (path or literal) may end in
     ///    a chain of string functions: `key.split(",")` (string -> array),
@@ -258,7 +328,8 @@ struct DataArgs {
     ///    comma form `"newKey","a,b,c",substr(0,3)` is equivalent.
     ///    Type mismatches and functions on a missing path (null) error, e.g.
     ///    `cat f.json | sys data '{"arr1":key1.split(","),key2.substr(0,1),
-    ///    key3.replace("a","b"),"newkey1","a,b,c",substr(0,3)}'`.
+    ///    key3.replace("a","b"),"newkey1","a,b,c",
+    ///    substr(0,3)}'`.
     ///
     /// Predicate language: `$this` / `$key`, field paths (`name`, `a.b[0]`,
     /// `m["中文键"]`), literals (numbers, single/double-quoted strings, true /
@@ -487,6 +558,7 @@ enum AiCmd {
     /// CONTEXT/TYPE/LAST UPDATED); --json or -o json (JSON array), -o csv
     /// (24 columns), -o yaml, -o md. --limit N caps a list (default 20;
     /// every model with no arguments). `--refresh` re-fetches the 24 h cache.
+    ///
     /// Examples: sys ai model gpt-4.1 | sys ai model openai/gpt-4.1-mini |
     /// sys ai model -s qwen --limit 10 | sys ai model --open --date 2025-01-01 |
     /// sys ai model --model-type text,image --limit 10 | sys ai model gpt-4.1 --json
@@ -506,6 +578,7 @@ enum AiCmd {
     /// parameters (参数量, e.g. 2350亿); failures degrade silently.
     /// Output: default formatted table; --json / -o json (JSON array),
     /// -o csv (11 columns). --limit N caps a search list (default 20).
+    ///
     /// Examples: sys ai cn-model gpt-6-1-sol | sys ai cn-model -s ernie --limit 10 |
     /// sys ai cn-model --date 2026-09-28 | sys ai cn-model --model-type 语音,多模态
     CnModel(CnModelArgs),
@@ -518,32 +591,17 @@ enum AiCmd {
     /// default formatted view; --json / -o json (JSON array), -o csv
     /// (6 columns), -o yaml, -o md. --limit N caps a list (default 20).
     /// `--refresh` re-fetches the 24 h cache.
+    ///
     /// Examples: sys ai provider openai | sys ai provider -s groq |
     /// sys ai provider --list --limit 10
     Provider(AiProviderArgs),
     /// Inspect the local config (~/.sysenv/config.yaml): providers, models,
     /// prices, official balance, sale prices and per-provider model lists
     ///
-    /// FIELD (omitted: the configured providers and their models together):
-    ///   provider [KW]    name / api_base / api_key / docs / console of every
-    ///                    provider, or only those whose name contains KW
-    ///   model [KW]       every configured model as {provider}:{name}
-    ///                    (KW = a provider keyword, or provider:model /
-    ///                    provider:* for exact selection)
-    ///   sale-price PROV  scrape the provider's official pricing page and
-    ///                    list the models' sale prices (agnes / minimax have
-    ///                    scrapers; the rest give the pricing page address)
-    ///   list-model PROV / models PROV: query the provider's own models API
-    ///                    and list the models its api_key can actually use
-    ///                    (same as `sys ai chat --query-model PROV`; real-time,
-    ///                    next_page pagination, no cache)
-    ///   balance PROV     moved to the top-level `sys ai balance` subcommand
-    /// Options: -c/--config FILE, --refresh (models.dev price cache),
-    /// --json / -o json|csv|yaml|md (provider / model / list-model),
-    /// --free[=ROUTER] (info providers / info models: use the built-in free
-    /// routers kilo-auto & blockrun — openrouter when OPENROUTER_API_KEY is
-    /// set — instead of the config file; ROUTER pins one: kilo | blockrun |
-    /// openrouter).
+    /// FIELD selects what to show; omitted means the configured providers
+    /// and their models together. Every FIELD value is documented on the
+    /// FIELD argument below.
+    ///
     /// Examples: sys ai info | sys ai info provider agnes -o csv |
     /// sys ai info model deepseek | sys ai info models baidu |
     /// sys ai info sale-price agnes | sys ai info list-model anthropic -o json
@@ -562,6 +620,7 @@ enum AiCmd {
     /// SecretId/SecretKey, not the API key); modelscope / sensenova /
     /// bigmodel / amd / anspire: console address (no key-level balance API).
     /// Always real-time, never cached. -c/--config FILE selects the config.
+    ///
     /// Examples: sys ai balance minimax | sys ai balance deepseek |
     /// sys ai balance alibaba-cn
     Balance(AiBalanceArgs),
@@ -572,10 +631,12 @@ enum AiCmd {
     /// in models.dev and list every model of those providers with its
     /// per-1M-token input / output / cache_read USD prices (half- or
     /// full-width commas both work).
+    ///
     /// src=openrouter: no provider names required; optional comma-separated
     /// model id / name terms filter the openrouter.ai catalogue;
     /// --limit N caps the list, --json / -o json|csv|yaml|md choose the
     /// output. Both sources use a 24 h cache; --refresh re-fetches.
+    ///
     /// Examples: sys ai price openai,anthropic | sys ai price "openai，deepseek" |
     /// sys ai price --src openrouter --limit 10 | sys ai price deepseek --src openrouter
     Price(AiPriceArgs),
@@ -613,6 +674,7 @@ enum AiCmd {
     /// server: it probes ADDR (GET /v1/models, 2 s timeout), reports whether
     /// a server is already running, and prints the configured providers &
     /// models either way. -c/--config FILE overrides the config.
+    ///
     /// Examples: sys ai server | sys ai server 8080 | sys ai server 0.0.0.0:9000 |
     /// sys ai server --help
     Server(ServerArgs),
@@ -631,6 +693,32 @@ enum AiCmd {
     /// Examples: sys ai image "a red fox in the snow" | sys ai image 樱花 树下 小猫 -o pics -n 2 -s 512x512 |
     /// sys ai image "海报主视觉" -m bigmodel:cogview-4 | sys ai image "x" --url
     Image(ImageArgs),
+    /// Detect installed AI coding agents and their skills: --list shows the
+    /// install directory, skill count and disk usage per agent, plus whether
+    /// the agent is running, its MCP config files, the configured MCP servers
+    /// (with launch command / url) and any cached MCP tool list; --list-skill
+    /// lists the installed skills grouped by agent
+    ///
+    /// Supported agents — international: Claude Code, Codex, OpenCode, Kilo
+    /// Code, OpenClaw, Cursor, Pi, hermes-agent; domestic: TRAE, CodeBuddy,
+    /// WorkBuddy, Kimi Coder, QCoder, MiMo Coder, ZCode, Qoder.
+    ///
+    /// An agent counts as installed when its usual directory exists under the
+    /// user home (e.g. ~/.claude, ~/.codex, ~/.trae, ~/.qoder-cn); its skills
+    /// are read from the agent's skills directory (e.g. ~/.claude/skills,
+    /// ~/.config/opencode/skills). A skill is a directory containing SKILL.md
+    /// (or a top-level .md file) inside that directory; a symlinked / junction
+    /// entry counts even when its target is missing (shown as a broken link).
+    /// Disk usage is the recursive size of the skill files only.
+    ///
+    /// AGENT is an optional case-insensitive id / name / alias list
+    /// (comma-separated), e.g. `claude`, `trae`, `kimi`; only the requested
+    /// agents are shown. With neither flag, --list is assumed.
+    ///
+    /// Examples: sys ai agent --list | sys ai agent --list trae,qoder |
+    /// sys ai agent --list-skill | sys ai agent --list-skill claude,codex |
+    /// sys ai agent --list-mcp | sys ai agent --list-mcp trae
+    Agent(AiAgentArgs),
     /// Export the local config to another tool's format (codex | opencode |
     /// litellm | freellmapi | codebuddy | workbuddy | trae | zcoder);
     /// --show previews the target config file path and content, -f writes
@@ -646,6 +734,25 @@ enum AiCmd {
     /// sys ai config litellm -m "agnes:*" | sys ai config workbuddy --update |
     /// sys ai config opencode --import | sys ai config --list
     Config(AiConfigArgs),
+}
+
+#[derive(Args)]
+struct AiAgentArgs {
+    /// List installed agents: install directory, skill count, skills size and
+    /// layer-1/2 MCP info (running status, config files, configured servers,
+    /// cached tools). Default when no flag is given.
+    #[arg(long, conflicts_with_all = ["list_skill", "list_mcp"])]
+    list: bool,
+    /// List installed skills grouped by agent
+    #[arg(long = "list-skill", conflicts_with_all = ["list", "list_mcp"])]
+    list_skill: bool,
+    /// List active MCP servers and their tools for *running* agents only
+    /// (reads the agent's on-disk MCP cache and config; no MCP process spawned)
+    #[arg(long = "list-mcp", conflicts_with_all = ["list", "list_skill"])]
+    list_mcp: bool,
+    /// Only show these agents (id / name / alias, case-insensitive, comma-separated)
+    #[arg(value_name = "AGENT", value_delimiter = ',')]
+    agents: Vec<String>,
 }
 
 #[derive(Args)]
@@ -784,7 +891,26 @@ struct CnModelArgs {
 
 #[derive(Args)]
 struct AiInfoArgs {
-    /// What to show: provider | model | sale-price | list-model | models (omitted: the configured providers and models together; prices moved to `sys ai price`)
+    /// What to show: provider | model | sale-price | list-model | models
+    /// (omitted: the configured providers and models together; prices moved
+    /// to `sys ai price`)
+    ///
+    /// provider [KW] — name / api_base / api_key / docs / console of every
+    /// provider, or only those whose name contains KW
+    ///
+    /// model [KW] — every configured model as {provider}:{name} (KW = a
+    /// provider keyword, or provider:model / provider:* for exact selection)
+    ///
+    /// sale-price PROV — scrape the provider's official pricing page and
+    /// list the models' sale prices (agnes / minimax have scrapers; the rest
+    /// give the pricing page address)
+    ///
+    /// list-model PROV / models PROV — query the provider's own models API
+    /// and list the models its api_key can actually use (same as
+    /// `sys ai chat --query-model PROV`; real-time, next_page pagination,
+    /// no cache)
+    ///
+    /// balance PROV — moved to the top-level `sys ai balance` subcommand
     #[arg(value_name = "FIELD")]
     field: Option<String>,
     /// provider KEYWORD: keep only providers whose name contains KEYWORD;
@@ -1066,35 +1192,7 @@ struct FileArgs {
     #[arg(
         value_name = "ARGS",
         allow_hyphen_values = true,
-        long_help = r#"The mode is chosen by how many arguments are given. Flag-like tokens
-(-md5 / -sha / --enc / --word2md / --md2word / -l / -n / -S / --newer / --older
-/ -d / -e / -i / -t / -w / -c) are absorbed into ARGS and re-scanned, so they
-may appear at any position:
-
-  1 arg   `sys file PATTERN`          search PATTERN in stdin (piped); a quoted
-          string ("me.txt") forces the search meaning, a bare token with an
-          extension (me.txt) displays that file's text
-  2 args  `sys file PATTERN PATH`     search PATTERN in PATH: a single file, or
-          a directory tree (hidden dirs / .git / node_modules / target and
-          binary files are skipped; -e/-i/-t/-w/-c/-n apply)
-  3 args  `sys file OLD NEW PATH`     replace every occurrence of OLD with NEW
-          in PATH in place (file or directory tree; -e/-i/-t/-w apply)
-  --enc   `sys file --enc SRC [DST] [--from ENC] [--to ENC]` converts a file's
-          encoding between utf-8 / gbk / gb2312 (default target utf-8; --from /
-          -f ENC fixes the source, omit = auto-detect; DST omitted = stdout,
-          DST must differ from SRC; aliases --encode / --convert)
-  --word2md `sys file --word2md SRC.docx [DST.md]` convert Word to Markdown
-          (headings / bold-italic / lists / tables / hyperlinks; embedded
-          images extracted to a media/ dir next to DST; DST omitted = stdout;
-          aliases --docx2md / --doc2md)
-  --md2word `sys file --md2word SRC.md DST.docx` convert Markdown to Word
-          (headings / lists / quotes / fenced code / tables / rules; images —
-          local paths relative to SRC or http(s) URLs — are embedded; built-in
-          Heading1-6 styles; aliases --md2docx / --md2doc)
-  -md5/-sha `sys file -md5/-sha FILE [EXPECTED]` print or verify a file hash
-  -l      `sys file -l [PATTERN [PATH]]` count lines (stdin / a file / matches)
-  filters `-S SIZE` / `--newer TIME` / `--older TIME` / `-d N` with no PATTERN
-          list files instead of searching (default PATH = .)"#
+        long_help = "The mode is chosen by how many arguments are given. Flag-like tokens (-md5 / -sha / --enc / --word2md / --md2word / -l / -C / -n / -S / --newer / --older / -d / -e / -i / -t / -w / -c) are absorbed into ARGS and re-scanned, so they may appear at any position:\n\n1 arg: `sys file PATTERN` searches PATTERN in stdin (piped); a quoted string (\"me.txt\") forces the search meaning, a bare token with an extension (me.txt) displays that file's text.\n\n2 args: `sys file PATTERN PATH` searches PATTERN in PATH: a single file, or a directory tree (hidden dirs / .git / node_modules / target and binary files are skipped; -e/-i/-t/-w/-c/-n apply).\n\n3 args: `sys file OLD NEW PATH` replaces every occurrence of OLD with NEW in PATH in place (file or directory tree; -e/-i/-t/-w apply).\n\n--enc: `sys file --enc SRC [DST] [--from ENC] [--to ENC]` converts a file's encoding between utf-8 / gbk / gb2312 (default target utf-8; --from / -f ENC fixes the source, omit = auto-detect; DST omitted = stdout, DST must differ from SRC; aliases --encode / --convert).\n\n--word2md: `sys file --word2md SRC.docx [DST.md]` converts Word to Markdown (headings / bold-italic / lists / tables / hyperlinks; embedded images extracted to a media/ dir next to DST; DST omitted = stdout; aliases --docx2md / --doc2md).\n\n--md2word: `sys file --md2word SRC.md DST.docx` converts Markdown to Word (headings / lists / quotes / fenced code / tables / rules; images - local paths relative to SRC or http(s) URLs - are embedded; built-in Heading1-6 styles; aliases --md2docx / --md2doc).\n\n-md5/-sha: `sys file -md5/-sha FILE [EXPECTED]` prints or verifies a file hash.\n\n-l: `sys file -l [PATTERN [PATH]]` counts lines (stdin / a file / matches).\n\n-C: `sys file -C FILE` counts all characters of FILE (including whitespace, punctuation, and markdown syntax); txt and code files are measured as they are, gbk text is decoded first. `-C DIR` prints `path: N` per file plus `total: N` when it measured more than one file (non-text files are skipped with a note), `-C` alone counts stdin, `-C FILE` on a binary errors.\n\nfilters: `-S SIZE` / `--newer TIME` / `--older TIME` / `-d N` with no PATTERN list files instead of searching (default PATH = .).\n\n-V: like `sys -V`, prints the version and exits (recognized before the ARGS re-scan, so it never blocks on stdin)."
     )]
     args: Vec<String>,
     /// Only search files with this extension (repeatable; leading dot optional, e.g. -e py -e md)
@@ -1130,6 +1228,15 @@ may appear at any position:
     /// the -md5/-sha markers), so `sys file PATTERN -l` also works
     #[arg(short = 'l', long)]
     line_count: bool,
+    /// Count all characters of a file (including whitespace, punctuation, and
+    /// markdown syntax). -C FILE counts one file, -C DIR counts every file in
+    /// the tree (plus a total when it measured more than one), -C with no
+    /// argument counts stdin. txt and code files are counted as they are, gbk
+    /// text is decoded first and binary input is refused. May appear in any
+    /// position (a trailing -C is re-scanned from ARGS, like -l / -n) but
+    /// takes at most one PATH and cannot be combined with -l
+    #[arg(short = 'C', long)]
+    char_count: bool,
     /// Prepend the line number to every printed line (stdin search; directory
     /// search output already contains the line number). May appear in any
     /// position (a trailing -n is re-scanned from ARGS, like -l / -md5 / -sha)
@@ -1190,6 +1297,55 @@ struct LogArgs {
     /// Follow the file: keep scrolling as new lines are appended (tail -f style)
     #[arg(short = 'f', long)]
     follow: bool,
+}
+
+#[derive(Args)]
+struct WebArgs {
+    /// Directory to serve as a static site
+    #[arg(long, value_name = "DIR")]
+    root: Option<PathBuf>,
+    /// Listen address: IP:PORT, a bare port (all interfaces), :PORT (all
+    /// interfaces), or a bare IP (keeps the default port 8080)
+    #[arg(short = 'l', long, value_name = "ADDR")]
+    listen: Option<String>,
+    /// Enable reverse-proxy rules described by --from/--to
+    #[arg(short = 'p', long)]
+    proxy: bool,
+    /// Proxy listen address, optionally with a path prefix (e.g. :8080/api);
+    /// repeat for multiple rules, paired with --to in order
+    #[arg(long, value_name = "ADDR[/PATH]")]
+    from: Vec<String>,
+    /// Proxy upstream base URL (e.g. 127.0.0.1:3000 or https://api.example.com)
+    #[arg(long, value_name = "URL")]
+    to: Vec<String>,
+    /// Also serve the `sys ai server` OpenAI-compatible API on the same
+    /// listener: GET /v1/models, POST /v1/chat/completions
+    #[arg(long)]
+    ai: bool,
+    /// List a directory when it has no index file
+    #[arg(long)]
+    browse: bool,
+    /// Index file name looked up inside directories
+    #[arg(long, value_name = "NAME", default_value = "index.html")]
+    index: String,
+    /// SPA fallback: serve the root index file for unmatched GET/HEAD paths
+    #[arg(long)]
+    spa: bool,
+    /// Gzip-compress text responses when the client accepts it
+    #[arg(long)]
+    gzip: bool,
+    /// Access log file in common-log format (use - for stdout)
+    #[arg(long, value_name = "FILE")]
+    access_log: Option<PathBuf>,
+    /// Send Access-Control-Allow-Origin for every response (no value means *)
+    #[arg(long, value_name = "ORIGIN", num_args = 0..=1, default_missing_value = "*")]
+    cors: Option<String>,
+    /// Upstream / socket timeout in seconds (default: 30)
+    #[arg(long, value_name = "SECONDS", default_value_t = 30)]
+    timeout: u64,
+    /// Cache-Control max-age for static files in seconds (0 = no header)
+    #[arg(long, value_name = "SECONDS", default_value_t = 0)]
+    cache: u64,
 }
 
 #[derive(Args)]
@@ -1287,7 +1443,7 @@ struct HttpArgs {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(webserver::normalize_cli_args(std::env::args().collect()));
     let result: anyhow::Result<i32> = match cli.cmd {
         Cmd::Path(p) => run_path(p).map(|_| 0),
         Cmd::Env(e) => run_env(e).map(|_| 0),
@@ -1319,11 +1475,20 @@ fn main() -> ExitCode {
                 f.older,
                 f.max_depth,
                 f.line_count,
+                f.char_count,
                 f.line_numbers,
             )
             .map(|_| 0),
             Err(e) => Err(e),
         },
+        Cmd::Convert(c) => docconv::run_convert(
+            &c.src,
+            &c.dst,
+            c.from.as_deref(),
+            c.to.as_deref(),
+            c.enc,
+        )
+        .map(|_| 0),
         Cmd::Data(d) => dasel::cmd_data(
             d.expr.as_deref(),
             d.file.as_deref().map(|p| p.to_str().unwrap_or_default()),
@@ -1352,6 +1517,23 @@ fn main() -> ExitCode {
             l.newer.as_deref(),
             l.follow,
         )
+        .map(|_| 0),
+        Cmd::Server(w) => webserver::run(webserver::Options {
+            root: w.root,
+            listen: w.listen,
+            proxy: w.proxy,
+            ai: w.ai,
+            from: w.from,
+            to: w.to,
+            browse: w.browse,
+            index: w.index,
+            spa: w.spa,
+            gzip: w.gzip,
+            access_log: w.access_log,
+            cors: w.cors,
+            timeout: w.timeout,
+            cache: w.cache,
+        })
         .map(|_| 0),
     };
     match result {
@@ -1500,6 +1682,7 @@ fn run_ai(a: AiArgs) -> anyhow::Result<()> {
             &i.size,
             i.url,
         ),
+        AiCmd::Agent(g) => ai::cmd_agent(g.list, g.list_skill, g.list_mcp, &g.agents),
         AiCmd::Config(g) => ai::cmd_config(
             g.format.as_deref(),
             g.provider.as_deref(),
@@ -1590,4 +1773,33 @@ fn run_http(h: HttpArgs) -> anyhow::Result<i32> {
         args: h.args,
     };
     httpie::run(&cfg)
+}
+
+#[cfg(test)]
+mod help_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// `sys ai info --help` used to cram the FIELD table into one run-on
+    /// paragraph, so a field like `list-model` never started its own line.
+    /// Every documented FIELD value must begin a help line.
+    #[test]
+    fn ai_info_field_help_starts_each_field_on_its_own_line() {
+        let mut cmd = Cli::command();
+        let ai = cmd.find_subcommand_mut("ai").expect("ai subcommand");
+        let info = ai.find_subcommand_mut("info").expect("info subcommand");
+        let help = info.render_long_help().to_string();
+        for label in [
+            "provider [KW]",
+            "model [KW]",
+            "sale-price PROV",
+            "list-model PROV",
+            "balance PROV",
+        ] {
+            assert!(
+                help.lines().any(|line| line.trim_start().starts_with(label)),
+                "`{label}` should start its own line in `sys ai info --help`:\n{help}"
+            );
+        }
+    }
 }

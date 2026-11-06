@@ -44,6 +44,9 @@
 //!                                   (root or `path.remove(...)`); lists are
 //!                                   deleted with a slice: `list[1:3]=null`
 //!   search(predicate)               recursively collect matching nodes
+//!   list.sort(field) / sort(field)  order array elements by a field
+//!                                   (ascending; `sort(field, desc)` for the
+//!                                   reverse; missing fields stay last)
 //!   name.endsWith("x")              string / key functions
 //!   data[*]|{id,name}               jq-style key projection (pipes a
 //!                                   selector or filter / search result onto
@@ -979,6 +982,7 @@ fn set_value(root: &mut Value, steps: &[Step], new: Value, delete: bool) -> Resu
 
 const FUNCTION_NAMES: &[&str] = &[
     "filter",
+    "sort",
     "search",
     "remove",
     "count",
@@ -1097,13 +1101,15 @@ fn parse_function_expr(expr: &str) -> Option<Result<FunctionCall>> {
     }
     if !FUNCTION_NAMES.contains(&name.as_str()) {
         return Some(Err(anyhow::anyhow!(
-            "unknown function `{name}` (expected: filter | search | remove | count | contains | startsWith | endsWith | indexOf | has)"
+            "unknown function `{name}` (expected: filter | sort | search | remove | count | contains | startsWith | endsWith | indexOf | has)"
         )));
     }
-    if matches!(name.as_str(), "filter" | "remove" | "search") && args.trim().is_empty() {
+    if matches!(name.as_str(), "filter" | "remove" | "search" | "sort") && args.trim().is_empty() {
         return Some(Err(anyhow::anyhow!(
             if name == "remove" {
                 "`remove` needs at least one key (e.g. `remove(a,b)`)"
+            } else if name == "sort" {
+                "`sort` needs a field (e.g. `sort(created)` or `sort(price, desc)`)"
             } else {
                 "`{name}` needs a predicate argument"
             }
@@ -2436,6 +2442,140 @@ fn apply_filter(
     }
 }
 
+/// Parse `sort(field)` / `sort(field, desc)`: the field is a selector path
+/// relative to each element; the optional direction is `asc` (default) or
+/// `desc`.
+fn parse_sort_args(args: &str) -> Result<(String, bool)> {
+    let parts = split_args(args);
+    let field = parts.first().map(|s| s.trim().to_string()).unwrap_or_default();
+    if field.is_empty() {
+        bail!("`sort` needs a field (e.g. `sort(created)` or `sort(price, desc)`)");
+    }
+    if parts.len() > 2 {
+        bail!("`sort` takes at most 2 arguments (field, direction), got {}", parts.len());
+    }
+    let direction = parts
+        .get(1)
+        .map(|s| s.trim().trim_matches(|c| c == '"' || c == '\'').to_ascii_lowercase());
+    let desc = match direction.as_deref() {
+        None | Some("") | Some("asc") | Some("ascending") | Some("1") => false,
+        Some("desc") | Some("descending") | Some("-1") => true,
+        Some(other) => bail!("`sort` direction must be asc or desc (got `{other}`)"),
+    };
+    Ok((field, desc))
+}
+
+/// Sort key of one element: the first value at `field`, or None when the
+/// field is missing.
+fn sort_key_at(node: &Value, field: &[Step]) -> Option<Value> {
+    get_values(node, field).first().map(|v| (*v).clone())
+}
+
+/// Compare two sort keys: numbers numerically, strings lexicographically
+/// (numeric strings numerically), booleans false < true; mixed types rank
+/// null < bool < number < string < array < object.
+fn sort_cmp_values(a: &Value, b: &Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x
+            .as_f64()
+            .unwrap_or(f64::NAN)
+            .partial_cmp(&y.as_f64().unwrap_or(f64::NAN))
+            .unwrap_or(Ordering::Equal),
+        (Value::String(x), Value::String(y)) => match (x.parse::<f64>(), y.parse::<f64>()) {
+            (Ok(nx), Ok(ny)) => nx.partial_cmp(&ny).unwrap_or(Ordering::Equal),
+            _ => x.cmp(y),
+        },
+        (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
+        _ => value_sort_rank(a)
+            .cmp(&value_sort_rank(b))
+            .then_with(|| stringify(a).cmp(&stringify(b))),
+    }
+}
+
+fn value_sort_rank(v: &Value) -> u8 {
+    match v {
+        Value::Null => 0,
+        Value::Bool(_) => 1,
+        Value::Number(_) => 2,
+        Value::String(_) => 3,
+        Value::Array(_) => 4,
+        Value::Object(_) => 5,
+    }
+}
+
+/// Stable in-place sort of array elements by `field`; elements without the
+/// field always go last (whichever direction).
+fn sort_values(values: &mut [Value], field: &[Step], desc: bool) {
+    use std::cmp::Ordering;
+    values.sort_by(|a, b| match (sort_key_at(a, field), sort_key_at(b, field)) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(x), Some(y)) => {
+            let ord = sort_cmp_values(&x, &y);
+            if desc {
+                ord.reverse()
+            } else {
+                ord
+            }
+        }
+    });
+}
+
+/// `path.sort(field)` (read-only): the sorted array as a value, so pipelines
+/// can project it (`sort(created)|{id,created}`).
+fn apply_sort_value(v: &Value, call: &FunctionCall) -> Result<Value> {
+    let (field_raw, desc) = parse_sort_args(&call.args)?;
+    let field = parse_selector(&field_raw)
+        .with_context(|| format!("invalid sort field `{field_raw}`"))?;
+    let node = match call.path.as_deref() {
+        Some(p) => resolve_single(v, p, "sort")?,
+        None => v,
+    };
+    let arr = node
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("`sort` needs an array (got {})", type_name(node)))?;
+    let mut out = arr.clone();
+    sort_values(&mut out, &field, desc);
+    Ok(Value::Array(out))
+}
+
+/// `sort(field)` / `path.sort(field)`: order an array **in place** by a field
+/// (ascending, or `sort(field, desc)`), so `-w` writes back the sorted
+/// document. stdout shows the sorted array (or the full document with
+/// `--root`).
+fn apply_sort(
+    v: &mut Value,
+    call: &FunctionCall,
+    out_f: DataFormat,
+    compact: bool,
+    root: bool,
+) -> Result<String> {
+    let (field_raw, desc) = parse_sort_args(&call.args)?;
+    let field = parse_selector(&field_raw)
+        .with_context(|| format!("invalid sort field `{field_raw}`"))?;
+    let steps = match call.path.as_deref() {
+        Some(p) => parse_selector(p).with_context(|| format!("invalid path for `sort`"))?,
+        None => Vec::new(),
+    };
+    let node = match steps.as_slice() {
+        [] => &mut *v,
+        [Step::Index(None)] => &mut *v,
+        _ => array_mut_at(v, &steps)?,
+    };
+    if !node.is_array() {
+        bail!("`sort` needs an array (got {})", type_name(node));
+    }
+    let a = node.as_array_mut().unwrap();
+    sort_values(a, &field, desc);
+    if root {
+        serialize_output(v, out_f, compact)
+    } else {
+        serialize_output(node, out_f, compact)
+    }
+}
+
 /// `remove(k1,k2,...)` (root or `path.remove(k1,k2,...)`): delete the named
 /// keys from an object in place — the multi-key counterpart of `PATH = null`.
 /// Unknown keys are ignored; a missing path removes nothing. The target must
@@ -3012,6 +3152,7 @@ pub fn cmd_data(
         result_string = match fc.name.as_str() {
             "count" => apply_count(&v, &fc, out_f, compact)?,
             "filter" => apply_filter(&mut v, &fc, out_f, compact, root)?,
+            "sort" => apply_sort(&mut v, &fc, out_f, compact, root)?,
             "search" => apply_search(&v, &fc, out_f, compact)?,
             "remove" => apply_remove(&mut v, &fc, out_f, compact, root)?,
             // 裸方法谓词（`NAME.contains("x")` / `has("k")` 等）在
@@ -3040,6 +3181,10 @@ pub fn cmd_data(
                 Some(Ok(fc)) => match fc.name.as_str() {
                     "filter" => {
                         let arr = apply_filter_value(&v, &fc)?;
+                        render_get(&count_matches(&[&arr]), out_f, compact)?
+                    }
+                    "sort" => {
+                        let arr = apply_sort_value(&v, &fc)?;
                         render_get(&count_matches(&[&arr]), out_f, compact)?
                     }
                     "search" => {
@@ -3072,6 +3217,15 @@ pub fn cmd_data(
                 Some(Ok(fc)) => match fc.name.as_str() {
                     "filter" => {
                         let arr = apply_filter_value(&v, &fc)?;
+                        project_values(
+                            arr.as_array().cloned().unwrap_or_default(),
+                            &items,
+                            out_f,
+                            compact,
+                        )?
+                    }
+                    "sort" => {
+                        let arr = apply_sort_value(&v, &fc)?;
                         project_values(
                             arr.as_array().cloned().unwrap_or_default(),
                             &items,
@@ -3877,6 +4031,102 @@ mod tests {
         // Non-array targets error.
         let fc = parse_function_expr("sites[0].filter(x)").unwrap().unwrap();
         assert!(apply_filter(&mut v, &fc, DataFormat::Json, false, false).is_err());
+    }
+
+    #[test]
+    fn sort_orders_array_by_field_in_place() {
+        let mut v = json!({"sites": [
+            {"name": "web", "rank": 2},
+            {"name": "db", "rank": 3},
+            {"name": "api", "rank": 1},
+        ]});
+        let fc = parse_function_expr("sites.sort(rank)").unwrap().unwrap();
+        let out = apply_sort(&mut v, &fc, DataFormat::Json, false, false).unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(got[0]["name"], json!("api"));
+        assert_eq!(got[1]["name"], json!("web"));
+        assert_eq!(got[2]["name"], json!("db"));
+        // In place: `-w` writes back the sorted document.
+        assert_eq!(v["sites"][0]["name"], json!("api"));
+        assert_eq!(v["sites"][2]["name"], json!("db"));
+        // Non-array target errors.
+        let fc = parse_function_expr("sites[0].sort(rank)").unwrap().unwrap();
+        assert!(apply_sort(&mut v, &fc, DataFormat::Json, false, false).is_err());
+    }
+
+    #[test]
+    fn sort_desc_keeps_missing_fields_last() {
+        let mut v = json!([
+            {"id": "a", "n": 1},
+            {"id": "b"},
+            {"id": "c", "n": 3},
+            {"id": "d", "n": 2}
+        ]);
+        let fc = parse_function_expr("sort(n, desc)").unwrap().unwrap();
+        let out = apply_sort(&mut v, &fc, DataFormat::Json, false, false).unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        let ids: Vec<&str> = got
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["c", "d", "a", "b"]);
+
+        // Ascending with the same missing-field rule (missing stays last).
+        let mut v = json!([{"id": "a", "n": 1}, {"id": "b"}, {"id": "c", "n": 3}]);
+        let fc = parse_function_expr("sort(n)").unwrap().unwrap();
+        let out = apply_sort(&mut v, &fc, DataFormat::Json, false, false).unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        let ids: Vec<&str> = got
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["a", "c", "b"]);
+    }
+
+    #[test]
+    fn sort_numeric_strings_and_nested_field() {
+        // Numeric strings compare numerically (9 < 10 < 100), not lexically.
+        let mut v = json!([{"v": "10"}, {"v": "9"}, {"v": "100"}]);
+        let fc = parse_function_expr("sort(v)").unwrap().unwrap();
+        let out = apply_sort(&mut v, &fc, DataFormat::Json, false, false).unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        let vals: Vec<&str> = got
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["v"].as_str().unwrap())
+            .collect();
+        assert_eq!(vals, vec!["9", "10", "100"]);
+
+        // A dotted field is a path, not a literal key.
+        let mut v = json!({"list": [{"a": {"b": 3}}, {"a": {"b": 1}}, {"a": {"b": 2}}]});
+        let fc = parse_function_expr("list.sort(a.b)").unwrap().unwrap();
+        let out = apply_sort(&mut v, &fc, DataFormat::Json, false, false).unwrap();
+        let got: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(got[0]["a"]["b"], json!(1));
+        assert_eq!(got[2]["a"]["b"], json!(3));
+    }
+
+    #[test]
+    fn sort_value_feeds_pipelines_and_validates_args() {
+        let v = json!({"rows": [{"id": "b", "n": 2}, {"id": "a", "n": 1}]});
+        let fc = parse_function_expr("rows.sort(n)").unwrap().unwrap();
+        let sorted = apply_sort_value(&v, &fc).unwrap();
+        assert_eq!(sorted[0]["id"], json!("a"));
+        assert_eq!(sorted[1]["id"], json!("b"));
+        // The source document is untouched by the read-only form.
+        assert_eq!(v["rows"][0]["id"], json!("b"));
+
+        assert!(parse_function_expr("sort()").unwrap().is_err());
+        assert!(parse_sort_args("n, sideways").is_err());
+        assert!(parse_sort_args("n, desc, x").is_err());
+        assert_eq!(parse_sort_args("n").unwrap(), ("n".into(), false));
+        assert_eq!(parse_sort_args("n, desc").unwrap(), ("n".into(), true));
+        assert_eq!(parse_sort_args("n, \"DESC\"").unwrap(), ("n".into(), true));
     }
 
     #[test]

@@ -2,6 +2,152 @@
 
 版本号变更记录：新增功能 / 修复 / 发布规范。产物命名规范：`sys-<平台>-<架构>_v<版本>`，release 产物使用 UPX 压缩（见 README「构建与发布」）。
 
+## v0.6.58（2026-11-25）
+
+### 新增
+- **`sys convert`：文档互转**（`md` / `html` / `docx` / `txt` / `epub` / `pdf` / `mobi`·`azw3`）。以 Markdown 为中枢的 N×M 转换，纯 Rust 实现、零外部命令：目标格式由 DST 扩展名决定；`pdf`、`mobi`/`azw3` 仅作源（PDF 只抽取文本层，扫描件不支持）。
+- 图片全程随转换传递：`docx` / `epub` / `mobi` 的图片读入内存，`pdf` / `docx` / `epub` 直接嵌入，`md` / `html` 落到 DST 同目录 `media/` 并以 `media/<文件名>` 引用；`docx` / `pdf` 会下载 md 中的 http(s) 图片。
+- EPUB 输出为单章节 EPUB 2/3（`mimetype` + `container.xml` + OPF + XHTML），只打包正文实际引用的图片。
+- 编码参数：`--from ENC` 解码文本源（`utf-8|gbk|gb2312`，缺省自动检测）；`--to ENC` 编码**文本输出**（`md`/`html`/`txt`，缺省 UTF-8）；`--enc` 为纯编码转换（不做文档语义、忽略扩展名）。
+
+### 变更
+- `sys convert` 的 `--to ENC` 不再隐含「切换成纯编码转换」模式：它现在只表示输出编码，文档转换照常进行（`md -> txt --to gbk` 得到 GBK 编码的纯文本）。二进制目标（docx/epub/pdf）带 `--to` 会直接报错并提示改用 `--enc`，不再静默忽略。
+
+### 修复
+- **同目录 md → md/html 会把源目录整个拷进 `media/`**，且源/目标 `media` 为同一目录时 `fs::copy` 自拷贝先把文件截断为 0 字节（数据丢失）。现在 `base_dir`（图片解析基准）与 `media/` 目录分离，同目录复制直接跳过。
+- **EPUB 输出的图片全部失效**：内存媒体名自带 `media/` 前缀，OPF 里写成 `media/media/x`，与章节 `img src` 不匹配；现统一改写为扁平 `media/<name>`（重名自动加序号），并且不再把源目录里的无关文件打进 EPUB。
+- **EPUB 读取抽不出 `../Images/a.png` 这类图片**：图片 `src` 应相对**章节文档**解析，原实现按 OPF 目录解析；现按章节目录解析并规范化 `.`/`..`，并去掉 `#fragment`/`?query`。
+- **PDF 里图片只有应有尺寸的 75%**：printpdf 已按 dpi 自动做 px→pt，代码又乘了一次 72/96；现按「1px = 1/96 英寸」修正（附内容流 `cm` 矩阵的回归测试）。
+- **html / txt 源没有基准目录**：相对图片按当前工作目录解析，html → pdf/docx 的本地图片丢失；现统一取源文件目录。
+- **行内图片漏成原文**：段落中间的 `![alt](src)` 在 `txt` 输出里是 Markdown 原文，`sys file --md2word` 也不嵌入图片；现在 md → txt/html/pdf/docx 的写端统一先提升行内图片（表格行除外，避免拆坏表格），`--md2word` 正常嵌图。
+- `sys http --help` 补回被误删的 `-p, --print` 说明行。
+- `sys ai agent --list-mcp` 不再把「已安装但未运行」的 Agent 报成 `not installed`（改为 `not running`）；MCP 服务器总数按名称去重，不再重复累加缓存与配置里的同一服务器。
+- `sys file --md2word` 与 `sys convert` 的 md → docx 渲染合并为同一份实现，避免两处逻辑漂移。
+
+---
+
+## v0.6.57（2026-11-09）
+
+### 修复
+- **`sys ai info --help` 排版**：原先 FIELD 的取值说明被挤进一段长文字，`list-model` 等值无法单独成行。现在 `provider` / `model` / `sale-price` / `list-model`（含 `models`）/ `balance` 各自成段、单独成行并附说明，长说明按终端宽度自动换行；同时删掉与 Options 段重复的内联 `Options:` 文案。
+- 各 `ai` 子命令（model / cn-model / provider / balance / price / server / chat / image / agent / config）的 `Examples:` 前补空行，使其独立成段，不再与上文挤在一起，与 `sys file`、`sys data` 等命令的分段风格保持一致。
+- 新增单测：渲染 `sys ai info --help`，断言每个 FIELD 取值都从新的一行开始。
+
+---
+
+## v0.6.56（2026-11-09）
+
+### 新增
+- **`sys server --ai`**：在同一监听地址上同时挂载 `sys ai server` 的 OpenAI 兼容接口 —— `GET /v1/models`、`POST /v1/chat/completions`（含不带 `/v1` 的别名），复用常规 `sys ai` 配置（`~/.sysenv/config.yaml`）。这些路径优先于代理规则与静态文件，可单独使用（`sys server --ai` 只开 AI 接口），也可与 `--root`、`--proxy` 组合。
+- 启动信息打印 `sys: AI API mounted: GET /v1/models, POST /v1/chat/completions`，与静态/代理信息并列。
+- `sys ai server` 的请求处理抽成可复用入口 `serve_shared`，`/v1/models`、`/v1/chat/completions` 的路径判定抽成 `is_api_path`，新增对应单测。
+
+### 变更
+- `sys server` 的「没有可服务内容」校验改为：`--root`、`--from/--to`、`--ai` 至少给一个。
+- README 中英第 11 节补充 `--ai` 参数、示例与路由优先级说明。
+
+---
+
+## v0.6.55（2026-11-09）
+
+### 变更
+- **`sys server` 默认监听改为 `0.0.0.0:8080`**：省略 `--listen` 时监听所有网卡（不再是 `127.0.0.1:10000`）；只给裸 IP 时沿用的默认端口也改为 8080。帮助信息、README 中英同步。
+- **默认端口冲突自动回落随机端口**：默认监听地址被占用时，改绑同 host 的随机可用端口继续启动，并打印最终监听地址；显式 `--listen` 的端口冲突仍按错误退出，不会静默换端口。仅当该地址没有被代理规则共享时才回落，避免规则落在死端口。
+
+### 新增
+- **启动打印可直接访问的地址**：绑定通配地址时列出回环 `http://127.0.0.1:<端口>` 与本机全部非回环 IPv4（`http://<IP>:<端口>`），绑定具体 IP 时只打印该地址与端口；本机 IPv4 通过系统自带 `ipconfig`（Windows）/ `ip -4 -o addr show`（类 Unix）解析，无新增依赖，取不到时降级为只打印回环地址并给出说明。启动信息统一走 stderr，与 `--access-log -` 的请求日志（stdout）天然分开。
+- 新增 2 个单测：默认监听端口被占用时回落随机端口（并验证显式监听不回落）、`ipconfig` 中英文与 Linux `ip` 输出解析。
+
+---
+
+## v0.6.54（2026-11-09）
+
+### 新增
+- **`sys server` 子命令：静态托管 + 反向代理**
+  - 静态站点：`sys server --root ./site`，默认监听 `0.0.0.0:8080`；`-listen` 支持 `IP:PORT`、裸端口 `8080`、`:8080`（后两者监听所有网卡）、裸 IP（沿用默认端口）。
+  - 反向代理：`sys server -proxy --from :8080 --to 127.0.0.1:3000`，`--from` 可带路径前缀（如 `:8080/api`），`--from/--to` 可重复配对从而配置多条规则。
+  - 同一实例可同时托管目录并挂载代理：按**最长路径前缀**匹配，命中代理后**剥离前缀**转发（同 caddy `handle_path`）；未命中的请求回落该地址的静态根目录，没有则 404。
+  - 常用参数：`--browse` 目录浏览、`--index` 自定义首页、`--spa` 单页回退、`--gzip` 文本压缩、`--access-log` 访问日志（`-` 为 stdout）、`--cors`（省略值为 `*`）、`--timeout`、`--cache`。
+  - `server` 子命令内同时接受单横线与双横线写法（`-listen` 与 `--listen`）。
+  - 新增 10 个单测：地址规范化、`--from` 前缀解析、前缀段边界匹配、最长前缀路由、路径穿越防护、URL 解码、上游 URL 拼接、MIME 类型、单横线参数归一化。
+
+---
+
+## v0.6.53（2026-11-07）
+
+### 修复
+- **`sys ai agent --list` / `--list-mcp` 误报 Pi 在运行**：进程匹配用子串匹配，2 字符的 `pi` 会命中无关进程（如 Windows 截图工具 `SnippingTool`）。改为 ≤3 字符的进程名要求精确匹配（`pi.exe` 的 stem `pi` 仍可命中），长名字保持子串匹配以兼容 `trae` → `trae-cn` 这类变体。新增 1 个单测。
+
+---
+
+## v0.6.52（2026-11-07）
+
+### 新增
+- **`sys ai agent --list-mcp`**：只列出**当前正在运行**的 Agent，并显示其激活的 MCP 信息——从 Agent 侧的 MCP 缓存目录（如 TRAE 的 `~/.trae-cn/mcps/<ws>/solo_agent/<server>/`）读取 `SERVER_METADATA.json` + `tools/*.json`，输出每个 MCP server 的工具名称与描述（截断到 140 字）；同时展示配置文件中声明的 MCP server。**不 spawn 任何 MCP 进程**，仅靠进程探测 + 读缓存/配置。同名 server 跨 workspace 去重时保留工具数最多的一份。新增 `mcp_cache_dirs` 字段到 `AgentSpec`，`scan_mcp_cache_dirs` / `parse_mcp_cache_server` 两个解析函数及 1 个单测。
+
+### 优化
+- **精简依赖**：`reqwest` 移除未使用的 `gzip` 特性；`zip` 改为 `default-features = false` + 仅启用 `deflate`（源码只用 `CompressionMethod::Deflated`）；`windows-sys` 移除零引用的 `Win32_System_ProcessStatus` 特性。共移除 `time`、`zstd`、`zstd-safe`、`zstd-sys` 4 个传递依赖，Cargo.lock 从约 235 包降至 229 包。
+
+---
+
+## v0.6.51（2026-11-07）
+
+### 新增
+- **`sys ai agent --list` 增加第 1、2 层 MCP 信息**：每个已安装 Agent 额外显示 `running`（是否在运行，按进程名匹配）、`mcp cfg`（找到的 MCP 配置文件）、`mcp srv`（配置的 MCP 服务器列表，含启动命令 / URL）与 `mcp tools`（来自 Agent 侧缓存的工具列表，如 WorkBuddy 的 `mcp-tool-list.json`）。
+  - 兼容的 MCP 配置形态：JSON 的 `mcpServers` / `mcp.servers` / `mcp_servers` / `servers`，以及 TOML（Codex）的 `mcp_servers` / `mcp.servers`；`command` / `args` 兼容字符串或数组；
+  - 工具缓存兼容 WorkBuddy 的 `entries.<hash>=[{name,description}]` 与通用的 `tools:[{name,description}]`；
+  - 总计行新增 `MCP: N server(s), M cached tool(s)`。新增 4 个单测（JSON/TOML 解析、缓存工具、进程匹配）。
+
+---
+
+## v0.6.50（2026-11-06）
+
+### 新增
+- **`sys ai agent`：检测本机已安装的 AI Agent 及其 skills**（国际：Claude Code / Codex / OpenCode / Kilo Code / OpenClaw / Cursor / Pi / hermes-agent；国产：TRAE / CodeBuddy / WorkBuddy / Kimi Coder / QCoder / MiMo Coder / ZCode / Qoder）。
+  - `--list [AGENT...]`：按 Agent 分组显示安装目录（多安装位置全部列出）、skills 目录、skill 数量与 skills 占用空间（递归统计，符号链接 / junction 跟随并防环）；
+  - `--list-skill [AGENT...]`：按 Agent 分组显示已安装 skill 的名称与各自占用空间；
+  - AGENT 可省略，支持 id / 名称 / 别名（大小写、空格、连字符不敏感，逗号分隔），只统计指定 Agent；未知 Agent 报错并列出支持项，指定但未安装的 Agent 单独提示；
+  - skill 判定：skills 目录下含 `SKILL.md`（大小写不敏感）的子目录或顶层 `.md` 文件（`README.md` 除外）；符号链接 / junction 条目一律计入（目标缺失时标为 broken link，占用按 0 B）；无参数时默认等同 `--list`。新增 4 个单测。
+
+---
+
+## v0.6.49（2026-11-06）
+
+### 修复
+- **`sys file -V` 死掉**（用户报告）：`-V` 被 allow_hyphen_values 吞进 ARGS，落到 stdin 搜索模式被当作 PATTERN "V"，在 TTY 上阻塞等待输入。修复：cmd_file 入口识别 `-V` / `--version`，打印 `sys <版本> (Made by Gary-china)` 后立即退出（与 `sys -V` 一致）。
+- **`sys file --help` 的 Arguments 段被手工换行、不满屏**：long_help 用 raw string 硬换行，clap 按预格式文本原样输出。改为普通段落文本（空行分段），由 clap wrap_help 按终端宽自动折行；段落间空行保留结构。COLUMNS=60/100/200 下均撑满且不超宽。492 单测全绿。版本 0.6.48 -> 0.6.49
+
+---
+
+## v0.6.48（2026-11-06）
+
+### 修复
+- **`--help` 折行改为自动按终端宽度，不做手工限宽**（用户纠正：v0.6.47 不应手工折死 60 列）：
+  1. 还原 v0.6.47 对 `sys http` 帮助与 `sys data` long_help 的手工折行，恢复自然长文本；
+  2. `sys http` 手写帮助新增显示宽度感知的自动折行（CJK/全角按 2 列计）：COLUMNS 已知且 ≥40 时按终端宽折行，标签列对齐续行（`-j, --json` 描述列对齐），COLUMNS 未知/非 TTY 保持原始单行不折；宽终端（160）下保持原有单行版式；
+  3. `sys data` long_help 仅拆分两条超出示例的反引号命令使其能被 clap wrap_help 正常折行，内容不变。
+  全部子命令在 COLUMNS=60/100/200 下最长行 ≤ 终端宽。492 单测全绿。版本 0.6.47 -> 0.6.48
+
+---
+
+## v0.6.47（2026-11-06）
+
+### 修复
+- **`--help` 满屏超宽行**（用户报告：[ARGS] 说明不满屏但 Options: 满屏）：
+  1. Cargo.toml clap 加 `wrap_help` feature——所有 clap 自动渲染的 Options/长 about 按 COLUMNS 折行（这是主要根因）；
+  2. `sys http` 手写帮助文本重排：--json / --http-file / METHOD / --file / --curl / --debug 等长行手工折为 ≤60 显示列（中文按 2 列宽），补回 -j 描述丢失的对齐空格与 `{{变量}}` 字面；
+  3. `sys data` long_help 中两条超宽示例命令行折行。
+  全部子命令 --help 在 COLUMNS=60/100 下最长行 = 终端宽。492 单测全绿。版本 0.6.46 -> 0.6.47
+
+---
+
+## v0.6.46（2026-11-06）
+
+### 修复
+- **MD 表格解析支持转义竖线 `\|`**（src/wordmd.rs，用户报告：本项目 README 特性总览 3 列表转 Word 变 7 列）：单元格内 `` `data[*]\|{id,name}` `` 的 `\|` 被按普通 `|` 切分，一行多出 4 个空列。`parse_md_row` 重写为转义感知扫描：`\|` 还原为字面 `|` 进入单元格（docx 中显示真竖线），行尾孤立 `\` 保留；word2md 侧已有 `\|` 转义输出，md->docx->md 往返一致。新增 2 个单测（转义竖线 / 尾反斜杠）。版本 0.6.45 -> 0.6.46
+
+---
+
 ## v0.6.45（2026-11-06）
 
 ### 修复

@@ -144,7 +144,7 @@ fn write_head(stream: &mut TcpStream, status: u16, reason: &str, extra: &[(&str,
     Ok(())
 }
 
-fn write_error(stream: &mut TcpStream, status: u16, message: &str) -> Result<()> {
+fn write_error(stream: &mut TcpStream, status: u16, message: &str) -> Result<usize> {
     let body = serde_json::to_string(&json!({ "error": { "message": message, "type": "invalid_request_error" } }))?;
     write_head(
         stream,
@@ -157,7 +157,7 @@ fn write_error(stream: &mut TcpStream, status: u16, message: &str) -> Result<()>
         ],
     )?;
     stream.write_all(body.as_bytes())?;
-    Ok(())
+    Ok(body.len())
 }
 
 fn handle(mut stream: TcpStream, cfg: &Config) -> Result<()> {
@@ -168,40 +168,86 @@ fn handle(mut stream: TcpStream, cfg: &Config) -> Result<()> {
             return Ok(());
         }
     };
-    if req.method == "GET" && (req.path == "/v1/models" || req.path == "/models") {
-        return list_models(&mut stream, cfg);
+    dispatch(&mut stream, cfg, &req.method, &req.path, &req.body)?;
+    Ok(())
+}
+
+/// Paths owned by the OpenAI-compatible API, so `sys server --ai` can claim
+/// them before static files / proxy rules.
+pub(crate) fn is_api_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/v1/models" | "/models" | "/v1/chat/completions" | "/chat/completions"
+    )
+}
+
+/// Serve an API request on a connection owned by another server loop.
+/// Returns `None` when the path is not part of the API surface, so the caller
+/// can keep routing it (static files, proxy rules, ...).
+pub(crate) fn serve_shared(
+    stream: &mut TcpStream,
+    cfg: &Config,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> Result<Option<(u16, usize)>> {
+    if !is_api_path(path) {
+        return Ok(None);
     }
-    if req.method != "POST" || (req.path != "/v1/chat/completions" && req.path != "/chat/completions") {
-        return write_error(&mut stream, 404, "not found");
+    let body = String::from_utf8_lossy(body);
+    dispatch(stream, cfg, method, path, &body).map(Some)
+}
+
+fn dispatch(
+    stream: &mut TcpStream,
+    cfg: &Config,
+    method: &str,
+    path: &str,
+    body: &str,
+) -> Result<(u16, usize)> {
+    if method == "GET" && (path == "/v1/models" || path == "/models") {
+        return list_models(stream, cfg).map(|bytes| (200, bytes));
     }
-    let body: Value = match serde_json::from_str(&req.body) {
+    if method != "POST" || (path != "/v1/chat/completions" && path != "/chat/completions") {
+        return write_error(stream, 404, "not found").map(|bytes| (404, bytes));
+    }
+    let body: Value = match serde_json::from_str(body) {
         Ok(v) => v,
-        Err(e) => return write_error(&mut stream, 400, &format!("invalid JSON body: {e}")),
+        Err(e) => {
+            return write_error(stream, 400, &format!("invalid JSON body: {e}"))
+                .map(|bytes| (400, bytes))
+        }
     };
     let model = body.get("model").and_then(|m| m.as_str()).unwrap_or("");
     let selector = if model.is_empty() || model == "auto" { "<default>" } else { model };
     let targets = match chat::resolve_targets(cfg, selector) {
         Ok(t) => t,
-        Err(e) => return write_error(&mut stream, 404, &format!("unknown model `{model}`: {e:#}")),
+        Err(e) => {
+            return write_error(stream, 404, &format!("unknown model `{model}`: {e:#}"))
+                .map(|bytes| (404, bytes))
+        }
     };
     let t = &targets[0];
     let p = &cfg.providers[t.provider];
     let m = &p.models[t.model];
     if p.kind != "openai" {
         return write_error(
-            &mut stream,
+            stream,
             400,
             &format!("provider `{}` is type `{}`; the server only serves OpenAI-compatible providers", p.name, p.kind),
-        );
+        )
+        .map(|bytes| (400, bytes));
     }
-    if let Err(e) = proxy(&mut stream, p, m, body) {
-        eprintln!("sys: upstream error: {e:#}");
-        let _ = write_error(&mut stream, 502, &format!("upstream error: {e:#}"));
+    match proxy(stream, p, m, body) {
+        Ok(bytes) => Ok((200, bytes)),
+        Err(e) => {
+            eprintln!("sys: upstream error: {e:#}");
+            write_error(stream, 502, &format!("upstream error: {e:#}")).map(|bytes| (502, bytes))
+        }
     }
-    Ok(())
 }
 
-fn proxy(stream: &mut TcpStream, p: &chat::Provider, m: &chat::Model, mut body: Value) -> Result<()> {
+fn proxy(stream: &mut TcpStream, p: &chat::Provider, m: &chat::Model, mut body: Value) -> Result<usize> {
     let want_stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
     body["model"] = json!(m.name);
     let url = chat::chat_url(p);
@@ -241,18 +287,22 @@ fn proxy(stream: &mut TcpStream, p: &chat::Provider, m: &chat::Model, mut body: 
         )?;
         let mut reader = resp;
         let mut buf = [0u8; 8192];
+        let mut total = 0usize;
         loop {
             let n = reader.read(&mut buf)?;
             if n == 0 {
                 break;
             }
+            total += n;
             write!(stream, "{n:x}\r\n")?;
             stream.write_all(&buf[..n])?;
             stream.write_all(b"\r\n")?;
         }
         stream.write_all(b"0\r\n\r\n")?;
+        Ok(total)
     } else {
         let bytes = resp.bytes().context("cannot read upstream response")?;
+        let len = bytes.len();
         write_head(
             stream,
             200,
@@ -264,11 +314,11 @@ fn proxy(stream: &mut TcpStream, p: &chat::Provider, m: &chat::Model, mut body: 
             ],
         )?;
         stream.write_all(&bytes)?;
+        Ok(len)
     }
-    Ok(())
 }
 
-fn list_models(stream: &mut TcpStream, cfg: &Config) -> Result<()> {
+fn list_models(stream: &mut TcpStream, cfg: &Config) -> Result<usize> {
     let data: Vec<Value> = cfg
         .providers
         .iter()
@@ -284,6 +334,7 @@ fn list_models(stream: &mut TcpStream, cfg: &Config) -> Result<()> {
         })
         .collect();
     let body = serde_json::to_vec(&json!({ "object": "list", "data": data }))?;
+    let len = body.len();
     write_head(
         stream,
         200,
@@ -295,12 +346,22 @@ fn list_models(stream: &mut TcpStream, cfg: &Config) -> Result<()> {
         ],
     )?;
     stream.write_all(&body)?;
-    Ok(())
+    Ok(len)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_paths_are_exact() {
+        assert!(is_api_path("/v1/models"));
+        assert!(is_api_path("/models"));
+        assert!(is_api_path("/v1/chat/completions"));
+        assert!(is_api_path("/chat/completions"));
+        assert!(!is_api_path("/v1/models/x"));
+        assert!(!is_api_path("/index.html"));
+    }
 
     #[test]
     fn parse_addr_variants() {
